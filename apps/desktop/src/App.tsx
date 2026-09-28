@@ -620,7 +620,7 @@ export default function App() {
               height={32}
               aria-hidden="true"
             />
-            <span className="overflow-hidden text-xl font-semibold tracking-tight whitespace-nowrap max-[960px]:hidden">
+            <span className="overflow-hidden text-lg font-semibold tracking-tight whitespace-nowrap max-[960px]:hidden">
               AstrLink
             </span>
           </div>

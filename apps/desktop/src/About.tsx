@@ -197,7 +197,7 @@ export function About({
               <img src={logo} alt="" className="size-14 shrink-0" />
               <div className="min-w-0">
                 <div className="flex flex-wrap items-center gap-2">
-                  <h2 className="text-2xl font-semibold tracking-tight">
+                  <h2 className="text-xl font-semibold tracking-tight">
                     AstrLink
                   </h2>
                   {snapshot.development ? (
