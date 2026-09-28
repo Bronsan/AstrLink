@@ -1802,6 +1802,7 @@
     "clientWireHint": "The response body delivered to the client, including protocol events.",
     "sameAsClient": "Same as client response",
     "gatewayVerdict": "Gateway verdict",
+    "clientView": "Client content",
     "upstreamView": "Upstream content",
     "upstreamViews": {
       "response": "Response",
@@ -1840,7 +1841,6 @@
       "upstream": "Upstream"
     },
     "hit": "Hit",
-    "miss": "Miss",
     "summary": "Summary",
     "entry": "Entry",
     "protocol": "Protocol",
@@ -1852,6 +1852,19 @@
     "modelRedirectHint": "The gateway routes with the redirected model; responses to the client still show the original model name.",
     "route": "Route",
     "redactedRequest": "Redacted request",
+    "policyDecisions": {
+      "redact": "Redacted",
+      "warn": "Warned",
+      "block": "Blocked",
+      "allow": "Miss",
+      "inspecting": "Inspecting",
+      "unfinished": "Unfinished"
+    },
+    "policyReplaced": "{{count}} replaced",
+    "policyNotice": "Placeholder note added",
+    "policyAllowHint": "The policy left the request unchanged; the body is under Client.",
+    "policyWarnHint": "A warning rule matched; the policy left the request unchanged. The body is under Client.",
+    "policyBlockHint": "The policy blocked this request before it reached the upstream.",
     "restoreCounts": "Visible text {{visible}} · tool arguments {{tools}}",
     "restoreChip": "restore · restored/mapped",
     "clientBody": "Client request body",

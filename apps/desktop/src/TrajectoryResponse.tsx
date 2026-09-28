@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, type ReactNode, type Ref } from "react";
 
 import { Check, Copy } from "@/components/icons";
 import { ActionGroup } from "@/components/ActionGroup";
@@ -28,14 +28,13 @@ import {
   statusTone,
   type AuditContent,
   type AuditContentPart,
+  type AuditHTTPMeta,
   type RequestRecord,
   type RequestStatus,
 } from "./request-record-model";
 import { formatDuration } from "./request-live-model";
 import type { ResponseOutput } from "./response-preview-model";
 import type { TrajectoryRow } from "./request-trajectory-model";
-
-type UpstreamView = "response" | "request" | "http";
 
 // The body pane takes the remaining height but keeps enough to read and to
 // reach its view controls; below that the inspector body scrolls instead. A
@@ -134,19 +133,9 @@ export function UpstreamInspector({
   const meta = auditContent?.upstream_http_meta ?? null;
   const preview = useResponsePreview(response);
   const errors = responseErrors(preview);
-  const [view, setView] = useState<UpstreamView>("response");
-  const [mode, setMode] = useState<WireViewMode>("structured");
   const upstreamModel =
     record.recovery?.upstream_model ?? record.model_redirect?.to ?? null;
   const same = sameContent(response, auditContent?.response_content ?? null);
-  const body =
-    view === "response" ? response : view === "request" ? request : null;
-  const structuredLabel = body ? wireStructuredLabel(body) : null;
-  const copyKey = `upstream-${view}:${record.id}`;
-  const copyValue =
-    view === "http" ? (meta ? httpMetaText(meta) : "") : (body?.content ?? "");
-  const copied =
-    copyFeedback.activeKey === copyKey && copyFeedback.state === "copied";
 
   return (
     <div className="flex flex-1 flex-col gap-2">
@@ -170,93 +159,198 @@ export function UpstreamInspector({
             </span>
           ) : null}
           {meta ? (
-            <code
-              className="min-w-0 flex-1 truncate font-mono text-micro text-muted-foreground"
-              data-testid="inspector-upstream-endpoint"
-              title={`${meta.method} ${meta.url}`}
-            >
-              <span className="font-medium text-foreground">{meta.method}</span>{" "}
-              {meta.url}
-            </code>
+            <EndpointLine
+              method={meta.method}
+              testId="inspector-upstream-endpoint"
+              url={meta.url}
+            />
           ) : null}
         </div>
       ) : null}
-      <Panel
-        aria-label={t("trajectory.upstreamResponse")}
-        className={PANE_CLASS}
-      >
-        <div className="flex min-h-10 shrink-0 flex-wrap items-center gap-2 border-b px-2 py-1.5">
-          <SegmentedControl
-            label={t("audit.upstreamView")}
-            onValueChange={setView}
-            options={[
-              { value: "response", label: t("audit.upstreamViews.response") },
-              { value: "request", label: t("audit.upstreamViews.request") },
-              { value: "http", label: "HTTP" },
-            ]}
-            value={view}
-          />
-          <ActionGroup className="gap-1">
-            {structuredLabel ? (
-              <SegmentedControl
-                label={t("audit.contentView")}
-                onValueChange={setMode}
-                options={[
-                  { value: "structured", label: structuredLabel },
-                  { value: "raw", label: t("audit.original") },
-                ]}
-                value={mode}
-              />
-            ) : null}
-            <Button
-              aria-label={copyButtonLabel(
-                copyFeedback,
-                copyKey,
-                t("responseViewer.copyRaw"),
-              )}
-              disabled={!copyValue}
-              onClick={() => copyFeedback.copy(copyKey, copyValue)}
-              size="icon-sm"
-              title={t("responseViewer.copyRaw")}
-              type="button"
-              variant="ghost"
-            >
-              {copied ? (
-                <Check aria-hidden="true" />
-              ) : (
-                <Copy aria-hidden="true" />
-              )}
-            </Button>
-          </ActionGroup>
-        </div>
-        <div
-          className="min-h-0 flex-1 space-y-3 overflow-auto overscroll-contain p-3"
-          data-tab-scroller
-          data-testid="inspector-upstream-body"
-          data-view={view}
-        >
-          {view === "response" && errors.length > 0 ? (
-            <Diagnosis errors={errors} tone="error" />
-          ) : null}
-          {view === "http" ? (
-            <HTTPMetaDetails meta={meta} />
-          ) : body ? (
-            <AuditWireView
-              key={`${view}:${mode}`}
-              mode={structuredLabel ? mode : "raw"}
-              part={body}
-            />
-          ) : missingHint ? (
-            <p
-              className="text-xs leading-6 text-muted-foreground"
-              data-testid="inspector-missing-body"
-            >
-              {missingHint}
-            </p>
-          ) : null}
-        </div>
-      </Panel>
+      <CapturePane
+        copyFeedback={copyFeedback}
+        copyKey={`upstream:${record.id}`}
+        label={t("trajectory.upstreamResponse")}
+        missingHint={missingHint}
+        testId="inspector-upstream-body"
+        viewsLabel={t("audit.upstreamView")}
+        views={[
+          {
+            value: "response",
+            label: t("audit.upstreamViews.response"),
+            body: response,
+            lead:
+              errors.length > 0 ? (
+                <Diagnosis errors={errors} tone="error" />
+              ) : null,
+          },
+          {
+            value: "request",
+            label: t("audit.upstreamViews.request"),
+            body: request,
+          },
+          { value: "http", label: "HTTP", meta },
+        ]}
+      />
     </div>
+  );
+}
+
+/** The request line of one side of the exchange, clipped to the row. */
+export function EndpointLine({
+  method,
+  url,
+  testId,
+}: {
+  method: string | null;
+  url: string;
+  testId: string;
+}) {
+  const line = method ? `${method} ${url}` : url;
+  return (
+    <code
+      className="min-w-0 flex-1 truncate font-mono text-micro text-muted-foreground"
+      data-testid={testId}
+      title={line}
+    >
+      {method ? (
+        <>
+          <span className="font-medium text-foreground">{method}</span>{" "}
+        </>
+      ) : null}
+      {url}
+    </code>
+  );
+}
+
+export type CaptureView =
+  | {
+      value: string;
+      label: string;
+      body: AuditContentPart | null;
+      /** Shown above the body, such as the error the provider sent. */
+      lead?: ReactNode;
+    }
+  | { value: string; label: string; meta: AuditHTTPMeta | null };
+
+/**
+ * Captured bodies and HTTP metadata in one bounded pane: a view switch when
+ * there is more than one, the structured/raw toggle, copy, and the only
+ * scroller. Each inspector tab that shows a body uses this frame so the tabs
+ * read the same way.
+ */
+export function CapturePane({
+  label,
+  viewsLabel = label,
+  views,
+  copyKey,
+  copyFeedback,
+  missingHint,
+  testId,
+  scrollerRef,
+}: {
+  label: string;
+  /** Names the view switch; defaults to the pane's label. */
+  viewsLabel?: string;
+  views: readonly CaptureView[];
+  copyKey: string;
+  copyFeedback: CopyFeedback;
+  /** Shown instead of an absent body; null while loading. */
+  missingHint: string | null;
+  testId: string;
+  scrollerRef?: Ref<HTMLDivElement>;
+}) {
+  const t = useT();
+  const [value, setValue] = useState(views[0]?.value ?? "");
+  const [mode, setMode] = useState<WireViewMode>("structured");
+  const view = views.find((item) => item.value === value) ?? views[0];
+  if (!view) return null;
+  const meta = "meta" in view ? view.meta : null;
+  const body = "body" in view ? view.body : null;
+  const structuredLabel = body ? wireStructuredLabel(body) : null;
+  const viewCopyKey = `${copyKey}:${view.value}`;
+  const copyValue =
+    "meta" in view ? (meta ? httpMetaText(meta) : "") : (body?.content ?? "");
+  const copied =
+    copyFeedback.activeKey === viewCopyKey && copyFeedback.state === "copied";
+
+  return (
+    <Panel aria-label={label} className={PANE_CLASS}>
+      <div className="flex min-h-10 shrink-0 flex-wrap items-center gap-2 border-b px-2 py-1.5">
+        {views.length > 1 ? (
+          <SegmentedControl
+            label={viewsLabel}
+            onValueChange={setValue}
+            options={views.map((item) => ({
+              value: item.value,
+              label: item.label,
+            }))}
+            value={view.value}
+          />
+        ) : (
+          <span className="px-1 text-xs font-medium text-muted-foreground">
+            {view.label}
+          </span>
+        )}
+        <ActionGroup className="gap-1">
+          {structuredLabel ? (
+            <SegmentedControl
+              label={t("audit.contentView")}
+              onValueChange={setMode}
+              options={[
+                { value: "structured", label: structuredLabel },
+                { value: "raw", label: t("audit.original") },
+              ]}
+              value={mode}
+            />
+          ) : null}
+          <Button
+            aria-label={copyButtonLabel(
+              copyFeedback,
+              viewCopyKey,
+              t("responseViewer.copyRaw"),
+            )}
+            disabled={!copyValue}
+            onClick={() => copyFeedback.copy(viewCopyKey, copyValue)}
+            size="icon-sm"
+            title={t("responseViewer.copyRaw")}
+            type="button"
+            variant="ghost"
+          >
+            {copied ? (
+              <Check aria-hidden="true" />
+            ) : (
+              <Copy aria-hidden="true" />
+            )}
+          </Button>
+        </ActionGroup>
+      </div>
+      <div
+        className="min-h-0 flex-1 space-y-3 overflow-auto overscroll-contain p-3"
+        data-tab-scroller
+        data-testid={testId}
+        data-view={view.value}
+        ref={scrollerRef}
+      >
+        {"lead" in view ? view.lead : null}
+        {"meta" in view ? (
+          <HTTPMetaDetails meta={meta} />
+        ) : body ? (
+          <AuditWireView
+            key={`${view.value}:${mode}`}
+            mode={structuredLabel ? mode : "raw"}
+            part={body}
+          />
+        ) : missingHint ? (
+          <p
+            className="text-xs leading-6 text-muted-foreground"
+            data-testid="inspector-missing-body"
+          >
+            {missingHint}
+          </p>
+        ) : null}
+      </div>
+    </Panel>
   );
 }
 

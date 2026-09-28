@@ -1,12 +1,13 @@
 import { RecoveryDetails } from "./components/RecoveryDetails";
 import { RoutingDecisionDetails } from "./components/RoutingDecisionDetails";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ChevronRight } from "@/components/icons";
 
 import { Button } from "@/components/ui/button";
 import { ConversationIndicator } from "@/components/ConversationIndicator";
 import { ModelLabel } from "@/components/ModelLabel";
 import { RequestServiceLabel } from "@/components/RequestServiceLabel";
+import { StatusBadge } from "@/components/StatusBadge";
+import type { StatusTone } from "@/components/StatusDot";
 import { cn } from "@/lib/utils";
 
 import { AuditPartSection } from "./AuditReviewer";
@@ -16,6 +17,7 @@ import type {
   AuditContent,
   RequestModelRedirect,
   RequestRecord,
+  RequestStatus,
 } from "./request-record-model";
 import {
   namedRouteSummary,
@@ -29,15 +31,22 @@ import {
   inspectorChainRows,
   inspectorPart,
   inspectorTitle,
+  policyDecision,
   recordedPrivacyHits,
   type InspectorPart,
+  type PolicyDecision,
   type PrivacyHitGroup,
   type TrajectoryChip,
   type TrajectoryRow,
 } from "./request-trajectory-model";
 import { protocolEntryPath } from "./service-presets";
 import { chipDotClass } from "./trajectory-chip";
-import { ResultInspector, UpstreamInspector } from "./TrajectoryResponse";
+import {
+  CapturePane,
+  EndpointLine,
+  ResultInspector,
+  UpstreamInspector,
+} from "./TrajectoryResponse";
 
 /** The parts backed by a captured body, as opposed to record metadata. */
 type BodyPart = Exclude<InspectorPart, "route" | "redirect">;
@@ -228,11 +237,17 @@ function tabChip(chip: TrajectoryChip): TrajectoryChip {
   return chip === "TURN" ? "CLIENT" : chip;
 }
 
-// Response panes carry their own outcome line and a bounded scroller, so the
+// Body panes carry their own outcome line and a bounded scroller, so the
 // generic section header would only repeat them. The body still scrolls once
 // a short window can no longer fit the pane's minimum height.
 function ownsScroller(chip: TrajectoryChip): boolean {
-  return chip === "RESULT" || chip === "UPSTREAM" || chip === "RETRY";
+  return (
+    chip === "CLIENT" ||
+    chip === "POLICY" ||
+    chip === "RESULT" ||
+    chip === "UPSTREAM" ||
+    chip === "RETRY"
+  );
 }
 
 // One tab per phase. A repeated phase keeps its first position and shows its
@@ -269,13 +284,7 @@ function InspectorSection({
   omitCapturedBody: boolean;
 }) {
   const part = inspectorPart(row.chip);
-  const t = i18n.t.bind(i18n);
-  const title =
-    row.chip === "POLICY"
-      ? recordedPrivacyHits(record.privacy_restore).length > 0
-        ? t("trajectory.hit")
-        : t("trajectory.miss")
-      : inspectorTitle(row.chip);
+  const title = inspectorTitle(row.chip);
   const captured =
     part === "route" || part === "redirect" || omitCapturedBody
       ? null
@@ -504,15 +513,25 @@ function BodyInspector({
   const sectionKey = `trajectory-${row.chip}-${part}`;
   const missingHint = auditLoading ? null : missingBodyHint(record);
 
+  if (row.chip === "CLIENT" || row.chip === "TURN") {
+    return (
+      <ClientInspector
+        auditContent={auditContent}
+        copyFeedback={copyFeedback}
+        missingHint={missingHint}
+        record={record}
+      />
+    );
+  }
+
   if (row.chip === "POLICY") {
     return (
       <PolicyInspector
-        auditLoading={auditLoading}
-        captured={captured}
+        auditContent={auditContent}
         copyFeedback={copyFeedback}
-        hits={recordedPrivacyHits(record.privacy_restore)}
-        protocol={record.input_protocol}
-        sectionKey={sectionKey}
+        missingHint={missingHint}
+        record={record}
+        row={row}
       />
     );
   }
@@ -565,69 +584,196 @@ function BodyInspector({
   );
 }
 
-function PolicyInspector({
-  hits,
-  captured,
-  auditLoading,
-  protocol,
-  sectionKey,
+/**
+ * What the client sent: its request line and size, then the body and the
+ * HTTP envelope in the same pane the upstream tab uses.
+ */
+function ClientInspector({
+  record,
+  auditContent,
   copyFeedback,
+  missingHint,
 }: {
-  hits: PrivacyHitGroup[];
-  captured: ReturnType<typeof auditPart>;
-  auditLoading: boolean;
-  protocol: string;
-  sectionKey: string;
+  record: RequestRecord;
+  auditContent: AuditContent | null;
   copyFeedback: CopyFeedback;
+  missingHint: string | null;
 }) {
   const t = i18n.t.bind(i18n);
-  const detailsRef = useRef<HTMLDetailsElement>(null);
+  const body = auditContent?.request_body ?? null;
+  const meta = auditContent?.http_meta ?? null;
+  return (
+    <div className="flex flex-1 flex-col gap-2">
+      <div className="flex min-w-0 shrink-0 items-center gap-3 text-xs">
+        <EndpointLine
+          method={meta?.method ?? null}
+          testId="inspector-client-endpoint"
+          url={
+            meta?.url ??
+            protocolEntryPath(record.input_protocol, {
+              streaming: record.streaming,
+            })
+          }
+        />
+        {body ? (
+          <span
+            className="shrink-0 font-mono text-micro text-muted-foreground tabular-nums"
+            data-testid="inspector-client-size"
+          >
+            {formatCapturedBytes(body.captured_bytes)}
+          </span>
+        ) : null}
+      </div>
+      <CapturePane
+        copyFeedback={copyFeedback}
+        copyKey={`client:${record.id}`}
+        label={t("trajectory.clientBody")}
+        missingHint={missingHint}
+        testId="inspector-client-body"
+        viewsLabel={t("audit.clientView")}
+        views={[
+          {
+            value: "request",
+            label: t("audit.upstreamViews.request"),
+            body,
+          },
+          { value: "http", label: "HTTP", meta },
+        ]}
+      />
+    </div>
+  );
+}
+
+/**
+ * What the privacy policy did to the request. Only a redaction changes what
+ * goes upstream, so only then does the tab carry a body: the request as sent,
+ * with each replaced value marked. Any other outcome would repeat the client
+ * tab's body under another name.
+ */
+function PolicyInspector({
+  row,
+  record,
+  auditContent,
+  copyFeedback,
+  missingHint,
+}: {
+  row: TrajectoryRow;
+  record: RequestRecord;
+  auditContent: AuditContent | null;
+  copyFeedback: CopyFeedback;
+  missingHint: string | null;
+}) {
+  const t = i18n.t.bind(i18n);
+  const scrollerRef = useRef<HTMLDivElement>(null);
+  const decision = policyDecision(row, record.privacy_restore);
+  const redacted = decision === "redact";
+  const hits = recordedPrivacyHits(record.privacy_restore);
+  const mappings = record.privacy_restore?.mapping_count ?? 0;
+  const segments = row.summary.split(" · ");
+  const body = redacted ? (auditContent?.upstream_request_body ?? null) : null;
+  // Progress and failure codes are Core's own words; the badge says the rest.
+  const detail =
+    decision === "inspecting" || decision === "unfinished" ? row.summary : null;
+  const hint = policyHint(decision);
   const revealKind = (kind: string) => {
-    const details = detailsRef.current;
-    if (!details) return;
-    details.open = true;
-    requestAnimationFrame(() => {
-      details
-        .querySelector<HTMLElement>(`mark[data-kind="${kind}"]`)
-        ?.scrollIntoView({ block: "center" });
-    });
+    scrollerRef.current
+      ?.querySelector<HTMLElement>(`mark[data-kind="${kind}"]`)
+      ?.scrollIntoView({ block: "center" });
   };
   return (
-    <>
-      {!auditLoading && hits.length === 0 ? (
-        <p className="text-xs leading-6 text-muted-foreground">
-          {t("trajectory.miss")}
+    <div
+      className={redacted ? "flex flex-1 flex-col gap-2" : "space-y-2"}
+      data-decision={decision}
+      data-testid="policy-inspector"
+    >
+      <div
+        className="flex min-w-0 shrink-0 flex-wrap items-center gap-x-3 gap-y-1 text-xs"
+        data-testid="policy-outcome"
+      >
+        <StatusBadge tone={policyTone(decision, row.status)}>
+          {t(`trajectory.policyDecisions.${decision}`)}
+        </StatusBadge>
+        {redacted && mappings > 0 ? (
+          <span className="text-foreground">
+            {t("trajectory.policyReplaced", { count: mappings })}
+          </span>
+        ) : null}
+        {hits.length > 0 ? (
+          <PrivacyHitList
+            hits={hits}
+            inline
+            onSelectKind={body ? revealKind : undefined}
+          />
+        ) : null}
+        {segments.includes("notice") ? (
+          <span className="text-muted-foreground">
+            {t("trajectory.policyNotice")}
+          </span>
+        ) : null}
+        {detail ? (
+          <code className="min-w-0 truncate font-mono text-micro text-muted-foreground">
+            {detail}
+          </code>
+        ) : null}
+      </div>
+      {hint ? (
+        <p
+          className="text-xs leading-6 text-muted-foreground"
+          data-testid="policy-hint"
+        >
+          {hint}
         </p>
       ) : null}
-      {hits.length > 0 ? (
-        <PrivacyHitList
-          hits={hits}
-          onSelectKind={captured ? revealKind : undefined}
+      {redacted ? (
+        <CapturePane
+          copyFeedback={copyFeedback}
+          copyKey={`policy:${record.id}`}
+          label={t("trajectory.redactedRequest")}
+          missingHint={missingHint}
+          scrollerRef={scrollerRef}
+          testId="inspector-policy-body"
+          views={[
+            {
+              value: "request",
+              label: t("trajectory.redactedRequest"),
+              body,
+            },
+          ]}
         />
       ) : null}
-      {captured ? (
-        <details
-          className="group rounded-md border bg-card"
-          data-testid="redacted-request-details"
-          ref={detailsRef}
-        >
-          <summary className="flex cursor-pointer list-none items-center gap-1.5 px-3 py-2 text-xs font-medium text-muted-foreground [&::-webkit-details-marker]:hidden">
-            <ChevronRight className="size-3.5 group-open:rotate-90" />
-            {t("trajectory.redactedRequest")}
-          </summary>
-          <div className="border-t">
-            <AuditPartSection
-              copyFeedback={copyFeedback}
-              part={captured}
-              protocol={protocol}
-              sectionKey={sectionKey}
-              title={t("trajectory.redactedRequest")}
-            />
-          </div>
-        </details>
-      ) : null}
-    </>
+    </div>
   );
+}
+
+function policyTone(
+  decision: PolicyDecision,
+  status: RequestStatus,
+): StatusTone {
+  switch (decision) {
+    case "redact":
+    case "warn":
+    case "inspecting":
+      return "pending";
+    case "block":
+      return "blocked";
+    case "allow":
+      return "neutral";
+    case "unfinished":
+      return status === "failed" ? "negative" : "neutral";
+  }
+}
+
+function policyHint(decision: PolicyDecision): string | null {
+  switch (decision) {
+    case "allow":
+      return i18n.t("trajectory.policyAllowHint");
+    case "warn":
+      return i18n.t("trajectory.policyWarnHint");
+    case "block":
+      return i18n.t("trajectory.policyBlockHint");
+    default:
+      return null;
+  }
 }
 
 function RestoreSummary({
@@ -676,15 +822,21 @@ function RestoreSummary({
   );
 }
 
+/** `inline` flows the kinds in one wrapping row, for hits without values. */
 function PrivacyHitList({
   hits,
+  inline = false,
   onSelectKind,
 }: {
   hits: PrivacyHitGroup[];
+  inline?: boolean;
   onSelectKind?: (kind: string) => void;
 }) {
   return (
-    <ul className="grid gap-2" data-testid="privacy-hits">
+    <ul
+      className={inline ? "flex flex-wrap gap-x-3 gap-y-1" : "grid gap-2"}
+      data-testid="privacy-hits"
+    >
       {hits.map((hit) => (
         <li key={hit.kind}>
           {onSelectKind ? (
@@ -728,11 +880,6 @@ function missingBodyHint(record: RequestRecord): string {
 
 function bodySectionTitle(chip: TrajectoryChip): string {
   switch (chip) {
-    case "TURN":
-    case "CLIENT":
-      return i18n.t("trajectory.clientBody");
-    case "POLICY":
-      return i18n.t("trajectory.redactedRequest");
     case "UPSTREAM":
     case "RETRY":
       return i18n.t("trajectory.upstreamResponse");

@@ -1802,6 +1802,7 @@
     "clientWireHint": "实际返回给客户端的响应正文（包含协议事件）。",
     "sameAsClient": "与客户端响应一致",
     "gatewayVerdict": "网关判定",
+    "clientView": "客户端内容",
     "upstreamView": "上游内容",
     "upstreamViews": {
       "response": "响应",
@@ -1840,7 +1841,6 @@
       "upstream": "上游"
     },
     "hit": "命中",
-    "miss": "未命中",
     "summary": "摘要",
     "entry": "入口",
     "protocol": "协议",
@@ -1852,6 +1852,19 @@
     "modelRedirectHint": "网关按重定向后的模型选择 API 提供商；客户端收到的响应仍显示原模型名。",
     "route": "路由",
     "redactedRequest": "脱敏后请求",
+    "policyDecisions": {
+      "redact": "已脱敏",
+      "warn": "已警告",
+      "block": "已阻止",
+      "allow": "未命中",
+      "inspecting": "检测中",
+      "unfinished": "未完成"
+    },
+    "policyReplaced": "替换 {{count}} 处",
+    "policyNotice": "已附加占位符说明",
+    "policyAllowHint": "策略没有改动请求内容，请求体见「客户端」。",
+    "policyWarnHint": "命中警告规则，策略没有改动请求内容，请求体见「客户端」。",
+    "policyBlockHint": "策略阻止了这次请求，没有发往上游。",
     "restoreCounts": "可见文本 {{visible}} · 工具参数 {{tools}}",
     "restoreChip": "restore · 已还原/映射",
     "clientBody": "客户端请求体",

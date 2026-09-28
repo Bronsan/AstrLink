@@ -412,6 +412,65 @@ describe("TrajectoryInspectorWindow", () => {
     expect(container.textContent).not.toContain("Upstream placeholder reply");
   });
 
+  it("shows the client body once, beside its request line and HTTP envelope", async () => {
+    const content = '{"model":"gpt-4.1","input":"ping"}';
+    bridgeMocks.getRequestAuditContent.mockResolvedValue({
+      ...auditContent,
+      http_meta: {
+        method: "POST",
+        url: "/v1/responses",
+        http_version: "HTTP/1.1",
+        request_headers: [
+          { name: "Content-Type", value: "application/json", redacted: false },
+        ],
+        response_status: 200,
+        response_headers: [],
+      },
+      request_body: {
+        content,
+        media_type: "application/json",
+        captured_bytes: content.length,
+        truncated: false,
+      },
+    });
+    hostState.current = {
+      selection: { record, row: laterRow },
+      pinned: false,
+    };
+    await render();
+
+    const section = container.querySelector<HTMLElement>(
+      '[data-testid="inspector-section"][data-chip="CLIENT"]',
+    );
+    expect(
+      section?.querySelector('[data-testid="inspector-client-endpoint"]')
+        ?.textContent,
+    ).toBe("POST /v1/responses");
+    expect(
+      section?.querySelector('[data-testid="inspector-client-size"]')
+        ?.textContent,
+    ).toBe(`${content.length} B`);
+    // One pane, no card inside a card repeating the title and size.
+    expect(section?.textContent?.split("客户端请求体")).toHaveLength(1);
+    expect(section?.textContent?.split(`${content.length} B`)).toHaveLength(2);
+    const body = () =>
+      section!.querySelector<HTMLElement>(
+        '[data-testid="inspector-client-body"]',
+      )!;
+    expect(body().getAttribute("data-view")).toBe("request");
+    expect(body().textContent).toContain('"input": "ping"');
+
+    const http = [
+      ...section!.querySelectorAll<HTMLButtonElement>(
+        '[aria-label="客户端内容"] button',
+      ),
+    ].find((button) => button.textContent === "HTTP")!;
+    await act(async () => http.click());
+    expect(body().getAttribute("data-view")).toBe("http");
+    expect(body().textContent).toContain("POST /v1/responses HTTP/1.1");
+    expect(body().textContent).toContain("Content-Type");
+  });
+
   it("never asks itself to open another inspector window", () => {
     expect(isTrajectoryInspectorWindow()).toBe(true);
     expect(detachedInspectorEnabled()).toBe(false);
