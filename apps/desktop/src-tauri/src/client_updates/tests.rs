@@ -30,6 +30,7 @@ impl Fixture {
         fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
         path
     }
+    #[cfg(unix)]
     fn environment(&self) -> Environment {
         Environment {
             home: self.0.clone(),
