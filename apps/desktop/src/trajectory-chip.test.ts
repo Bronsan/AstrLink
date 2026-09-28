@@ -46,13 +46,19 @@ describe("chipToneClass", () => {
 });
 
 describe("chipDotClass", () => {
-  // Beside a text label a coloured phase reads as a warning, so a healthy
-  // call shows one green mark on the delivered result and nothing else.
-  it("colours only the delivered result on a healthy call", () => {
-    expect(chipDotClass("RESULT", "ok")).toBe("bg-success");
-    for (const chip of chips.filter((item) => item !== "RESULT")) {
-      expect(chipDotClass(chip, "ok"), chip).toBe("bg-muted-foreground/40");
+  // A tab matches the row that opened it, so a healthy call keeps every
+  // phase's colour rather than greying all but the result.
+  it("keeps each phase's list colour on a healthy call", () => {
+    for (const chip of chips) {
+      expect(chipDotClass(chip, "ok"), chip).toBe(
+        chipToneClass(chip, "ok")
+          .split(" ")[0]
+          .replace(/-wash$/, ""),
+      );
     }
+    expect(chipDotClass("CLIENT", "ok")).toBe("bg-primary");
+    expect(chipDotClass("ROUTE", "ok")).toBe("bg-tide");
+    expect(chipDotClass("RESULT", "ok")).toBe("bg-success");
   });
 
   it("marks failures and waits only on the phases that carry them", () => {

@@ -4,9 +4,9 @@ import type {
 } from "./request-trajectory-model";
 
 /**
- * Phase colours are shared by the list rows and the timeline marks, and the
- * inspector tabs reuse the failure rules from their own window. Keeping the
- * scale here is what stops the two windows from drifting apart.
+ * Phase colours are shared by the list rows, the timeline marks and the
+ * inspector tabs, and the inspector runs in its own window. Keeping the scale
+ * here is what stops the two windows from drifting apart.
  */
 const chipClass: Record<TrajectoryChip, string> = {
   TURN: "bg-foreground text-background",
@@ -30,6 +30,19 @@ const subtleChipClass: Record<TrajectoryChip, string> = {
   RETRY: "bg-warning-wash text-warning-foreground",
   RESTORE: "bg-violet-wash text-violet-foreground",
   RESULT: "bg-success-wash text-success-foreground",
+};
+
+/** The solid scale's fills, for marks too small to carry a wash. */
+const chipDotFill: Record<TrajectoryChip, string> = {
+  TURN: "bg-foreground",
+  CLIENT: "bg-primary",
+  REDIRECT: "bg-accent-foreground",
+  POLICY: "bg-warning",
+  ROUTE: "bg-tide",
+  UPSTREAM: "bg-warning",
+  RETRY: "bg-warning",
+  RESTORE: "bg-violet",
+  RESULT: "bg-success",
 };
 
 const failedPhaseChips = new Set<TrajectoryChip>([
@@ -68,8 +81,9 @@ export function chipToneClass(
 }
 
 /**
- * A tab's status mark. Phase colours would read as warnings beside a text
- * label, so only failures, waits and the delivered result carry colour.
+ * A tab's status mark: the phase colour the list row and timeline use, so a
+ * tab matches the row that opened it. Failures and waits override it on the
+ * same phases that turn red or amber in the list.
  */
 export function chipDotClass(
   chip: TrajectoryChip,
@@ -84,5 +98,5 @@ export function chipDotClass(
       (chip === "RESULT" || chip === "CLIENT" || chip === "TURN"))
   )
     return "bg-warning";
-  return chip === "RESULT" ? "bg-success" : "bg-muted-foreground/40";
+  return chipDotFill[chip];
 }
