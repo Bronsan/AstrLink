@@ -2463,6 +2463,67 @@ describe("RequestRecords", () => {
     expect(requestAnimationFrame).toHaveBeenCalled();
   });
 
+  it("saves MiB inputs as bytes without changing body capture", async () => {
+    await renderRecords();
+    await act(async () => exactButton("审计设置").click());
+    const dialog = document.querySelector('[role="dialog"]')!;
+    const inputs = [
+      ...dialog.querySelectorAll<HTMLInputElement>('input[type="number"]'),
+    ];
+    const setValue = Object.getOwnPropertyDescriptor(
+      HTMLInputElement.prototype,
+      "value",
+    )!.set!;
+    await act(async () => {
+      for (const [index, value] of ["1.5", "64", "3650", "365"].entries()) {
+        setValue.call(inputs[index], value);
+        inputs[index].dispatchEvent(new Event("input", { bubbles: true }));
+      }
+      dialog.querySelector<HTMLButtonElement>('[role="switch"]')!.click();
+    });
+    await act(async () => exactButton("保存", dialog).click());
+    expect(bridgeMocks.updateAuditSettings).toHaveBeenCalledWith({
+      http_meta_enabled: false,
+      request_body_max_bytes: 1_572_864,
+      response_content_max_bytes: 67_108_864,
+      metadata_retention_days: 3650,
+      content_retention_days: 365,
+    });
+    expect(dialog.textContent).toContain("审计设置已保存");
+    expect(window.confirm).not.toHaveBeenCalled();
+  });
+
+  it("preserves byte-exact limits when only retention changes", async () => {
+    bridgeMocks.getAuditSettings.mockResolvedValue({
+      request_body_enabled: false,
+      response_content_enabled: false,
+      http_meta_enabled: true,
+      request_body_max_bytes: 1_048_577,
+      response_content_max_bytes: 4_194_305,
+      metadata_retention_days: 30,
+      content_retention_days: 7,
+    });
+    await renderRecords();
+    await act(async () => exactButton("审计设置").click());
+    const dialog = document.querySelector('[role="dialog"]')!;
+    const inputs = [
+      ...dialog.querySelectorAll<HTMLInputElement>('input[type="number"]'),
+    ];
+    expect(Number(inputs[0].value) * 1_048_576).toBe(1_048_577);
+    expect(Number(inputs[1].value) * 1_048_576).toBe(4_194_305);
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(
+        HTMLInputElement.prototype,
+        "value",
+      )!.set!.call(inputs[2], "60");
+      inputs[2].dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await act(async () => exactButton("保存", dialog).click());
+    expect(bridgeMocks.updateAuditSettings).toHaveBeenCalledWith({
+      metadata_retention_days: 60,
+    });
+  });
+
   it("does not treat the capture switch as off while audit settings are loading", async () => {
     const pending = deferred<AuditSettings>();
     bridgeMocks.getAuditSettings.mockReturnValueOnce(pending.promise);

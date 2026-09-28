@@ -4,8 +4,8 @@ import type {
 } from "./request-trajectory-model";
 
 /**
- * Phase colours are shared by the list rows, the timeline marks and the
- * inspector header, and the inspector now runs in its own window. Keeping the
+ * Phase colours are shared by the list rows and the timeline marks, and the
+ * inspector tabs reuse the failure rules from their own window. Keeping the
  * scale here is what stops the two windows from drifting apart.
  */
 const chipClass: Record<TrajectoryChip, string> = {
@@ -67,6 +67,22 @@ export function chipToneClass(
   return appearance === "subtle" ? subtleChipClass[chip] : chipClass[chip];
 }
 
-/** Badge shared by the inspector header and the list rows. */
-export const CHIP_BADGE_CLASS =
-  "inline-flex h-5 items-center justify-center rounded-sm px-1 text-micro font-semibold tracking-wide";
+/**
+ * A tab's status mark. Phase colours would read as warnings beside a text
+ * label, so only failures, waits and the delivered result carry colour.
+ */
+export function chipDotClass(
+  chip: TrajectoryChip,
+  tone: TrajectoryTone,
+): string {
+  if (tone === "failed" && failedPhaseChips.has(chip)) return "bg-destructive";
+  if (tone === "blocked" && (chip === "RESULT" || chip === "POLICY"))
+    return "bg-blocked";
+  if (
+    (tone === "pending" && failedPhaseChips.has(chip)) ||
+    (tone === "cancelled" &&
+      (chip === "RESULT" || chip === "CLIENT" || chip === "TURN"))
+  )
+    return "bg-warning";
+  return chip === "RESULT" ? "bg-success" : "bg-muted-foreground/40";
+}

@@ -1,11 +1,7 @@
 import { RecoveryDetails } from "./components/RecoveryDetails";
 import { RoutingDecisionDetails } from "./components/RoutingDecisionDetails";
 import { useEffect, useMemo, useRef, useState } from "react";
-import {
-  ChevronRight,
-  MapPin as Pin,
-  MapPinOff as PinOff,
-} from "@/components/icons";
+import { ChevronRight } from "@/components/icons";
 
 import { Button } from "@/components/ui/button";
 import { ConversationIndicator } from "@/components/ConversationIndicator";
@@ -40,7 +36,8 @@ import {
   type TrajectoryRow,
 } from "./request-trajectory-model";
 import { protocolEntryPath } from "./service-presets";
-import { CHIP_BADGE_CLASS, chipToneClass } from "./trajectory-chip";
+import { chipDotClass } from "./trajectory-chip";
+import { ResultInspector, UpstreamInspector } from "./TrajectoryResponse";
 
 /** The parts backed by a captured body, as opposed to record metadata. */
 type BodyPart = Exclude<InspectorPart, "route" | "redirect">;
@@ -50,9 +47,9 @@ type BodyPart = Exclude<InspectorPart, "route" | "redirect">;
  * mounted. The pane fills whatever it is put in: its own window on the
  * desktop, an overlay above the list in the browser preview.
  *
- * `onClose` is set only where the host has no window controls of its own, and
- * `onTogglePin` only where there is a window to pin. Clicking a chip here
- * only switches the tab.
+ * `onClose` is set only where the host has no window controls of its own. A
+ * detached window keeps its pin in the title bar and passes `pinned` in.
+ * Clicking a chip here only switches the tab.
  */
 export function TrajectoryInspector({
   row,
@@ -64,7 +61,6 @@ export function TrajectoryInspector({
   auditError,
   copyFeedback,
   pinned = false,
-  onTogglePin,
   onClose,
 }: {
   row: TrajectoryRow;
@@ -76,7 +72,6 @@ export function TrajectoryInspector({
   auditError: string | null;
   copyFeedback: CopyFeedback;
   pinned?: boolean;
-  onTogglePin?: (pinned: boolean) => void;
   onClose?: () => void;
 }) {
   const t = useT();
@@ -139,39 +134,21 @@ export function TrajectoryInspector({
             </span>
           ) : null}
         </div>
-        <div className="flex shrink-0 items-center gap-1.5">
-          {onTogglePin ? (
-            <Button
-              aria-label={pinned ? t("trajectory.unpin") : t("trajectory.pin")}
-              aria-pressed={pinned}
-              data-testid="trajectory-inspector-pin"
-              onClick={() => onTogglePin(!pinned)}
-              size="icon-sm"
-              title={
-                pinned ? t("trajectory.unpinHint") : t("trajectory.pinHint")
-              }
-              type="button"
-              variant={pinned ? "default" : "outline"}
-            >
-              {pinned ? <PinOff /> : <Pin />}
-            </Button>
-          ) : null}
-          {onClose ? (
-            <Button
-              className="h-7"
-              data-testid="trajectory-inspector-close"
-              onClick={onClose}
-              size="sm"
-              type="button"
-              variant="outline"
-            >
-              {t("common.close")}
-            </Button>
-          ) : null}
-        </div>
+        {onClose ? (
+          <Button
+            className="h-7"
+            data-testid="trajectory-inspector-close"
+            onClick={onClose}
+            size="sm"
+            type="button"
+            variant="outline"
+          >
+            {t("common.close")}
+          </Button>
+        ) : null}
       </header>
       <div
-        className="flex shrink-0 flex-wrap gap-1 border-b px-3 py-1.5"
+        className="flex shrink-0 gap-3.5 overflow-x-auto border-b px-3 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
         data-testid="inspector-tabs"
         role="tablist"
       >
@@ -182,9 +159,9 @@ export function TrajectoryInspector({
               variant="ghost"
               aria-selected={selected}
               className={cn(
-                CHIP_BADGE_CLASS,
-                chipToneClass(item.chip, item.tone),
-                selected && "ring-2 ring-ring ring-offset-1 ring-offset-card",
+                "relative h-9 shrink-0 gap-1.5 rounded-none px-0 text-xs font-medium text-foreground/60 hover:bg-transparent hover:text-foreground",
+                "after:absolute after:inset-x-0 after:bottom-0 after:h-0.5 after:rounded-full after:bg-foreground after:opacity-0 after:transition-opacity",
+                selected && "text-foreground after:opacity-100",
               )}
               data-chip={item.chip}
               data-testid="inspector-tab"
@@ -193,6 +170,13 @@ export function TrajectoryInspector({
               role="tab"
               type="button"
             >
+              <span
+                aria-hidden="true"
+                className={cn(
+                  "size-1.5 shrink-0 rounded-full",
+                  chipDotClass(item.chip, item.tone),
+                )}
+              />
               {t(`trajectory.chips.${item.chip}`)}
             </Button>
           );
@@ -214,9 +198,16 @@ export function TrajectoryInspector({
           {t("records.decrypting")}
         </p>
       ) : null}
-      <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-3">
+      <div
+        className={cn(
+          "min-h-0 flex-1 p-3",
+          focusRow && ownsScroller(focusRow.chip) && "flex flex-col",
+          "overflow-y-auto overscroll-contain",
+        )}
+      >
         {focusRow ? (
           <InspectorSection
+            key={`${record.id}:${focusRow.chip}`}
             auditContent={auditContent}
             auditLoading={auditLoading}
             copyFeedback={copyFeedback}
@@ -235,6 +226,13 @@ export function TrajectoryInspector({
 
 function tabChip(chip: TrajectoryChip): TrajectoryChip {
   return chip === "TURN" ? "CLIENT" : chip;
+}
+
+// Response panes carry their own outcome line and a bounded scroller, so the
+// generic section header would only repeat them. The body still scrolls once
+// a short window can no longer fit the pane's minimum height.
+function ownsScroller(chip: TrajectoryChip): boolean {
+  return chip === "RESULT" || chip === "UPSTREAM" || chip === "RETRY";
 }
 
 // One tab per phase. A repeated phase keeps its first position and shows its
@@ -282,11 +280,11 @@ function InspectorSection({
     part === "route" || part === "redirect" || omitCapturedBody
       ? null
       : auditPart(auditContent, part);
-  const httpStatus = inspectorHttpStatus(row.chip, record, auditContent);
   const disconnectNote = clientDisconnectNote(record);
+  const pane = ownsScroller(row.chip);
   return (
     <section
-      className="space-y-2"
+      className={pane ? "flex flex-1 flex-col gap-2" : "space-y-2"}
       data-chip={row.chip}
       data-testid="inspector-section"
     >
@@ -299,24 +297,16 @@ function InspectorSection({
           {disconnectNote}
         </p>
       ) : null}
-      <header className="flex min-w-0 items-center gap-2">
-        <strong className="truncate text-xs font-medium">{title}</strong>
-        {httpStatus !== null ? (
-          <span
-            className={cn(
-              "shrink-0 font-mono text-micro",
-              httpStatus >= 400 ? "text-destructive" : "text-muted-foreground",
-            )}
-          >
-            HTTP {httpStatus}
-          </span>
-        ) : null}
-        {captured ? (
-          <span className="shrink-0 text-micro text-muted-foreground">
-            {formatCapturedBytes(captured.captured_bytes)}
-          </span>
-        ) : null}
-      </header>
+      {pane ? null : (
+        <header className="flex min-w-0 items-center gap-2">
+          <strong className="truncate text-xs font-medium">{title}</strong>
+          {captured ? (
+            <span className="shrink-0 text-micro text-muted-foreground">
+              {formatCapturedBytes(captured.captured_bytes)}
+            </span>
+          ) : null}
+        </header>
+      )}
       {part === "route" ? (
         <>
           <RouteInspector
@@ -512,7 +502,7 @@ function BodyInspector({
       ? extractPrivacyHits(captured.content)
       : [];
   const sectionKey = `trajectory-${row.chip}-${part}`;
-  const httpStatus = inspectorHttpStatus(row.chip, record, auditContent);
+  const missingHint = auditLoading ? null : missingBodyHint(record);
 
   if (row.chip === "POLICY") {
     return (
@@ -527,14 +517,30 @@ function BodyInspector({
     );
   }
 
+  if (row.chip === "RESULT") {
+    return (
+      <ResultInspector
+        missingHint={missingHint}
+        part={captured}
+        record={record}
+      />
+    );
+  }
+
+  if (row.chip === "UPSTREAM" || row.chip === "RETRY") {
+    return (
+      <UpstreamInspector
+        auditContent={auditContent}
+        copyFeedback={copyFeedback}
+        missingHint={missingHint}
+        record={record}
+        row={row}
+      />
+    );
+  }
+
   return (
     <>
-      {httpStatus !== null &&
-      (row.chip === "UPSTREAM" ||
-        row.chip === "RETRY" ||
-        row.chip === "RESULT") ? (
-        <HttpStatusLine failed={httpStatus >= 400} status={httpStatus} />
-      ) : null}
       {row.chip === "RESTORE" ? (
         <RestoreSummary hits={unrestoredHits} record={record} />
       ) : null}
@@ -711,42 +717,6 @@ function PrivacyHitList({
       ))}
     </ul>
   );
-}
-
-function HttpStatusLine({
-  status,
-  failed,
-}: {
-  status: number;
-  failed: boolean;
-}) {
-  return (
-    <p
-      className={cn(
-        "font-mono text-xs",
-        failed ? "text-destructive" : "text-muted-foreground",
-      )}
-      data-testid="inspector-http"
-    >
-      HTTP {status}
-    </p>
-  );
-}
-
-function inspectorHttpStatus(
-  chip: TrajectoryChip,
-  record: RequestRecord,
-  auditContent: AuditContent | null,
-): number | null {
-  if (chip === "UPSTREAM" || chip === "RETRY") {
-    return (
-      auditContent?.upstream_http_meta?.response_status ?? record.http_status
-    );
-  }
-  if (chip === "RESULT") {
-    return record.http_status;
-  }
-  return null;
 }
 
 function missingBodyHint(record: RequestRecord): string {
