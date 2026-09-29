@@ -662,12 +662,13 @@ fn legacy_mcp_config_path(home: &Path, id: AgentToolId) -> Option<PathBuf> {
 
 fn tool_status(context: &InstallContext, id: AgentToolId) -> AgentToolStatus {
     let home = context.home.as_path();
+    let detected = tool_detected(home, id);
     AgentToolStatus {
         id,
-        detected: tool_detected(home, id),
+        detected,
         skills: AgentSkillId::all()
             .into_iter()
-            .map(|skill| skill_status(home, skill, id))
+            .map(|skill| skill_status(home, skill, id, detected))
             .collect(),
         cli_access: tool_cli_access_kind(id),
         cli_access_installed: cli_access_present(home, id),
@@ -676,7 +677,12 @@ fn tool_status(context: &InstallContext, id: AgentToolId) -> AgentToolStatus {
     }
 }
 
-fn skill_status(home: &Path, skill: AgentSkillId, id: AgentToolId) -> AgentSkillStatus {
+fn skill_status(
+    home: &Path,
+    skill: AgentSkillId,
+    id: AgentToolId,
+    detected: bool,
+) -> AgentSkillStatus {
     let bundle = skill.bundle();
     let dir = tool_skill_dir(home, bundle, id);
     let mut preview_paths = vec![display_path(&dir).unwrap_or_default()];
@@ -691,9 +697,11 @@ fn skill_status(home: &Path, skill: AgentSkillId, id: AgentToolId) -> AgentSkill
         }
     }
     deduplicate_paths(&mut preview_paths);
+    // Codex and Pi share one directory, so a copy there only counts for a
+    // tool that is actually present.
     AgentSkillStatus {
         id: skill,
-        installed: skill_present(&dir, &canonical_skill_dir(home, bundle)),
+        installed: detected && skill_present(&dir, &canonical_skill_dir(home, bundle)),
         preview_paths,
     }
 }
@@ -2892,6 +2900,38 @@ mod tests {
             assert!(!canonical_skill_dir(&home, skill.bundle()).exists());
         }
         assert!(pi(&context).skills.iter().all(|skill| !skill.installed));
+        let _ = fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn a_shared_skill_counts_only_for_a_detected_tool() {
+        let context = installed_codex_context("agent-shared-undetected");
+        let home = context.home.clone();
+        let tool = |id: AgentToolId| {
+            status(&context)
+                .tools
+                .into_iter()
+                .find(|tool| tool.id == id)
+                .unwrap()
+        };
+        // Codex put the skill in ~/.agents/skills, which Pi also reads, but
+        // Pi is not installed.
+        assert!(canonical_skill_dir(&home, DEBUG).join("SKILL.md").is_file());
+        assert!(
+            tool(AgentToolId::Codex)
+                .skill(AgentSkillId::AstrlinkDebug)
+                .installed
+        );
+        let pi = tool(AgentToolId::Pi);
+        assert!(!pi.detected);
+        assert!(pi.skills.iter().all(|skill| !skill.installed));
+
+        fs::create_dir_all(home.join(".pi")).unwrap();
+        assert!(
+            tool(AgentToolId::Pi)
+                .skill(AgentSkillId::AstrlinkDebug)
+                .installed
+        );
         let _ = fs::remove_dir_all(&home);
     }
 
