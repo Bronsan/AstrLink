@@ -520,7 +520,7 @@ pub struct CoreView {
     pub last_error: Option<String>,
     pub recovery_attempt: u8,
     pub recovery_scheduled: bool,
-    /// An agent is reading records through the MCP bridge right now.
+    /// An agent is reading records through the agent CLI right now.
     pub observer_active: bool,
     /// How far that agent's latest read reached, while it is active.
     pub observer_read_level: Option<ObserverReadLevel>,
@@ -5386,7 +5386,7 @@ mod tests {
             br#"{"raw_password_required":true,"raw_access_events":[
                 {"at":"2026-09-28T09:00:00Z","kind":"raw_password_set","client_name":""},
                 {"at":"2026-09-28T09:30:00Z","kind":"raw_key_reset","client_name":""},
-                {"at":"2026-09-28T09:40:00Z","kind":"requested","client_name":"astrlink-mcp"},
+                {"at":"2026-09-28T09:40:00Z","kind":"requested","client_name":"astrlink-cli"},
                 {"at":"not a time","kind":"raw_password_changed","client_name":""}]}"#,
             now,
         )

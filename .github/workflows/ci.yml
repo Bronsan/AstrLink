@@ -46,9 +46,9 @@ jobs:
       - name: Build Core
         if: env.ASTRLINK_CI_BUILD_ARTIFACTS == 'true'
         run: go build -trimpath -o astrlink-core${{ runner.os == 'Windows' && '.exe' || '' }} ./cmd/astrlink-core
-      - name: Build MCP sidecar
+      - name: Build agent CLI sidecar
         if: env.ASTRLINK_CI_BUILD_ARTIFACTS == 'true'
-        run: go build -trimpath -o astrlink-mcp${{ runner.os == 'Windows' && '.exe' || '' }} ./cmd/astrlink-mcp
+        run: go build -trimpath -o astrlink-cli${{ runner.os == 'Windows' && '.exe' || '' }} ./cmd/astrlink-cli
       - name: Archive Core executable
         if: env.ASTRLINK_CI_BUILD_ARTIFACTS == 'true' && runner.os != 'Windows'
         run: tar -czf astrlink-core-${{ runner.arch }}.tar.gz astrlink-core -C .. LICENSE LICENSING.md LICENSES

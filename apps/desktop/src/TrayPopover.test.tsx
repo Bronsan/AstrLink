@@ -311,13 +311,13 @@ describe("TrayPopoverPanel", () => {
     expect(container.textContent).toContain("剩余 59%");
   });
 
-  it("flags an agent reading records through MCP", async () => {
+  it("flags an agent reading records through the CLI", async () => {
     await render({
       ...readyTrayState,
       view: { ...readyTrayState.view, observer_active: true },
     });
     const badge = document.querySelector('[data-slot="tray-observed"]');
-    expect(badge?.textContent).toBe("Agent 正在通过 MCP 读取");
+    expect(badge?.textContent).toBe("Agent 正在通过 CLI 读取");
     expect(document.querySelector('[data-slot="tray-raw-pending"]')).toBeNull();
     // Cost is shown without an unpriced caveat.
     expect(container.textContent).toContain("$0.83");

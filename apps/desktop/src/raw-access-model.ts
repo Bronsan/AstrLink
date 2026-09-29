@@ -9,7 +9,7 @@ export interface RawAccessGrant {
   decision: RawAccessDecision | null;
   /** Why the agent asked, in its own words. Untrusted display text. */
   reason: string;
-  /** The MCP client's self-reported name; it authorizes nothing. */
+  /** The agent's self-reported name (the CLI's `--agent`); it authorizes nothing. */
   client_name: string;
   created_at: string;
   expires_at: string;

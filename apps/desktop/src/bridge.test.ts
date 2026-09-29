@@ -1280,34 +1280,31 @@ describe("desktop bridge contract", () => {
   it("parses agent debug install status and receipt", async () => {
     const status = {
       canonical_skill: false,
-      mcp_binary: false,
-      mcp_command: "/tmp/astrlink-mcp",
+      cli_binary: false,
       tools: [
         {
           id: "cursor",
           detected: true,
           skill_installed: false,
-          mcp_installed: false,
+          cli_access: "prompt",
+          cli_access_installed: false,
           guard: "skill_only",
           guard_installed: false,
-          preview_paths: [
-            "/tmp/.cursor/skills/astrlink-debug",
-            "/tmp/.cursor/mcp.json",
-          ],
+          preview_paths: ["/tmp/.cursor/skills/astrlink-debug"],
         },
       ],
-      shared_paths: ["/tmp/astrlink-mcp"],
+      shared_paths: ["/tmp/.astrlink/bin/astrlink"],
     };
     invokeMock.mockResolvedValueOnce(status);
     await expect(getAgentDebugStatus()).resolves.toEqual(status);
     expect(invokeMock).toHaveBeenLastCalledWith("agent_debug_status");
 
     const receipt = {
-      version: 1,
+      version: 2,
       bundle: "astrlink-debug",
-      bundle_version: "0.1.0",
+      bundle_version: "0.3.0",
       installed_at_unix: 1,
-      mcp_binary: "/tmp/astrlink-mcp",
+      cli_binary: "/tmp/.astrlink/bin/astrlink",
       files: ["/tmp/a"],
     };
     invokeMock.mockResolvedValueOnce(receipt);

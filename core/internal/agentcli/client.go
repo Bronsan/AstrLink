@@ -1,4 +1,4 @@
-package agentmcp
+package agentcli
 
 import (
 	"bytes"
@@ -17,11 +17,11 @@ import (
 
 const requestTimeout = 15 * time.Second
 
-// userAgent must keep the `astrlink-mcp` prefix the Control API classifies
+// userAgent must keep the `astrlink-cli` prefix the Control API classifies
 // agent-side observers by.
-const userAgent = "astrlink-mcp/1"
+const userAgent = "astrlink-cli/1"
 
-// DialOptions selects how the MCP process reaches the local Control API.
+// DialOptions selects how the CLI reaches the local Control API.
 // Production Unix uses Socket. Tests may use ControlURL plus ControlToken.
 type DialOptions struct {
 	Socket       string
@@ -35,7 +35,11 @@ type Client struct {
 	baseURL    string
 	token      string
 	socketAuth bool
-	raw        rawGrantTokens
+	// Agent is the agent's self-reported name, shown to the user beside a
+	// raw access request. It authorizes nothing.
+	Agent string
+	// Progress receives status lines while a command waits on the user.
+	Progress io.Writer
 }
 
 func Dial(options DialOptions) (*Client, error) {
@@ -143,8 +147,8 @@ func (client *Client) do(
 	if body != nil {
 		request.Header.Set("Content-Type", "application/json")
 	}
-	// Names the MCP bridge on the loopback fallback too, so the desktop can
-	// show "an agent is reading" regardless of transport.
+	// Names the CLI on the loopback fallback too, so the desktop can show
+	// "an agent is reading" regardless of transport.
 	request.Header.Set("User-Agent", userAgent)
 	if !client.socketAuth && client.token != "" {
 		request.Header.Set("Authorization", "Bearer "+client.token)

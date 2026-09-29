@@ -108,9 +108,9 @@ const classifierWorkerOutput = path.join(
   binariesDirectory,
   `astrlink-classifier-worker-${target}${executableSuffix}`,
 );
-const mcpOutput = path.join(
+const cliOutput = path.join(
   binariesDirectory,
-  `astrlink-mcp-${target}${executableSuffix}`,
+  `astrlink-cli-${target}${executableSuffix}`,
 );
 
 mkdirSync(binariesDirectory, { recursive: true });
@@ -418,16 +418,16 @@ console.log(`Staged astrlink-core for Tauri: ${output}`);
 
 execFileSync(
   "go",
-  ["build", "-trimpath", "-o", mcpOutput, "./cmd/astrlink-mcp"],
+  ["build", "-trimpath", "-o", cliOutput, "./cmd/astrlink-cli"],
   {
     cwd: coreDirectory,
     stdio: "inherit",
   },
 );
 if (!target.includes("windows")) {
-  chmodSync(mcpOutput, 0o755);
+  chmodSync(cliOutput, 0o755);
 }
-console.log(`Staged astrlink-mcp for Tauri: ${mcpOutput}`);
+console.log(`Staged astrlink-cli for Tauri: ${cliOutput}`);
 
 const macOSRuntime = await stageMacOSRuntime();
 const linuxRuntime = await stageLinuxRuntime();

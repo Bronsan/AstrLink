@@ -476,14 +476,14 @@ describe("App workspace navigation", () => {
     });
     bridgeMocks.getAgentDebugStatus.mockResolvedValue({
       canonical_skill: false,
-      mcp_binary: false,
-      mcp_command: null,
+      cli_binary: false,
       tools: [
         {
           id: "cursor",
           detected: true,
           skill_installed: false,
-          mcp_installed: false,
+          cli_access: "prompt",
+          cli_access_installed: false,
           guard: "skill_only",
           guard_installed: false,
           preview_paths: [],
@@ -492,7 +492,8 @@ describe("App workspace navigation", () => {
           id: "claude",
           detected: false,
           skill_installed: false,
-          mcp_installed: false,
+          cli_access: "allow_rules",
+          cli_access_installed: false,
           guard: "deny_rules",
           guard_installed: false,
           preview_paths: [],
@@ -501,7 +502,8 @@ describe("App workspace navigation", () => {
           id: "codex",
           detected: true,
           skill_installed: true,
-          mcp_installed: true,
+          cli_access: "exec_policy",
+          cli_access_installed: true,
           guard: "instructions",
           guard_installed: true,
           preview_paths: [],

@@ -128,7 +128,7 @@ pub enum TrayIconState {
     Ready,
     /// Anything but a running gateway: stopped, starting, stopping, failed.
     Idle,
-    /// Ready, and an agent is reading records through the MCP bridge.
+    /// Ready, and an agent is reading records through the agent CLI.
     Watched,
 }
 
@@ -1869,7 +1869,7 @@ mod tests {
         assert_eq!(model.icon, TrayIconState::Watched);
         assert_eq!(
             model.tooltip,
-            "AstrLink · 网关运行中 · 127.0.0.1:8317 · Agent 正在通过 MCP 读取"
+            "AstrLink · 网关运行中 · 127.0.0.1:8317 · Agent 正在通过 CLI 读取"
         );
         watched.observer_read_level = Some(ObserverReadLevel::Raw);
         watched.pending_raw_access = 2;

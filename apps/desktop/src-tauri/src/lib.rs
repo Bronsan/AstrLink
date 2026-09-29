@@ -224,7 +224,8 @@ fn get_preferences(
 fn agent_install_context(app: &tauri::AppHandle) -> Result<agent_install::InstallContext, String> {
     Ok(agent_install::InstallContext {
         home: control_session::user_home()?,
-        mcp_source: agent_install::resolve_sidecar_binary("astrlink-mcp")?,
+        // Install reports a missing sidecar itself; status and uninstall do not need it.
+        cli_source: agent_install::resolve_sidecar_binary("astrlink-cli").unwrap_or_default(),
         data_directory: app.path().app_data_dir().ok(),
         raw_key_pins: raw_key_pin_file(app),
     })
@@ -239,14 +240,7 @@ fn raw_key_pin_file(app: &tauri::AppHandle) -> Option<std::path::PathBuf> {
 
 #[tauri::command]
 fn agent_debug_status(app: tauri::AppHandle) -> Result<agent_install::AgentInstallStatus, String> {
-    let home = control_session::user_home()?;
-    let mcp_source = agent_install::resolve_sidecar_binary("astrlink-mcp").unwrap_or_default();
-    Ok(agent_install::status(&agent_install::InstallContext {
-        home,
-        mcp_source,
-        data_directory: app.path().app_data_dir().ok(),
-        raw_key_pins: raw_key_pin_file(&app),
-    }))
+    Ok(agent_install::status(&agent_install_context(&app)?))
 }
 
 #[tauri::command]
@@ -1983,17 +1977,17 @@ pub fn run() {
                 ) {
                     eprintln!("failed to sync AstrLink agent host guards: {error}");
                 }
-                if let Ok(mcp_source) = agent_install::resolve_sidecar_binary("astrlink-mcp") {
-                    if let Err(error) =
-                        agent_install::sync_installed_mcp(&agent_install::InstallContext {
-                            home,
-                            mcp_source,
-                            data_directory: Some(data_directory.clone()),
-                            raw_key_pins: raw_key_pin_file.clone(),
-                        })
-                    {
-                        eprintln!("failed to sync AstrLink MCP binary: {error}");
-                    }
+                // Runs without a sidecar too, so the MCP migration still happens.
+                if let Err(error) =
+                    agent_install::sync_installed_cli(&agent_install::InstallContext {
+                        home,
+                        cli_source: agent_install::resolve_sidecar_binary("astrlink-cli")
+                            .unwrap_or_default(),
+                        data_directory: Some(data_directory.clone()),
+                        raw_key_pins: raw_key_pin_file.clone(),
+                    })
+                {
+                    eprintln!("failed to sync AstrLink agent CLI: {error}");
                 }
             }
 

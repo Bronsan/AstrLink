@@ -107,7 +107,7 @@ fn control_session_file(
 
 /// Removes the session file unless another desktop process published it.
 /// During a development restart the old instance shuts down after the new
-/// one has already announced itself; deleting here would leave MCP clients
+/// one has already announced itself; deleting here would leave the agent CLI
 /// without a locator until the next full launch.
 pub fn clear_control_session(home: &Path) -> Result<(), String> {
     clear_control_session_for(home, std::process::id())

@@ -7,11 +7,19 @@ export type AgentToolId = "cursor" | "claude" | "codex" | "grok";
  */
 export type AgentGuardKind = "deny_rules" | "instructions" | "skill_only";
 
+/**
+ * How the host lets agents run the AstrLink CLI without asking each time:
+ * allow rules (Claude Code), a rules file that also lifts the sandbox (Codex),
+ * or a prompt on first use (hosts without a verified mechanism).
+ */
+export type AgentCliAccessKind = "allow_rules" | "exec_policy" | "prompt";
+
 export interface AgentToolStatus {
   id: AgentToolId;
   detected: boolean;
   skill_installed: boolean;
-  mcp_installed: boolean;
+  cli_access: AgentCliAccessKind;
+  cli_access_installed: boolean;
   guard: AgentGuardKind;
   guard_installed: boolean;
   preview_paths: string[];
@@ -19,8 +27,7 @@ export interface AgentToolStatus {
 
 export interface AgentInstallStatus {
   canonical_skill: boolean;
-  mcp_binary: boolean;
-  mcp_command: string | null;
+  cli_binary: boolean;
   tools: AgentToolStatus[];
   shared_paths: string[];
 }
@@ -30,7 +37,7 @@ export interface AgentInstallReceipt {
   bundle: string;
   bundle_version: string;
   installed_at_unix: number;
-  mcp_binary: string;
+  cli_binary: string;
   files: string[];
 }
 
@@ -39,6 +46,11 @@ const GUARD_KINDS: readonly AgentGuardKind[] = [
   "deny_rules",
   "instructions",
   "skill_only",
+];
+const CLI_ACCESS_KINDS: readonly AgentCliAccessKind[] = [
+  "allow_rules",
+  "exec_policy",
+  "prompt",
 ];
 
 function invalid(path: string, detail: string): never {
@@ -73,11 +85,6 @@ function boundedString(value: unknown, path: string, max = 4096): string {
   return value;
 }
 
-function nullableString(value: unknown, path: string): string | null {
-  if (value === null) return null;
-  return boundedString(value, path);
-}
-
 function booleanAt(value: unknown, path: string): boolean {
   if (typeof value !== "boolean") invalid(path, "expected a boolean");
   return value;
@@ -91,7 +98,8 @@ function parseTool(value: unknown, path: string): AgentToolStatus {
       "id",
       "detected",
       "skill_installed",
-      "mcp_installed",
+      "cli_access",
+      "cli_access_installed",
       "guard",
       "guard_installed",
       "preview_paths",
@@ -101,6 +109,9 @@ function parseTool(value: unknown, path: string): AgentToolStatus {
   if (!TOOL_IDS.includes(root.id as AgentToolId)) {
     invalid(`${path}.id`, "unknown tool");
   }
+  if (!CLI_ACCESS_KINDS.includes(root.cli_access as AgentCliAccessKind)) {
+    invalid(`${path}.cli_access`, "unknown CLI access kind");
+  }
   if (!GUARD_KINDS.includes(root.guard as AgentGuardKind)) {
     invalid(`${path}.guard`, "unknown guard kind");
   }
@@ -108,7 +119,11 @@ function parseTool(value: unknown, path: string): AgentToolStatus {
     id: root.id as AgentToolId,
     detected: booleanAt(root.detected, `${path}.detected`),
     skill_installed: booleanAt(root.skill_installed, `${path}.skill_installed`),
-    mcp_installed: booleanAt(root.mcp_installed, `${path}.mcp_installed`),
+    cli_access: root.cli_access as AgentCliAccessKind,
+    cli_access_installed: booleanAt(
+      root.cli_access_installed,
+      `${path}.cli_access_installed`,
+    ),
     guard: root.guard as AgentGuardKind,
     guard_installed: booleanAt(root.guard_installed, `${path}.guard_installed`),
     preview_paths: parsePaths(root.preview_paths, `${path}.preview_paths`),
@@ -126,14 +141,13 @@ export function parseAgentInstallStatus(value: unknown): AgentInstallStatus {
   const root = objectAt(value, "$");
   exactKeys(
     root,
-    ["canonical_skill", "mcp_binary", "mcp_command", "tools", "shared_paths"],
+    ["canonical_skill", "cli_binary", "tools", "shared_paths"],
     "$",
   );
   if (!Array.isArray(root.tools)) invalid("$.tools", "expected an array");
   return {
     canonical_skill: booleanAt(root.canonical_skill, "$.canonical_skill"),
-    mcp_binary: booleanAt(root.mcp_binary, "$.mcp_binary"),
-    mcp_command: nullableString(root.mcp_command, "$.mcp_command"),
+    cli_binary: booleanAt(root.cli_binary, "$.cli_binary"),
     tools: root.tools.map((tool, index) =>
       parseTool(tool, `$.tools[${index}]`),
     ),
@@ -150,7 +164,7 @@ export function parseAgentInstallReceipt(value: unknown): AgentInstallReceipt {
       "bundle",
       "bundle_version",
       "installed_at_unix",
-      "mcp_binary",
+      "cli_binary",
       "files",
     ],
     "$",
@@ -170,7 +184,7 @@ export function parseAgentInstallReceipt(value: unknown): AgentInstallReceipt {
     bundle: boundedString(root.bundle, "$.bundle"),
     bundle_version: boundedString(root.bundle_version, "$.bundle_version"),
     installed_at_unix: root.installed_at_unix,
-    mcp_binary: boundedString(root.mcp_binary, "$.mcp_binary", 8192),
+    cli_binary: boundedString(root.cli_binary, "$.cli_binary", 8192),
     files: root.files.map((path, index) =>
       boundedString(path, `$.files[${index}]`, 8192),
     ),

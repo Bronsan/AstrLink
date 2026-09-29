@@ -145,7 +145,7 @@ fn stage_dev_bundle(executable: &Path, frameworks: &Path) -> std::io::Result<std
         "astrlink-core",
         "astrlink-privacy-worker",
         "astrlink-classifier-worker",
-        "astrlink-mcp",
+        "astrlink-cli",
     ] {
         replace_symlink(&directory.join(name), &macos.join(name))?;
     }

@@ -1,4 +1,4 @@
-package agentmcp
+package agentcli
 
 import (
 	"context"
@@ -12,7 +12,7 @@ import (
 	"github.com/QuantumNous/astrlink/core/internal/controlapi"
 )
 
-// Values that must never reach an agent through the new tools.
+// Values that must never reach an agent through the CLI.
 var projectionSecrets = []string{
 	"credential_ref", "keychain://", "sk-path-key", "proxy-user", "proxy.internal",
 	"acct_provider_1", "provider_account_id", "corp.example.net", "10.0.0.0/8",
@@ -83,7 +83,7 @@ func TestListServicesProjectsWithoutCredentials(t *testing.T) {
 		writeJSON(writer, map[string]any{"items": services[1:], "next_cursor": nil})
 	})
 
-	raw, err := callTool(context.Background(), client, "list_services", nil)
+	raw, err := callCommand(context.Background(), client, "services", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -155,7 +155,7 @@ func TestGetServiceStatusSummarizesRecentRequests(t *testing.T) {
 		t.Error("service status must not call the usage endpoint")
 	})
 
-	raw, err := callTool(context.Background(), client, "get_service_status", map[string]any{"id": "svc_sub"})
+	raw, err := callCommand(context.Background(), client, "service", map[string]any{"id": "svc_sub"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -207,7 +207,7 @@ func TestGetServiceStatusToleratesUnavailableRiskEvents(t *testing.T) {
 	mux.HandleFunc(controlapi.RequestsPath, func(writer http.ResponseWriter, _ *http.Request) {
 		writeJSON(writer, map[string]any{"items": []any{}})
 	})
-	raw, err := callTool(context.Background(), client, "get_service_status", map[string]any{"id": "svc_sub"})
+	raw, err := callCommand(context.Background(), client, "service", map[string]any{"id": "svc_sub"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -252,11 +252,11 @@ func TestGetPrivacyPolicyReportsCountsNotValues(t *testing.T) {
 	if err := json.Unmarshal(encoded, &full); err != nil {
 		t.Fatal(err)
 	}
-	// Core answers the observer token agent tools hold with the summary.
+	// Core answers the observer token the CLI holds with the summary.
 	mux.HandleFunc(controlapi.PoliciesPath, func(writer http.ResponseWriter, _ *http.Request) {
 		writeJSON(writer, map[string]any{"items": []any{controlapi.SummarizePolicy(full)}, "next_cursor": nil})
 	})
-	raw, err := callTool(context.Background(), client, "get_privacy_policy", nil)
+	raw, err := callCommand(context.Background(), client, "privacy", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -298,7 +298,7 @@ func TestGetPrivacyPolicyRefusesAFullPolicy(t *testing.T) {
 	mux.HandleFunc(controlapi.PoliciesPath, func(writer http.ResponseWriter, _ *http.Request) {
 		writeJSON(writer, map[string]any{"items": []any{projectionPolicy()}, "next_cursor": nil})
 	})
-	raw, err := callTool(context.Background(), client, "get_privacy_policy", nil)
+	raw, err := callCommand(context.Background(), client, "privacy", nil)
 	if err == nil {
 		t.Fatalf("a full policy passed through: %s", raw)
 	}
@@ -314,12 +314,12 @@ func TestSearchRequestsForwardsQuery(t *testing.T) {
 		}
 		writeJSON(writer, map[string]any{"items": []any{}, "next_cursor": nil})
 	})
-	if _, err := callTool(context.Background(), client, "search_requests", map[string]any{"q": "50% off_sale", "status": "failed"}); err != nil {
+	if _, err := callCommand(context.Background(), client, "search", map[string]any{"q": "50% off_sale", "status": "failed"}); err != nil {
 		t.Fatal(err)
 	}
 	for _, arguments := range []map[string]any{{}, {"q": "  "}, {"q": 3}} {
-		if _, err := callTool(context.Background(), client, "search_requests", arguments); err == nil {
-			t.Fatalf("search_requests(%v) accepted", arguments)
+		if _, err := callCommand(context.Background(), client, "search", arguments); err == nil {
+			t.Fatalf("search(%v) accepted", arguments)
 		}
 	}
 }
@@ -343,7 +343,7 @@ func TestExplainRequestSummarizesAttempts(t *testing.T) {
 	mux.HandleFunc(controlapi.RequestsPath+"/req_1/audit", func(http.ResponseWriter, *http.Request) {
 		t.Error("explain_request must not fetch audit bodies")
 	})
-	raw, err := callTool(context.Background(), client, "explain_request", map[string]any{"id": "req_1"})
+	raw, err := callCommand(context.Background(), client, "explain", map[string]any{"id": "req_1"})
 	if err != nil {
 		t.Fatal(err)
 	}

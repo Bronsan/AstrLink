@@ -1,4 +1,4 @@
-package agentmcp
+package agentcli
 
 import (
 	"encoding/json"

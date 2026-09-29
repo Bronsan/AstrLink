@@ -23,59 +23,60 @@ import { AgentDebugSettings } from "./AgentDebugSettings";
 
 const status = {
   canonical_skill: false,
-  mcp_binary: false,
-  mcp_command: "/tmp/astrlink-mcp",
+  cli_binary: false,
   tools: [
     {
       id: "cursor" as const,
       detected: true,
       skill_installed: false,
-      mcp_installed: false,
+      cli_access: "prompt" as const,
+      cli_access_installed: false,
       guard: "skill_only" as const,
       guard_installed: false,
-      preview_paths: [
-        "/tmp/.cursor/skills/astrlink-debug",
-        "/tmp/.cursor/mcp.json",
-      ],
+      preview_paths: ["/tmp/.cursor/skills/astrlink-debug"],
     },
     {
       id: "claude" as const,
       detected: false,
       skill_installed: false,
-      mcp_installed: false,
+      cli_access: "allow_rules" as const,
+      cli_access_installed: false,
       guard: "deny_rules" as const,
       guard_installed: false,
       preview_paths: [
         "/tmp/.claude/skills/astrlink-debug",
-        "/tmp/.claude.json",
+        "/tmp/.claude/settings.json",
       ],
     },
     {
       id: "codex" as const,
       detected: true,
       skill_installed: true,
-      mcp_installed: true,
+      cli_access: "exec_policy" as const,
+      cli_access_installed: true,
       guard: "instructions" as const,
       guard_installed: true,
       preview_paths: [
         "/tmp/.agents/skills/astrlink-debug",
-        "/tmp/.codex/config.toml",
+        "/tmp/.codex/rules/astrlink.rules",
+        "/tmp/.codex/AGENTS.md",
       ],
     },
     {
       id: "grok" as const,
       detected: true,
       skill_installed: false,
-      mcp_installed: false,
+      cli_access: "prompt" as const,
+      cli_access_installed: false,
       guard: "skill_only" as const,
       guard_installed: false,
-      preview_paths: [
-        "/tmp/.grok/skills/astrlink-debug",
-        "/tmp/.grok/config.toml",
-      ],
+      preview_paths: ["/tmp/.grok/skills/astrlink-debug"],
     },
   ],
-  shared_paths: ["/tmp/astrlink-mcp", "/tmp/.astrlink/agent-installs.json"],
+  shared_paths: [
+    "/tmp/.astrlink/bin/astrlink",
+    "/tmp/.astrlink/agent-installs.json",
+  ],
 };
 
 describe("AgentDebugSettings", () => {
@@ -88,11 +89,11 @@ describe("AgentDebugSettings", () => {
     root = createRoot(container);
     bridge.getAgentDebugStatus.mockReset().mockResolvedValue(status);
     bridge.installAgentDebug.mockReset().mockResolvedValue({
-      version: 1,
+      version: 2,
       bundle: "astrlink-debug",
-      bundle_version: "0.1.0",
+      bundle_version: "0.3.0",
       installed_at_unix: 1,
-      mcp_binary: "/tmp/astrlink-mcp",
+      cli_binary: "/tmp/.astrlink/bin/astrlink",
       files: status.shared_paths,
     });
     bridge.uninstallAgentDebug.mockReset().mockResolvedValue(undefined);
@@ -125,6 +126,9 @@ describe("AgentDebugSettings", () => {
     expect(container.textContent).toContain("已安装");
     expect(container.textContent).toContain("Grok Build");
     expect(container.textContent).toContain("1 / 3");
+    expect(container.textContent).toContain(
+      "AstrLink 命令行工具缺失，请重新安装后再使用。",
+    );
 
     const install = [...container.querySelectorAll("button")].find(
       (button) => button.textContent === "安装 / 更新",
@@ -157,21 +161,22 @@ describe("AgentDebugSettings", () => {
   it("identifies a missing component and refreshes after repair", async () => {
     const partial = {
       ...status,
-      mcp_binary: true,
-      tools: [{ ...status.tools[2], mcp_installed: false }],
+      cli_binary: true,
+      tools: [{ ...status.tools[2], cli_access_installed: false }],
     };
     bridge.getAgentDebugStatus
       .mockResolvedValueOnce(partial)
       .mockResolvedValue({
         ...partial,
-        tools: [{ ...partial.tools[0], mcp_installed: true }],
+        tools: [{ ...partial.tools[0], cli_access_installed: true }],
       });
     await act(async () => root.render(<AgentDebugSettings />));
     const row = [...container.querySelectorAll("tbody tr")].find((row) =>
       row.textContent?.includes("Codex"),
     );
     expect(row?.querySelectorAll("td")[1]?.textContent).toBe("已安装");
-    expect(row?.querySelectorAll("td")[2]?.textContent).toBe("未安装");
+    expect(row?.querySelectorAll("td")[2]?.textContent).toBe("未写入");
+    expect(container.textContent).toContain("0 / 1");
     await act(async () => button("安装 / 更新").click());
     await act(async () =>
       button(
@@ -182,6 +187,38 @@ describe("AgentDebugSettings", () => {
     expect(bridge.installAgentDebug).toHaveBeenCalledTimes(1);
     expect(button("安装 / 更新").disabled).toBe(false);
     expect(container.textContent).toContain("1 / 1");
+  });
+
+  it("reports how each tool may run the CLI", async () => {
+    bridge.getAgentDebugStatus.mockResolvedValue({
+      ...status,
+      cli_binary: true,
+      tools: [
+        { ...status.tools[0], skill_installed: true },
+        { ...status.tools[1], detected: true, cli_access_installed: true },
+        status.tools[2],
+        { ...status.tools[3], detected: false },
+      ],
+    });
+    await act(async () => root.render(<AgentDebugSettings />));
+    const accessCell = (name: string) =>
+      [...container.querySelectorAll("tbody tr")]
+        .find((row) => row.textContent?.includes(name))
+        ?.querySelectorAll("td")[2];
+    expect(accessCell("Cursor")?.textContent).toBe("首次询问");
+    expect(accessCell("Claude")?.textContent).toBe("已放行");
+    expect(accessCell("Codex")?.textContent).toBe("已放行");
+    expect(accessCell("Grok")?.textContent).toBe("—");
+    expect(container.querySelector("thead")?.textContent).toContain("命令权限");
+    // A tool that asks on first run is configured once its skill is there.
+    expect(container.textContent).toContain("2 / 3");
+
+    bridge.getAgentDebugStatus.mockResolvedValue({
+      ...status,
+      tools: [{ ...status.tools[1], detected: true }],
+    });
+    await act(async () => button("重新检测").click());
+    expect(accessCell("Claude")?.textContent).toBe("未写入");
   });
 
   it("reports each tool's host guard with its strength", async () => {
@@ -225,8 +262,8 @@ describe("AgentDebugSettings", () => {
     expect(dialog.querySelector("details")).toBeNull();
     await act(async () => checkbox("grok").click());
     expect(button("安装所选工具（1）", dialog).disabled).toBe(false);
-    expect(dialog.textContent).toContain("/tmp/.grok/config.toml");
-    expect(dialog.textContent).toContain("/tmp/astrlink-mcp");
+    expect(dialog.textContent).toContain("/tmp/.grok/skills/astrlink-debug");
+    expect(dialog.textContent).toContain("/tmp/.astrlink/bin/astrlink");
     expect(dialog.textContent).not.toContain("/tmp/.agents");
     expect(dialog.textContent).not.toContain("/tmp/.codex");
     expect(dialog.textContent).not.toContain("/tmp/.cursor");
@@ -240,7 +277,7 @@ describe("AgentDebugSettings", () => {
       tools: status.tools.map((tool) => ({
         ...tool,
         skill_installed: false,
-        mcp_installed: false,
+        cli_access_installed: false,
       })),
     });
     await act(async () => root.render(<AgentDebugSettings />));
@@ -280,7 +317,7 @@ describe("AgentDebugSettings", () => {
     bridge.getAgentDebugStatus.mockResolvedValue({
       ...status,
       canonical_skill: false,
-      mcp_binary: false,
+      cli_binary: false,
       tools: [],
     });
     await act(async () => button("重新检测").click());

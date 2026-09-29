@@ -1,4 +1,4 @@
-package agentmcp
+package agentcli
 
 import (
 	"context"
@@ -13,10 +13,10 @@ import (
 	"github.com/QuantumNous/astrlink/core/internal/controlapi"
 )
 
-// The projections below are what agent tools see of services and policies.
+// The projections below are what agents see of services and policies.
 // They are allowlists: a field reaches the agent only if it is copied here, so
 // credential references, proxy addresses, provider account ids, and literal
-// allowlist or regex values never leave the Control API through MCP.
+// allowlist or regex values never leave the Control API through the CLI.
 
 const (
 	maxServicePages           = 10
@@ -216,7 +216,7 @@ func getPrivacyPolicy(ctx context.Context, client *Client, _ map[string]any) (js
 	if err != nil {
 		return nil, err
 	}
-	// Core summarizes policies for the observer token agent tools hold. A
+	// Core summarizes policies for the observer token the CLI holds. A
 	// full policy does not decode into the summary, so it never passes through.
 	var decoded struct {
 		Items []controlapi.PolicySummary `json:"items"`
@@ -274,7 +274,7 @@ func explainRequest(ctx context.Context, client *Client, arguments map[string]an
 		"parts":           audit,
 	}
 	if bodiesCaptured {
-		auditView["hint"] = "Call get_request_audit for the captured content."
+		auditView["hint"] = "Run `astrlink audit <id>` for the captured content."
 	}
 	return json.Marshal(map[string]any{
 		"summary":  summary,

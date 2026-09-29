@@ -17,7 +17,7 @@ export interface TrayCoreView {
   last_error: string | null;
   recovery_attempt: number;
   recovery_scheduled: boolean;
-  /** An agent is reading records through the MCP bridge right now. */
+  /** An agent is reading records through the CLI right now. */
   observer_active: boolean;
   /** How far that agent's latest read reached, while it is active. */
   observer_read_level: TrayObserverReadLevel | null;

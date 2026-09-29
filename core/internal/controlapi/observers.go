@@ -11,9 +11,9 @@ import (
 const ObserversPath = "/control/v1/observers"
 
 // Requests arriving on the local control socket, or announcing themselves as
-// the MCP bridge, come from an agent reading the operator's records rather
+// the agent CLI, come from an agent reading the operator's records rather
 // than from the desktop shell. The desktop surfaces that as "being watched".
-const observerUserAgentPrefix = "astrlink-mcp"
+const observerUserAgentPrefix = "astrlink-cli"
 
 // ReadLevel is how much of the operator's audit an agent-side read reached.
 type ReadLevel string

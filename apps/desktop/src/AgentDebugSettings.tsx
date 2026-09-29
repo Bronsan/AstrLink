@@ -44,6 +44,85 @@ function messageOf(error: unknown): string {
   return error instanceof Error ? error.message : i18n.t("agentDebug.failed");
 }
 
+function isConfigured(tool: AgentToolStatus): boolean {
+  return (
+    tool.skill_installed &&
+    (tool.cli_access === "prompt" || tool.cli_access_installed)
+  );
+}
+
+function AgentSkillCell({
+  checked,
+  tool,
+}: {
+  checked: boolean;
+  tool: AgentToolStatus | undefined;
+}) {
+  const t = useT();
+  if (!tool?.detected && !tool?.skill_installed) {
+    return (
+      <span
+        className="text-muted-foreground"
+        aria-label={t(
+          checked ? "agentDebug.notDetected" : "agentDebug.unavailable",
+        )}
+      >
+        —
+      </span>
+    );
+  }
+  return (
+    <StatusBadge tone={tool.skill_installed ? "positive" : "pending"}>
+      {t(
+        tool.skill_installed
+          ? "agentDebug.installed"
+          : "agentDebug.notInstalled",
+      )}
+    </StatusBadge>
+  );
+}
+
+// Claude and Codex get a host rule that lets the CLI run without asking (and,
+// for Codex, outside the sandbox that blocks the local socket); the rest ask
+// the user the first time an agent runs it.
+function AgentCliAccessCell({
+  checked,
+  tool,
+}: {
+  checked: boolean;
+  tool: AgentToolStatus | undefined;
+}) {
+  const t = useT();
+  if (!tool?.detected && !tool?.cli_access_installed) {
+    return (
+      <span
+        className="text-muted-foreground"
+        aria-label={t(
+          checked ? "agentDebug.notDetected" : "agentDebug.unavailable",
+        )}
+      >
+        —
+      </span>
+    );
+  }
+  if (tool.cli_access === "prompt") {
+    return (
+      <span className="text-xs text-muted-foreground">
+        {t("agentDebug.cliAccess.prompt")}
+      </span>
+    );
+  }
+  return tool.cli_access_installed ? (
+    <StatusBadge tone="positive">
+      {t("agentDebug.cliAccess.allowed")}
+    </StatusBadge>
+  ) : (
+    <StatusBadge tone="pending">
+      {t("agentDebug.cliAccess.missing")}
+    </StatusBadge>
+  );
+}
+
 // Host guards differ in strength: Claude enforces deny rules, Codex only reads
 // prompt guidance, and the rest have no verifiable location at all.
 function AgentGuardCell({
@@ -157,13 +236,13 @@ export function AgentDebugSettings() {
   };
 
   const detected = status?.tools.filter((tool) => tool.detected) ?? [];
-  const configured = detected.filter(
-    (tool) => tool.skill_installed && tool.mcp_installed,
-  );
+  const configured = detected.filter(isConfigured);
   const anyInstalled = Boolean(
     status?.canonical_skill ||
-      status?.mcp_binary ||
-      status?.tools.some((tool) => tool.skill_installed || tool.mcp_installed),
+      status?.cli_binary ||
+      status?.tools.some(
+        (tool) => tool.skill_installed || tool.cli_access_installed,
+      ),
   );
   const installLabel = t(
     anyInstalled ? "agentDebug.manage" : "agentDebug.install",
@@ -184,7 +263,7 @@ export function AgentDebugSettings() {
   const openInstall = (): void => {
     setSelectedTools(
       detected
-        .filter((tool) => tool.skill_installed || tool.mcp_installed)
+        .filter((tool) => tool.skill_installed || tool.cli_access_installed)
         .map((tool) => tool.id),
     );
     setConfirm("install");
@@ -270,7 +349,14 @@ export function AgentDebugSettings() {
                       {t("agentDebug.toolColumn")}
                     </TableHead>
                     <TableHead>Skill</TableHead>
-                    <TableHead>MCP</TableHead>
+                    <TableHead>
+                      <span className="inline-flex items-center gap-0.5">
+                        {t("agentDebug.cliAccessColumn")}
+                        <HelpPopover label={t("agentDebug.cliAccessTitle")}>
+                          {t("agentDebug.cliAccessBody")}
+                        </HelpPopover>
+                      </span>
+                    </TableHead>
                     <TableHead className="pr-4">
                       <span className="inline-flex items-center gap-0.5">
                         {t("agentDebug.guardColumn")}
@@ -316,34 +402,18 @@ export function AgentDebugSettings() {
                             </span>
                           </span>
                         </TableCell>
-                        {(["skill_installed", "mcp_installed"] as const).map(
-                          (part) => (
-                            <TableCell className="last:pr-4" key={part}>
-                              {tool?.detected || tool?.[part] ? (
-                                <StatusBadge
-                                  tone={tool[part] ? "positive" : "pending"}
-                                >
-                                  {t(
-                                    tool[part]
-                                      ? "agentDebug.installed"
-                                      : "agentDebug.notInstalled",
-                                  )}
-                                </StatusBadge>
-                              ) : (
-                                <span
-                                  className="text-muted-foreground"
-                                  aria-label={t(
-                                    status
-                                      ? "agentDebug.notDetected"
-                                      : "agentDebug.unavailable",
-                                  )}
-                                >
-                                  —
-                                </span>
-                              )}
-                            </TableCell>
-                          ),
-                        )}
+                        <TableCell>
+                          <AgentSkillCell
+                            checked={status !== null}
+                            tool={tool}
+                          />
+                        </TableCell>
+                        <TableCell>
+                          <AgentCliAccessCell
+                            checked={status !== null}
+                            tool={tool}
+                          />
+                        </TableCell>
                         <TableCell className="last:pr-4">
                           <AgentGuardCell
                             checked={status !== null}
@@ -360,7 +430,7 @@ export function AgentDebugSettings() {
                 <FormMessage className="mx-4 mb-3">
                   {t("agentDebug.noTools")}
                 </FormMessage>
-              ) : status && !status.mcp_binary && configured.length > 0 ? (
+              ) : status && !status.cli_binary && configured.length > 0 ? (
                 <FormMessage className="mx-4 mb-3" tone="warning">
                   {t("agentDebug.missingRuntime")}
                 </FormMessage>
@@ -450,8 +520,8 @@ export function AgentDebugSettings() {
               <HelpDisclosure title={t("agentDebug.help.installTitle")}>
                 <p>{t("agentDebug.help.installBody")}</p>
               </HelpDisclosure>
-              <HelpDisclosure title={t("agentDebug.help.loginTitle")}>
-                <p>{t("agentDebug.help.loginBody")}</p>
+              <HelpDisclosure title={t("agentDebug.help.connectTitle")}>
+                <p>{t("agentDebug.help.connectBody")}</p>
               </HelpDisclosure>
               <HelpDisclosure title={t("agentDebug.help.bodyTitle")}>
                 <p>{t("agentDebug.help.bodyBody")}</p>
@@ -510,7 +580,7 @@ export function AgentDebugSettings() {
                             {t(
                               !tool?.detected
                                 ? "agentDebug.notDetected"
-                                : tool.skill_installed && tool.mcp_installed
+                                : isConfigured(tool)
                                   ? "agentDebug.installed"
                                   : "agentDebug.detected",
                             )}

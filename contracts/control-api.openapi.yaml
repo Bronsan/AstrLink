@@ -2834,7 +2834,7 @@ paths:
       operationId: getObservers
       summary: Report recent agent-side reads of the control plane.
       description: |
-        Requests from the local control socket or the MCP bridge count as agent
+        Requests from the local control socket or the agent CLI count as agent
         reads. The desktop uses this to show that an agent is watching and how far
         its latest read reached. The state lives in Core memory only.
       responses:
