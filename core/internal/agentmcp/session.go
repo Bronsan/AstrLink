@@ -15,7 +15,8 @@ const (
 
 // SessionFile is the 0600 locator written by the desktop when Core is ready.
 // Unix deployments set ControlSocket and omit the token. Windows may set
-// ControlURL plus ControlToken because it has no local control socket.
+// ControlURL plus ControlToken because it has no local control socket; that
+// token holds the observer role, never the desktop's operator token.
 type SessionFile struct {
 	SchemaVersion int    `json:"schema_version"`
 	ControlSocket string `json:"control_socket,omitempty"`

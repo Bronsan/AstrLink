@@ -74,7 +74,11 @@ func TestMCPListsAndCallsRequestRecordTools(t *testing.T) {
 	mux.HandleFunc(controlapi.RequestsPath+"/req_1/children", func(writer http.ResponseWriter, _ *http.Request) {
 		writeJSON(writer, map[string]any{"items": []any{}})
 	})
-	mux.HandleFunc(controlapi.RequestsPath+"/req_1/audit", func(writer http.ResponseWriter, _ *http.Request) {
+	mux.HandleFunc(controlapi.RequestsPath+"/req_1/audit", func(writer http.ResponseWriter, request *http.Request) {
+		if request.URL.Query().Get("view") != "shareable" {
+			http.Error(writer, "agents read the shareable view", http.StatusForbidden)
+			return
+		}
 		writeJSON(writer, map[string]any{"request_id": "req_1"})
 	})
 	mux.HandleFunc(controlapi.AuditSettingsPath, func(writer http.ResponseWriter, _ *http.Request) {
@@ -158,7 +162,7 @@ func TestMCPListsAndCallsRequestRecordTools(t *testing.T) {
 		t.Fatalf("initialize result = %#v", responses[1]["result"])
 	}
 	tools := responses[2]["result"].(map[string]any)["tools"].([]any)
-	if len(tools) != 8 {
+	if len(tools) != 14 {
 		t.Fatalf("tool count = %d", len(tools))
 	}
 	names := map[string]bool{}
@@ -168,7 +172,8 @@ func TestMCPListsAndCallsRequestRecordTools(t *testing.T) {
 	for _, name := range []string{
 		"list_request_sessions", "get_request_session", "list_request_records",
 		"get_request_record", "get_request_children", "get_request_audit", "get_audit_settings",
-		"get_routing_settings",
+		"get_routing_settings", "search_requests", "explain_request", "list_services",
+		"get_service_status", "get_privacy_policy", "request_raw_audit",
 	} {
 		if !names[name] {
 			t.Fatalf("missing tool %s", name)
@@ -236,7 +241,7 @@ func TestServeStdioHandshakesWithoutControlSession(t *testing.T) {
 		t.Fatalf("server version = %#v", info["version"])
 	}
 	tools := responses[2]["result"].(map[string]any)["tools"].([]any)
-	if len(tools) != 8 {
+	if len(tools) != 14 {
 		t.Fatalf("tool count = %d", len(tools))
 	}
 	call := callResult(t, responses[3])

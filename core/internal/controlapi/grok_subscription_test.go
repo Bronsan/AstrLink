@@ -165,7 +165,7 @@ func testGrokProxyLifecycle(t *testing.T, useProxy bool) {
 		t.Fatal(err)
 	}
 	if connected.Subscription.Status != contract.SubscriptionStatusConnected || connected.Subscription.ProviderAccountID != "user_grok_42" ||
-		!strings.HasPrefix(connected.Subscription.CredentialRef, "keyring://") {
+		connected.Subscription.CredentialRef != "local://subscription/"+string(connected.ID) {
 		t.Fatalf("connected service = %#v", connected.Subscription)
 	}
 	models := call("POST", path+"/probe-models", `{"protocol":"openai.models"}`, 200)

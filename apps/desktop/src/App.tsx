@@ -51,6 +51,8 @@ import { RequestRecords } from "./RequestRecords";
 import { RouteManager } from "./RouteManager";
 import { SafetyPolicy } from "./SafetyPolicy";
 import { AgentDebugSettings } from "./AgentDebugSettings";
+import { RawAccessApprovals } from "./RawAccessApprovals";
+import { LocalDataNotice } from "./LocalDataNotice";
 import { SettingsCenter } from "./SettingsCenter";
 import { About } from "./About";
 import { useAppUpdates } from "./use-app-updates";
@@ -211,6 +213,8 @@ export default function App() {
   const notifiedUpdate = useRef<string | null>(null);
   const [snapshot, setSnapshot] = useState<AppSnapshot | null>(null);
   const [isRestarting, setIsRestarting] = useState(false);
+  // Hiding the unreadable-credentials notice lasts until the app restarts.
+  const [localDataDismissed, setLocalDataDismissed] = useState(false);
   const [catalog, setCatalog] = useState<ServiceCatalog>(emptyCatalog);
   const [tokenCatalog, setTokenCatalog] =
     useState<AccessTokenCatalog>(emptyTokenCatalog);
@@ -859,6 +863,14 @@ export default function App() {
               />
             ) : page.kind === "settings" ? (
               <SettingsCenter
+                localDataNotice={
+                  <LocalDataNotice
+                    coreSessionKey={coreSessionKey}
+                    dismissed={localDataDismissed}
+                    onDismiss={() => setLocalDataDismissed(true)}
+                    onOpenServices={() => navigate({ kind: "list" })}
+                  />
+                }
                 onCoreSnapshot={setSnapshot}
                 onDirtyChange={handleEditorDirtyChange}
                 snapshot={snapshot}
@@ -891,6 +903,7 @@ export default function App() {
         open={pendingPage !== null}
         title={t("common.discardUnsaved")}
       />
+      <RawAccessApprovals coreSessionKey={coreSessionKey} isReady={isReady} />
     </AppShell>
   );
 }

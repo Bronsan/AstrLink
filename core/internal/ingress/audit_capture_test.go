@@ -34,10 +34,11 @@ func (store *memoryAuditSettings) GetAuditSettings(context.Context) (contract.Au
 }
 
 type memoryAuditBlobs struct {
-	key     []byte
-	blobs   []storage.AuditBlob
-	fail    bool
-	records *memoryRequestRecordStore
+	key             []byte
+	blobs           []storage.AuditBlob
+	fail            bool
+	records         *memoryRequestRecordStore
+	exposureUpdates int
 }
 
 func (store *memoryAuditBlobs) GetOrCreateAuditKey(context.Context) ([]byte, error) {
@@ -63,15 +64,45 @@ func (store *memoryAuditBlobs) InsertAuditBlob(_ context.Context, blob storage.A
 			return fmt.Errorf("upsert audit blob: constraint failed: FOREIGN KEY constraint failed (787)")
 		}
 	}
+	if blob.Exposure == "" {
+		blob.Exposure = storage.AuditExposureRaw
+	}
 	for index := range store.blobs {
 		if store.blobs[index].RequestID == blob.RequestID &&
 			store.blobs[index].Direction == blob.Direction {
+			// Mirror the store: a recapture never widens a raw part.
+			if store.blobs[index].Exposure == storage.AuditExposureRaw {
+				blob.Exposure = storage.AuditExposureRaw
+			}
 			store.blobs[index] = blob
 			return nil
 		}
 	}
 	store.blobs = append(store.blobs, blob)
 	return nil
+}
+
+func (store *memoryAuditBlobs) UpdateAuditExposure(
+	_ context.Context,
+	id contract.RequestID,
+	direction storage.AuditDirection,
+	exposure storage.AuditExposure,
+) error {
+	if !exposure.Valid() {
+		return storage.ErrInvalidArgument
+	}
+	for index := range store.blobs {
+		if store.blobs[index].RequestID != id || store.blobs[index].Direction != direction {
+			continue
+		}
+		if !store.blobs[index].Exposure.CanBecome(exposure) {
+			return storage.ErrPrecondition
+		}
+		store.blobs[index].Exposure = exposure
+		store.exposureUpdates++
+		return nil
+	}
+	return storage.ErrNotFound
 }
 
 func TestIngressAuditPersistsClientRequestWhilePending(t *testing.T) {

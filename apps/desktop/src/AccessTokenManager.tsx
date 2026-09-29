@@ -55,6 +55,7 @@ import { i18n } from "./i18n";
 import { notify } from "./notify";
 import { PageHeader } from "./PageHeader";
 import { startOfTodayIso, type ServicePerformance } from "./usage-range";
+import { useRevealProof } from "./use-reveal-proof";
 import { CCSwitchImportDialog } from "./CCSwitchImportDialog";
 import { CCSwitchIcon } from "@/components/CCSwitchIcon";
 
@@ -160,6 +161,7 @@ export function AccessTokenManager({
   const revealGeneration = useRef(0);
   const usageGeneration = useRef(0);
   const nameInput = useRef<HTMLInputElement | null>(null);
+  const revealProof = useRevealProof(isReady);
 
   useEffect(() => {
     sessionGeneration.current += 1;
@@ -310,6 +312,14 @@ export function AccessTokenManager({
     setCopiedID(null);
     setError(null);
     try {
+      const proved = await revealProof.prove();
+      if (
+        !proved ||
+        sessionGeneration.current !== session ||
+        revealGeneration.current !== generation
+      ) {
+        return;
+      }
       const result = await revealAccessToken(tokenId);
       if (
         sessionGeneration.current !== session ||
@@ -835,6 +845,7 @@ export function AccessTokenManager({
         open={pendingDelete !== null}
         title={t("tokens.deleteTitle")}
       />
+      {revealProof.dialog}
     </section>
   );
 }

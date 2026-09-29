@@ -137,11 +137,35 @@ end
 unless audit_properties.dig("http_meta_enabled", "default") == true
   raise "http_meta_enabled must default to true (ADR 0008)"
 end
+unless audit_properties.dig("agent_raw_access_enabled", "default") == true
+  raise "agent_raw_access_enabled must default to true; each raw read still needs desktop approval"
+end
 
 audit_content = openapi.dig("components", "schemas", "AuditContent")
 unless audit_content.fetch("required").include?("http_meta")
   raise "AuditContent must require http_meta so its absence is always explicit null"
 end
+%w[view privacy_findings].each do |field|
+  raise "AuditContent must require #{field}" unless audit_content.fetch("required").include?(field)
+end
+withheld_part = openapi.dig("components", "schemas", "AuditWithheldPart")
+if withheld_part.fetch("properties").key?("content") || withheld_part.fetch("additionalProperties") != false
+  raise "AuditWithheldPart must never carry content"
+end
+raw_sealing_summary = openapi.dig("components", "schemas", "RawSealingSummary")
+unless raw_sealing_summary.fetch("properties").keys == %w[raw_available] && raw_sealing_summary.fetch("additionalProperties") == false
+  raise "RawSealingSummary is the observer view and must carry only raw_available"
+end
+policy_summary = openapi.dig("components", "schemas", "PolicySummary", "properties")
+if policy_summary.key?("allowlist_rules") || policy_summary.dig("custom_regex_rules", "type") != "object"
+  raise "PolicySummary is the observer view and must report allowlist and custom regex rules as counts only"
+end
+raw_sealing_fields = openapi.dig("components", "schemas", "RawSealingStatusFields", "properties").keys
+leaked_key_fields = raw_sealing_fields.grep(/key(?!_verified)|secret|salt|nonce|envelope_/)
+raise "RawSealingStatus must not carry key material: #{leaked_key_fields.join(", ")}" unless leaked_key_fields.empty?
+# A wrong password on the desktop's own unlock names no grant or request.
+raw_event_required = openapi.dig("components", "schemas", "RawAccessEvent", "required")
+raise "RawAccessEvent must not require grant_id or request_id" unless (raw_event_required & %w[grant_id request_id]).empty?
 http_meta_choices = audit_content.dig("properties", "http_meta", "oneOf")
 unless http_meta_choices.is_a?(Array) && http_meta_choices.include?({ "type" => "null" })
   raise "AuditContent http_meta must be nullable for records predating capture"
@@ -267,6 +291,31 @@ credential_ref_fixture.fetch("rejected").each do |reference|
 end
 
 implemented_operations = openapi.dig("x-astrlink-implementation", "implemented_operations")
+
+public_operations = %w[/control/v1/health /control/v1/version /control/v1/capabilities]
+operator_reads = %w[
+  /control/v1/access-tokens/{token_id}/secret
+  /control/v1/services/{service_id}/authorization
+  /control/v1/builtin-tools/{kind}/credential
+  /control/v1/audit/raw-access
+]
+# An agent may ask for raw access; only the operator can approve it.
+observer_writes = %w[/control/v1/requests/{request_id}/audit/raw-access]
+openapi.fetch("paths").each do |path, item|
+  item.slice("get", "head", "post", "put", "patch", "delete").each do |method, operation|
+    role = operation["x-astrlink-role"]
+    expected = if public_operations.include?(path)
+                 "public"
+               elsif observer_writes.include?(path)
+                 "observer"
+               elsif !%w[get head].include?(method) || operator_reads.include?(path)
+                 "operator"
+               else
+                 "observer"
+               end
+    raise "#{method.upcase} #{path} must declare x-astrlink-role: #{expected} (got #{role.inspect})" unless role == expected
+  end
+end
 %w[
   GET\ /control/v1/services
   POST\ /control/v1/services

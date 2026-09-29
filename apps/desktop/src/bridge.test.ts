@@ -13,6 +13,14 @@ vi.mock("@tauri-apps/api/core", () => ({
 vi.mock("./download-text-file", () => downloadMocks);
 
 import {
+  decideRawAccess,
+  getLocalDataStatus,
+  getRawSealingStatus,
+  listRawAccess,
+  lockRaw,
+  setRawPassword,
+  unlockRaw,
+  verifyLocalPresence,
   cancelPrivacyModelInstallation,
   pausePrivacyModelInstallation,
   resumePrivacyModelInstallation,
@@ -96,6 +104,183 @@ function validSnapshot(): Record<string, unknown> {
 }
 
 describe("desktop bridge contract", () => {
+  it("lists raw access requests and forwards a decision's proof once", async () => {
+    const grant = {
+      grant_id: "rawgrant_0123456789abcdef",
+      request_id: "request_1",
+      status: "pending",
+      reason: "the upstream rejected the email field",
+      client_name: "claude-code",
+      created_at: "2026-09-28T10:00:00Z",
+      expires_at: "2026-09-28T10:10:00Z",
+    };
+    invokeMock.mockResolvedValueOnce({ items: [grant] });
+    await expect(listRawAccess()).resolves.toEqual([
+      { ...grant, decision: null },
+    ]);
+    expect(invokeMock).toHaveBeenLastCalledWith("list_raw_access");
+
+    invokeMock.mockResolvedValueOnce({
+      outcome: "decided",
+      grant: { ...grant, status: "approved", decision: "once" },
+    });
+    await expect(
+      decideRawAccess(grant.grant_id, "once", {
+        kind: "password",
+        password: "correct horse",
+      }),
+    ).resolves.toMatchObject({
+      outcome: "decided",
+      grant: { status: "approved", decision: "once" },
+    });
+    expect(invokeMock).toHaveBeenLastCalledWith("decide_raw_access", {
+      grantId: grant.grant_id,
+      decision: "once",
+      proof: { kind: "password", password: "correct horse" },
+    });
+
+    invokeMock.mockResolvedValueOnce({ outcome: "presence_cancelled" });
+    await expect(
+      decideRawAccess(grant.grant_id, "window_15m", { kind: "local_presence" }),
+    ).resolves.toEqual({ outcome: "presence_cancelled" });
+    expect(invokeMock).toHaveBeenLastCalledWith("decide_raw_access", {
+      grantId: grant.grant_id,
+      decision: "window_15m",
+      proof: { kind: "local_presence" },
+    });
+
+    // A denial never carries a proof, even if the caller passes one.
+    invokeMock.mockResolvedValueOnce({ outcome: "not_pending" });
+    await expect(
+      decideRawAccess(grant.grant_id, "deny", {
+        kind: "password",
+        password: "correct horse",
+      }),
+    ).resolves.toEqual({ outcome: "not_pending" });
+    expect(invokeMock).toHaveBeenLastCalledWith("decide_raw_access", {
+      grantId: grant.grant_id,
+      decision: "deny",
+      proof: null,
+    });
+
+    invokeMock.mockResolvedValueOnce({
+      outcome: "backoff",
+      retry_after_seconds: 8,
+    });
+    await expect(
+      decideRawAccess(grant.grant_id, "window_15m", {
+        kind: "password",
+        password: "wrong",
+      }),
+    ).resolves.toEqual({ outcome: "backoff", retry_after_seconds: 8 });
+
+    invokeMock.mockResolvedValueOnce({ items: [{ ...grant, grant_id: "x" }] });
+    await expect(listRawAccess()).rejects.toThrow("$.items[0].grant_id");
+    invokeMock.mockResolvedValueOnce({ outcome: "approved" });
+    await expect(decideRawAccess(grant.grant_id, "deny")).rejects.toThrow(
+      "$.outcome",
+    );
+  });
+
+  it("reads raw sealing state and forwards unlock and password proofs", async () => {
+    const status = {
+      raw_available: true,
+      configured: true,
+      password_set: true,
+      local_presence: true,
+      envelopes: ["password", "local"],
+      key_verified: true,
+      unlocked: false,
+      unlock_expires_at: null,
+      unlock_idle_seconds: 900,
+      retry_after_seconds: 0,
+      password_min_length: 8,
+      password_max_length: 128,
+    };
+    invokeMock.mockResolvedValueOnce({ ...status, presence_available: true });
+    await expect(getRawSealingStatus()).resolves.toEqual({
+      ...status,
+      presence_available: true,
+    });
+    expect(invokeMock).toHaveBeenLastCalledWith("raw_sealing_status");
+
+    const unlocked = {
+      ...status,
+      unlocked: true,
+      unlock_expires_at: "2026-09-28T10:15:00Z",
+    };
+    invokeMock.mockResolvedValueOnce({ outcome: "sealing", status: unlocked });
+    await expect(unlockRaw({ kind: "local_presence" })).resolves.toEqual({
+      outcome: "sealing",
+      status: unlocked,
+      reset: null,
+    });
+    expect(invokeMock).toHaveBeenLastCalledWith("unlock_raw", {
+      proof: { kind: "local_presence" },
+    });
+
+    invokeMock.mockResolvedValueOnce(status);
+    await expect(lockRaw()).resolves.toEqual(status);
+    expect(invokeMock).toHaveBeenLastCalledWith("lock_raw");
+
+    invokeMock.mockResolvedValueOnce({ outcome: "password_invalid" });
+    await expect(
+      setRawPassword("change", "new passphrase", {
+        kind: "password",
+        password: "old passphrase",
+      }),
+    ).resolves.toEqual({ outcome: "password_invalid" });
+    expect(invokeMock).toHaveBeenLastCalledWith("set_raw_password", {
+      action: "change",
+      password: "new passphrase",
+      proof: { kind: "password", password: "old passphrase" },
+    });
+
+    invokeMock.mockResolvedValueOnce({
+      outcome: "sealing",
+      status: { ...status, reset: { deleted_parts: 4, affected_records: 2 } },
+    });
+    await expect(setRawPassword("reset")).resolves.toEqual({
+      outcome: "sealing",
+      status,
+      reset: { deleted_parts: 4, affected_records: 2 },
+    });
+    expect(invokeMock).toHaveBeenLastCalledWith("set_raw_password", {
+      action: "reset",
+      password: null,
+      proof: null,
+    });
+
+    invokeMock.mockResolvedValueOnce({ outcome: "verified" });
+    await expect(verifyLocalPresence("reveal_access_token")).resolves.toEqual({
+      outcome: "verified",
+    });
+    expect(invokeMock).toHaveBeenLastCalledWith("verify_local_presence", {
+      purpose: "reveal_access_token",
+    });
+
+    invokeMock.mockResolvedValueOnce(status);
+    await expect(getRawSealingStatus()).rejects.toThrow("presence_available");
+    invokeMock.mockResolvedValueOnce({ outcome: "decided" });
+    await expect(unlockRaw({ kind: "local_presence" })).rejects.toThrow(
+      "$.outcome",
+    );
+  });
+
+  it("reads which saved data no longer decrypts", async () => {
+    const status = {
+      unreadable_credentials: 2,
+      unreadable_access_tokens: 1,
+      audit_key_missing: true,
+    };
+    invokeMock.mockResolvedValueOnce(status);
+    await expect(getLocalDataStatus()).resolves.toEqual(status);
+    expect(invokeMock).toHaveBeenLastCalledWith("local_data_status");
+
+    invokeMock.mockResolvedValueOnce({ ...status, service_ids: ["a"] });
+    await expect(getLocalDataStatus()).rejects.toThrow("service_ids");
+  });
+
   it("validates proxy probe responses without persisting draft credentials", async () => {
     const input = {
       proxy: {
@@ -1060,6 +1245,8 @@ describe("desktop bridge contract", () => {
           detected: true,
           skill_installed: false,
           mcp_installed: false,
+          guard: "skill_only",
+          guard_installed: false,
           preview_paths: [
             "/tmp/.cursor/skills/astrlink-debug",
             "/tmp/.cursor/mcp.json",

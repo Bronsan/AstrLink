@@ -1,10 +1,18 @@
 import { useWorkspaceSnapshot } from "./workspace-snapshots";
-import { useEffect, useId, useMemo, useRef, useState } from "react";
+import {
+  useEffect,
+  useId,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 
 import { ChoiceCard } from "@/components/ChoiceCard";
 import { DataRow } from "@/components/DataRow";
 import { Field } from "@/components/Field";
 import { FormMessage } from "@/components/FormMessage";
+import { HelpPopover } from "@/components/HelpPopover";
 import { InferencePortNotice } from "@/components/InferencePortNotice";
 import { Panel, PanelHeader } from "@/components/Panel";
 import { SectionKicker } from "@/components/SectionKicker";
@@ -36,6 +44,7 @@ import {
   MIN_MAX_CONCURRENT_INSPECTIONS,
   TRAY_MENUBAR_TEXTS,
   TRAY_USAGE_KEYS,
+  type DataBackupFile,
   type Preferences,
   type SettingsSnapshot,
   type TrayMenubarText,
@@ -120,6 +129,60 @@ function SettingsToggle({
   );
 }
 
+function formatBackupSize(bytes: number): string {
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let value = bytes;
+  let unit = 0;
+  while (value >= 1024 && unit < units.length - 1) {
+    value /= 1024;
+    unit += 1;
+  }
+  return unit === 0 ? `${value} B` : `${value.toFixed(1)} ${units[unit]}`;
+}
+
+// Hand-made database copies are not encrypted with the live data; point them
+// out but never offer to delete them from here.
+function DataBackupNotice({ files }: { files: DataBackupFile[] }) {
+  const t = useT();
+  if (files.length === 0) return null;
+  const total = files.reduce((sum, file) => sum + file.size_bytes, 0);
+  const newest = files.reduce<number | null>(
+    (latest, file) =>
+      file.modified_unix !== null &&
+      (latest === null || file.modified_unix > latest)
+        ? file.modified_unix
+        : latest,
+    null,
+  );
+  const date =
+    newest === null
+      ? "—"
+      : new Intl.DateTimeFormat(i18n.language === "zh-CN" ? "zh-CN" : "en", {
+          dateStyle: "medium",
+        }).format(new Date(newest * 1000));
+  return (
+    <FormMessage className="flex items-center gap-1 py-1.5" tone="warning">
+      <span className="min-w-0 flex-1">
+        {t("settings.dataBackups", {
+          count: files.length,
+          size: formatBackupSize(total),
+          date,
+        })}
+      </span>
+      <HelpPopover label={t("settings.dataBackupsTitle")}>
+        <span className="grid gap-1.5">
+          <span>{t("settings.dataBackupsBody")}</span>
+          <span className="grid gap-0.5 font-mono text-xs [overflow-wrap:anywhere]">
+            {files.map((file) => (
+              <span key={file.name}>{file.name}</span>
+            ))}
+          </span>
+        </span>
+      </HelpPopover>
+    </FormMessage>
+  );
+}
+
 function SettingsPanelHeader({
   hint,
   kicker,
@@ -142,10 +205,13 @@ function SettingsPanelHeader({
 
 export function SettingsCenter({
   snapshot,
+  localDataNotice,
   onCoreSnapshot,
   onDirtyChange,
 }: {
   snapshot: AppSnapshot | null;
+  /** Shown above the other notices when saved data no longer decrypts. */
+  localDataNotice?: ReactNode;
   onCoreSnapshot: (snapshot: AppSnapshot) => void;
   onDirtyChange: (dirty: boolean) => void;
 }) {
@@ -479,6 +545,7 @@ export function SettingsCenter({
       <PageHeader title={t("settings.title")} />
 
       <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-3">
+        {localDataNotice}
         <InferencePortNotice snapshot={snapshot} />
         {loadingError ? (
           <FormMessage tone="error">{loadingError}</FormMessage>
@@ -492,6 +559,12 @@ export function SettingsCenter({
         ) : settings.autostart_actual !== prefs.autostart ? (
           <FormMessage tone="warning">
             {t("settings.autostartMismatch")}
+          </FormMessage>
+        ) : null}
+        <DataBackupNotice files={settings.data_backups} />
+        {settings.local_key_storage === "keychain_unavailable" ? (
+          <FormMessage tone="warning">
+            {t("settings.localKeyKeychainUnavailable")}
           </FormMessage>
         ) : null}
         {actionError ? (

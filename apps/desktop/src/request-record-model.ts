@@ -290,11 +290,47 @@ export interface RequestRecordListQuery {
   status?: RequestStatus;
 }
 
+export type AuditPartExposure = "shareable" | "raw";
+
 export interface AuditContentPart {
   media_type: string;
   content: string;
   truncated: boolean;
   captured_bytes: number;
+  /** Who may read the part without proof; absent from a Core that predates it. */
+  exposure?: AuditPartExposure;
+}
+
+export type AuditWithheldReason =
+  | "privacy_redacted"
+  | "privacy_blocked"
+  | "privacy_restored"
+  | "privacy_fail_open"
+  | "privacy_pending"
+  | "privacy_unknown"
+  | "raw_locked";
+
+/** A captured part this read may not see. It never carries content. */
+export interface AuditWithheldPart {
+  reason: AuditWithheldReason;
+  /** An agent may ask the user for this part. */
+  raw_available: boolean;
+  media_type: string;
+  truncated: boolean;
+  captured_bytes: number;
+}
+
+export type AuditBodyPartName =
+  | "request_body"
+  | "response_content"
+  | "upstream_request_body"
+  | "upstream_response_content";
+
+/** What the privacy decision found, by kind and structural path only. */
+export interface AuditPrivacyFinding {
+  kind: string;
+  json_path: string;
+  count: number;
 }
 
 export interface AuditHeader {
@@ -314,12 +350,36 @@ export interface AuditHTTPMeta {
 
 export interface AuditContent {
   request_id: string;
+  view: "shareable" | "full";
   http_meta: AuditHTTPMeta | null;
   request_body: AuditContentPart | null;
   response_content: AuditContentPart | null;
   upstream_http_meta: AuditHTTPMeta | null;
   upstream_request_body: AuditContentPart | null;
   upstream_response_content: AuditContentPart | null;
+  /**
+   * Captured parts left out of this read, such as raw parts while raw
+   * reading is locked. Their body fields above stay null.
+   */
+  withheld: Partial<Record<AuditBodyPartName, AuditWithheldPart>>;
+  privacy_findings: AuditPrivacyFinding[];
+}
+
+/** Whether the content holds a raw part, which a raw key locks again. */
+export function holdsRawPart(content: AuditContent): boolean {
+  return [
+    content.request_body,
+    content.response_content,
+    content.upstream_request_body,
+    content.upstream_response_content,
+  ].some((part) => part?.exposure === "raw");
+}
+
+/** Whether the content leaves out a part until raw reading is unlocked. */
+export function holdsLockedPart(content: AuditContent): boolean {
+  return Object.values(content.withheld).some(
+    (part) => part?.reason === "raw_locked",
+  );
 }
 
 export interface PurgeResult {
@@ -1020,17 +1080,84 @@ export function parseRequestRecordPage(value: unknown): RequestRecordPage {
   };
 }
 
+const auditWithheldReasons = new Set<AuditWithheldReason>([
+  "privacy_redacted",
+  "privacy_blocked",
+  "privacy_restored",
+  "privacy_fail_open",
+  "privacy_pending",
+  "privacy_unknown",
+  "raw_locked",
+]);
+
+const auditBodyPartNames: AuditBodyPartName[] = [
+  "request_body",
+  "response_content",
+  "upstream_request_body",
+  "upstream_response_content",
+];
+
+type ParsedAuditPart =
+  | { readable: AuditContentPart; withheld?: undefined }
+  | { readable?: undefined; withheld: AuditWithheldPart };
+
 function parseAuditContentPart(
   value: unknown,
   path: string,
-): AuditContentPart | null {
-  if (value === null) return null;
+): ParsedAuditPart | null {
+  if (value === null || value === undefined) return null;
   const part = objectAt(value, path);
-  return {
-    media_type: stringAt(part.media_type, `${path}.media_type`),
+  const media_type = stringAt(part.media_type, `${path}.media_type`);
+  const truncated = boolAt(part.truncated, `${path}.truncated`);
+  const captured_bytes = intAt(part.captured_bytes, `${path}.captured_bytes`);
+  if (Object.hasOwn(part, "withheld")) {
+    if (boolAt(part.withheld, `${path}.withheld`) !== true) {
+      invalid(`${path}.withheld`, "应为 true");
+    }
+    if (Object.hasOwn(part, "content")) {
+      invalid(`${path}.content`, "未读部分不应含正文");
+    }
+    const reason = stringAt(part.reason, `${path}.reason`);
+    if (!auditWithheldReasons.has(reason as AuditWithheldReason)) {
+      invalid(`${path}.reason`, "未知原因");
+    }
+    return {
+      withheld: {
+        reason: reason as AuditWithheldReason,
+        raw_available: boolAt(part.raw_available, `${path}.raw_available`),
+        media_type,
+        truncated,
+        captured_bytes,
+      },
+    };
+  }
+  const readable: AuditContentPart = {
+    media_type,
     content: stringAt(part.content, `${path}.content`),
-    truncated: boolAt(part.truncated, `${path}.truncated`),
-    captured_bytes: intAt(part.captured_bytes, `${path}.captured_bytes`),
+    truncated,
+    captured_bytes,
+  };
+  if (Object.hasOwn(part, "exposure")) {
+    const exposure = stringAt(part.exposure, `${path}.exposure`);
+    if (exposure !== "shareable" && exposure !== "raw") {
+      invalid(`${path}.exposure`, "应为 shareable 或 raw");
+    }
+    readable.exposure = exposure;
+  }
+  return { readable };
+}
+
+function parseAuditPrivacyFinding(
+  value: unknown,
+  path: string,
+): AuditPrivacyFinding {
+  const finding = objectAt(value, path);
+  const kind = stringAt(finding.kind, `${path}.kind`);
+  if (kind === "") invalid(`${path}.kind`, "不能为空");
+  return {
+    kind,
+    json_path: stringAt(finding.json_path, `${path}.json_path`),
+    count: intAt(finding.count, `${path}.count`),
   };
 }
 
@@ -1074,36 +1201,45 @@ function parseAuditHTTPMeta(
 
 export function parseAuditContent(value: unknown): AuditContent {
   const content = objectAt(value, "$");
+  const view = Object.hasOwn(content, "view")
+    ? stringAt(content.view, "$.view")
+    : "full";
+  if (view !== "shareable" && view !== "full") {
+    invalid("$.view", "应为 shareable 或 full");
+  }
+  const withheld: AuditContent["withheld"] = {};
+  const parts = {} as Record<AuditBodyPartName, AuditContentPart | null>;
+  // Upstream parts may be absent from a core sidecar that predates them.
+  for (const name of auditBodyPartNames) {
+    const parsed = parseAuditContentPart(content[name], `$.${name}`);
+    parts[name] = parsed?.readable ?? null;
+    if (parsed?.withheld) withheld[name] = parsed.withheld;
+  }
+  const findings = Object.hasOwn(content, "privacy_findings")
+    ? content.privacy_findings
+    : [];
+  if (!Array.isArray(findings)) {
+    invalid("$.privacy_findings", "应为数组");
+  }
   return {
     request_id: stringAt(content.request_id, "$.request_id"),
+    view,
     // Tolerate an absent key for compatibility with a core sidecar that
     // predates http_meta capture.
     http_meta: Object.hasOwn(content, "http_meta")
       ? parseAuditHTTPMeta(content.http_meta, "$.http_meta")
       : null,
-    request_body: parseAuditContentPart(content.request_body, "$.request_body"),
-    response_content: parseAuditContentPart(
-      content.response_content,
-      "$.response_content",
-    ),
+    request_body: parts.request_body,
+    response_content: parts.response_content,
     upstream_http_meta: Object.hasOwn(content, "upstream_http_meta")
       ? parseAuditHTTPMeta(content.upstream_http_meta, "$.upstream_http_meta")
       : null,
-    upstream_request_body: Object.hasOwn(content, "upstream_request_body")
-      ? parseAuditContentPart(
-          content.upstream_request_body,
-          "$.upstream_request_body",
-        )
-      : null,
-    upstream_response_content: Object.hasOwn(
-      content,
-      "upstream_response_content",
-    )
-      ? parseAuditContentPart(
-          content.upstream_response_content,
-          "$.upstream_response_content",
-        )
-      : null,
+    upstream_request_body: parts.upstream_request_body,
+    upstream_response_content: parts.upstream_response_content,
+    withheld,
+    privacy_findings: findings.map((finding, index) =>
+      parseAuditPrivacyFinding(finding, `$.privacy_findings[${index}]`),
+    ),
   };
 }
 

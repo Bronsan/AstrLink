@@ -91,6 +91,7 @@ name = "astrlink-desktop"
 version = "0.1.0-dev.1"
 dependencies = [
  "base64 0.22.1",
+ "block2",
  "chrono",
  "core-foundation 0.10.1",
  "getrandom 0.2.17",
@@ -99,7 +100,11 @@ dependencies = [
  "libc",
  "mac-notification-sys",
  "minisign-verify",
+ "objc2",
+ "objc2-foundation",
+ "objc2-local-authentication",
  "reqwest 0.12.23",
+ "security-framework",
  "semver",
  "serde",
  "serde_json",
@@ -118,6 +123,7 @@ dependencies = [
  "tokio",
  "toml_edit 0.22.22",
  "windows-sys 0.61.2",
+ "zeroize",
 ]
 
 [[package]]
@@ -2610,6 +2616,17 @@ dependencies = [
  "bitflags 2.13.1",
  "objc2",
  "objc2-core-foundation",
+]
+
+[[package]]
+name = "objc2-local-authentication"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e48e0b8b339e0d9d2ed4416b7f93f9d4daadff7d4dd797f89867cde11aeac607"
+dependencies = [
+ "block2",
+ "objc2",
+ "objc2-foundation",
 ]
 
 [[package]]
@@ -6253,6 +6270,9 @@ name = "zeroize"
 version = "1.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e13c156562582aa81c60cb29407084cdb54c4164760106ab78e6c5b0858cf64e"
+dependencies = [
+ "serde",
+]
 
 [[package]]
 name = "zerotrie"

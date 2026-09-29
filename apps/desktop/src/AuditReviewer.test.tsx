@@ -2,7 +2,7 @@
 
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   AuditPartSection,
@@ -10,7 +10,11 @@ import {
   HTTPMetaSection,
 } from "./AuditReviewer";
 import type { CopyFeedback } from "./copy-feedback";
-import type { AuditContentPart, AuditHTTPMeta } from "./request-record-model";
+import type {
+  AuditContentPart,
+  AuditHTTPMeta,
+  AuditWithheldPart,
+} from "./request-record-model";
 
 const noopFeedback: CopyFeedback = {
   activeKey: null,
@@ -334,5 +338,79 @@ describe("AuditReviewer sections", () => {
       await Promise.resolve();
     });
     expect(container.textContent).toContain("此记录未捕获 HTTP 元数据");
+  });
+
+  it("marks a raw-locked part and offers the unlock", async () => {
+    const onUnlock = vi.fn();
+    const withheld: AuditWithheldPart = {
+      reason: "raw_locked",
+      raw_available: true,
+      media_type: "application/json",
+      truncated: false,
+      captured_bytes: 64,
+    };
+    await act(async () => {
+      root.render(
+        <AuditPartSection
+          copyFeedback={noopFeedback}
+          onUnlock={onUnlock}
+          part={null}
+          protocol="openai.responses"
+          sectionKey="request-body"
+          title="客户端请求"
+          withheld={withheld}
+        />,
+      );
+    });
+
+    const body = container.querySelector('[data-slot="audit-part-withheld"]');
+    expect(body?.textContent).toContain("已锁定");
+    expect(body?.textContent).toContain("原文已封存，解锁后才能查看。");
+    const unlock = [...container.querySelectorAll("button")].find(
+      (candidate) => candidate.textContent?.trim() === "解锁",
+    );
+    await act(async () => unlock?.click());
+    expect(onUnlock).toHaveBeenCalledOnce();
+  });
+
+  it("tells a withheld part apart from one that was never captured", async () => {
+    await act(async () => {
+      root.render(
+        <AuditPartSection
+          copyFeedback={noopFeedback}
+          onUnlock={() => undefined}
+          part={null}
+          protocol="openai.responses"
+          sectionKey="request-body"
+          title="客户端请求"
+          withheld={{
+            reason: "privacy_redacted",
+            raw_available: false,
+            media_type: "application/json",
+            truncated: false,
+            captured_bytes: 64,
+          }}
+        />,
+      );
+    });
+    const body = container.querySelector('[data-slot="audit-part-withheld"]');
+    expect(body?.textContent).toContain("此部分已捕获，当前视图不显示。");
+    expect(body?.textContent).not.toContain("已锁定");
+    expect(container.querySelectorAll("button")).toHaveLength(0);
+
+    await act(async () => {
+      root.render(
+        <AuditPartSection
+          copyFeedback={noopFeedback}
+          part={null}
+          protocol="openai.responses"
+          sectionKey="request-body"
+          title="客户端请求"
+        />,
+      );
+    });
+    expect(
+      container.querySelector('[data-slot="audit-part-withheld"]'),
+    ).toBeNull();
   });
 });

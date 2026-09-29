@@ -1,10 +1,19 @@
 export type AgentToolId = "cursor" | "claude" | "codex" | "grok";
 
+/**
+ * How the host is kept away from AstrLink's local files: enforced deny rules
+ * (Claude Code), prompt-only global instructions (Codex), or the skill text
+ * alone (hosts without a verified mechanism).
+ */
+export type AgentGuardKind = "deny_rules" | "instructions" | "skill_only";
+
 export interface AgentToolStatus {
   id: AgentToolId;
   detected: boolean;
   skill_installed: boolean;
   mcp_installed: boolean;
+  guard: AgentGuardKind;
+  guard_installed: boolean;
   preview_paths: string[];
 }
 
@@ -26,6 +35,11 @@ export interface AgentInstallReceipt {
 }
 
 const TOOL_IDS: readonly AgentToolId[] = ["cursor", "claude", "codex", "grok"];
+const GUARD_KINDS: readonly AgentGuardKind[] = [
+  "deny_rules",
+  "instructions",
+  "skill_only",
+];
 
 function invalid(path: string, detail: string): never {
   throw new Error(`Invalid AstrLink agent-install IPC at ${path}: ${detail}`);
@@ -73,17 +87,30 @@ function parseTool(value: unknown, path: string): AgentToolStatus {
   const root = objectAt(value, path);
   exactKeys(
     root,
-    ["id", "detected", "skill_installed", "mcp_installed", "preview_paths"],
+    [
+      "id",
+      "detected",
+      "skill_installed",
+      "mcp_installed",
+      "guard",
+      "guard_installed",
+      "preview_paths",
+    ],
     path,
   );
   if (!TOOL_IDS.includes(root.id as AgentToolId)) {
     invalid(`${path}.id`, "unknown tool");
+  }
+  if (!GUARD_KINDS.includes(root.guard as AgentGuardKind)) {
+    invalid(`${path}.guard`, "unknown guard kind");
   }
   return {
     id: root.id as AgentToolId,
     detected: booleanAt(root.detected, `${path}.detected`),
     skill_installed: booleanAt(root.skill_installed, `${path}.skill_installed`),
     mcp_installed: booleanAt(root.mcp_installed, `${path}.mcp_installed`),
+    guard: root.guard as AgentGuardKind,
+    guard_installed: booleanAt(root.guard_installed, `${path}.guard_installed`),
     preview_paths: parsePaths(root.preview_paths, `${path}.preview_paths`),
   };
 }

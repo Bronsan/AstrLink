@@ -241,8 +241,8 @@ func (account SubscriptionAccount) Validate() error {
 		if err := ValidateCredentialRef(account.CredentialRef); err != nil {
 			return fmt.Errorf("connected subscription requires credential_ref: %w", err)
 		}
-		if !strings.HasPrefix(account.CredentialRef, "keyring://") {
-			return fmt.Errorf("subscription credential_ref must use keyring://")
+		if account.CredentialRef != "local://subscription/"+string(account.ID) && !strings.HasPrefix(account.CredentialRef, "keyring://") {
+			return fmt.Errorf("subscription credential_ref must equal %q or use keyring://", "local://subscription/"+string(account.ID))
 		}
 	default:
 		if account.CredentialRef != "" {

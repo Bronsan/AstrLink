@@ -17,7 +17,7 @@ extern "C" {
     fn LSRegisterURL(url: CFURLRef, update: u8) -> i32;
 }
 
-fn bundle_for_executable(executable: &Path) -> Option<&Path> {
+pub(crate) fn bundle_for_executable(executable: &Path) -> Option<&Path> {
     let macos = executable.parent()?;
     let contents = macos.parent()?;
     let bundle = contents.parent()?;

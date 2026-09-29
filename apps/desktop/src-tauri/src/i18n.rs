@@ -126,6 +126,8 @@ mod tests {
             "host.tray.status.stopping",
             "host.tray.status.failed",
             "host.tray.status.observed",
+            "host.tray.status.observedRaw",
+            "host.tray.status.rawAccessPending",
             "host.tray.menubar.alert",
             "host.tray.hiddenMenuBarTitle",
             "host.tray.hiddenMenuBarBody",

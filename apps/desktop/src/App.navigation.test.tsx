@@ -13,6 +13,7 @@ const bridgeMocks = vi.hoisted(() => ({
   builtinToolAction: vi.fn().mockResolvedValue({ configured: false }),
   cancelPrivacyModelInstallation: vi.fn(),
   createAccessToken: vi.fn(),
+  decideRawAccess: vi.fn(),
   createService: vi.fn(),
   deleteAccessToken: vi.fn(),
   deleteService: vi.fn(),
@@ -20,6 +21,7 @@ const bridgeMocks = vi.hoisted(() => ({
   getAgentDebugStatus: vi.fn(),
   getAuditSettings: vi.fn(),
   getCoreStatus: vi.fn(),
+  getLocalDataStatus: vi.fn(),
   getPreferences: vi.fn(),
   getTrayState: vi
     .fn()
@@ -42,6 +44,7 @@ const bridgeMocks = vi.hoisted(() => ({
   getRequestAuditContent: vi.fn(),
   installPrivacyModel: vi.fn(),
   listAccessTokens: vi.fn(),
+  listRawAccess: vi.fn().mockResolvedValue([]),
   listAccessTokenUsage: vi.fn().mockResolvedValue({ items: [] }),
   listServices: vi.fn(),
   listPrivacyModelInstallations: vi.fn(),
@@ -70,6 +73,11 @@ const bridgeMocks = vi.hoisted(() => ({
   openAuthorizationURL: vi.fn(),
   probeDraftServiceModels: vi.fn(),
   probeServiceModels: vi.fn(),
+  getRawSealingStatus: vi.fn(),
+  lockRaw: vi.fn(),
+  setRawPassword: vi.fn(),
+  unlockRaw: vi.fn(),
+  verifyLocalPresence: vi.fn(),
 }));
 
 const updateMocks = vi.hoisted(() => ({
@@ -233,6 +241,27 @@ describe("App workspace navigation", () => {
       }
     ).IS_REACT_ACT_ENVIRONMENT = true;
     vi.clearAllMocks();
+    bridgeMocks.getLocalDataStatus.mockResolvedValue({
+      unreadable_credentials: 0,
+      unreadable_access_tokens: 0,
+      audit_key_missing: false,
+    });
+    // No raw password and no Touch ID: token copies ask for a confirmation.
+    bridgeMocks.getRawSealingStatus.mockResolvedValue({
+      raw_available: false,
+      configured: false,
+      password_set: false,
+      local_presence: false,
+      envelopes: [],
+      key_verified: false,
+      unlocked: false,
+      unlock_expires_at: null,
+      unlock_idle_seconds: 900,
+      retry_after_seconds: 0,
+      password_min_length: 8,
+      password_max_length: 128,
+      presence_available: false,
+    });
     bridgeMocks.getRoutingSettings.mockResolvedValue({
       default_failure_policy: defaultFailurePolicy(),
       allow_unmatched_failover: false,
@@ -386,6 +415,7 @@ describe("App workspace navigation", () => {
       response_content_max_bytes: 8192,
       metadata_retention_days: 30,
       content_retention_days: 7,
+      agent_raw_access_enabled: true,
     });
     bridgeMocks.getAgentDebugStatus.mockResolvedValue({
       canonical_skill: false,
@@ -397,6 +427,8 @@ describe("App workspace navigation", () => {
           detected: true,
           skill_installed: false,
           mcp_installed: false,
+          guard: "skill_only",
+          guard_installed: false,
           preview_paths: [],
         },
         {
@@ -404,6 +436,8 @@ describe("App workspace navigation", () => {
           detected: false,
           skill_installed: false,
           mcp_installed: false,
+          guard: "deny_rules",
+          guard_installed: false,
           preview_paths: [],
         },
         {
@@ -411,6 +445,8 @@ describe("App workspace navigation", () => {
           detected: true,
           skill_installed: true,
           mcp_installed: true,
+          guard: "instructions",
+          guard_installed: true,
           preview_paths: [],
         },
       ],
@@ -668,6 +704,8 @@ describe("App workspace navigation", () => {
     await renderApp();
     expect(bridgeMocks.revealAccessToken).not.toHaveBeenCalled();
     await act(async () => button("复制访问令牌").click());
+    expect(bridgeMocks.revealAccessToken).not.toHaveBeenCalled();
+    await act(async () => button("复制令牌").click());
     expect(bridgeMocks.revealAccessToken).toHaveBeenCalledWith("token_01");
     expect(writeText).toHaveBeenCalledWith("setup-secret");
     expect(container.textContent).not.toContain("setup-secret");
@@ -758,6 +796,8 @@ describe("App workspace navigation", () => {
       load_warning: null,
       autostart_actual: false,
       autostart_error: null,
+      data_backups: [],
+      local_key_storage: null,
     };
     bridgeMocks.getPreferences.mockResolvedValue(preferences);
     await renderApp();
@@ -962,6 +1002,8 @@ describe("App workspace navigation", () => {
       load_warning: null,
       autostart_actual: false,
       autostart_error: null,
+      data_backups: [],
+      local_key_storage: null,
     });
     await renderApp();
 
@@ -977,6 +1019,75 @@ describe("App workspace navigation", () => {
     expect(container.textContent).toContain("检查并发");
     expect(container.textContent).toContain("响应头等待");
     expect(container.textContent).not.toContain("工具接入");
+    expect(
+      container.querySelector('[data-slot="local-data-notice"]'),
+    ).toBeNull();
+  });
+
+  it("points to providers when saved credentials no longer decrypt", async () => {
+    bridgeMocks.getPreferences.mockResolvedValue({
+      values: {
+        close_behavior: "hide_to_tray",
+        autostart: false,
+        core_auto_start: true,
+        core_auto_recover: true,
+        use_system_proxy: true,
+        inference_port: 8317,
+        max_concurrent_inspections: 16,
+        response_start_timeout_seconds: 0,
+        max_request_body_mib: 0,
+        locale: "zh-CN",
+        theme: "system",
+        quota_display_mode: "remaining" as const,
+        tray: defaultTrayPreferences(),
+        updates: defaultUpdatePreferences(),
+      },
+      load_warning: null,
+      autostart_actual: false,
+      autostart_error: null,
+      data_backups: [],
+      local_key_storage: null,
+    });
+    bridgeMocks.getLocalDataStatus.mockResolvedValue({
+      unreadable_credentials: 3,
+      unreadable_access_tokens: 1,
+      audit_key_missing: true,
+    });
+    await renderApp();
+    const openSettings = async () => {
+      await act(async () => {
+        button("设置").click();
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+    };
+    const notice = () =>
+      container.querySelector('[data-slot="local-data-notice"]');
+
+    await openSettings();
+    expect(notice()?.textContent).toContain("有 3 项本地凭据无法解密");
+    expect(notice()?.textContent).not.toContain("密钥");
+    await act(async () => {
+      button("前往提供商").click();
+      await Promise.resolve();
+    });
+    expect(workspaceHeading().textContent).toBe("API 提供商");
+
+    await openSettings();
+    await act(async () => {
+      button("本次不再提示").click();
+      await Promise.resolve();
+    });
+    expect(notice()).toBeNull();
+    const reads = bridgeMocks.getLocalDataStatus.mock.calls.length;
+    // Hiding lasts across pages until the app restarts.
+    await act(async () => {
+      button("提供商").click();
+      await Promise.resolve();
+    });
+    await openSettings();
+    expect(notice()).toBeNull();
+    expect(bridgeMocks.getLocalDataStatus).toHaveBeenCalledTimes(reads);
   });
 
   it("opens the agent tools page from the system nav", async () => {
@@ -1020,6 +1131,8 @@ describe("App workspace navigation", () => {
       load_warning: null,
       autostart_actual: false,
       autostart_error: null,
+      data_backups: [],
+      local_key_storage: null,
     });
     await renderApp();
     await act(async () => {

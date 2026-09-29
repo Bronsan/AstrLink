@@ -12,6 +12,10 @@ const bridgeMocks = vi.hoisted(() => ({
   openCCSwitchImport: vi.fn(),
   listServices: vi.fn(),
   getRoutingSettings: vi.fn(),
+  getRawSealingStatus: vi.fn(),
+  lockRaw: vi.fn(),
+  unlockRaw: vi.fn(),
+  verifyLocalPresence: vi.fn(),
 }));
 
 vi.mock("./bridge", () => bridgeMocks);
@@ -72,6 +76,20 @@ function row(name: string): HTMLElement {
   return match;
 }
 
+/** Confirms the proof dialog a copy opens before the token leaves the app. */
+async function confirmReveal(): Promise<void> {
+  await act(async () => {
+    await Promise.resolve();
+  });
+  await act(async () => {
+    button("复制令牌").click();
+    await Promise.resolve();
+  });
+  await act(async () => {
+    await Promise.resolve();
+  });
+}
+
 async function setInput(selector: string, value: string): Promise<void> {
   const input = document.querySelector<HTMLInputElement>(selector);
   if (!input) throw new Error(`Missing input: ${selector}`);
@@ -105,6 +123,22 @@ describe("AccessTokenManager", () => {
     bridgeMocks.listAccessTokenUsage.mockResolvedValue({ items: [] });
     bridgeMocks.listServices.mockResolvedValue({ items: [] });
     bridgeMocks.getRoutingSettings.mockResolvedValue({ model_redirects: [] });
+    // No raw password and no Touch ID: the copy asks for a plain confirmation.
+    bridgeMocks.getRawSealingStatus.mockResolvedValue({
+      raw_available: false,
+      configured: false,
+      password_set: false,
+      local_presence: false,
+      envelopes: [],
+      key_verified: false,
+      unlocked: false,
+      unlock_expires_at: null,
+      unlock_idle_seconds: 900,
+      retry_after_seconds: 0,
+      password_min_length: 8,
+      password_max_length: 128,
+      presence_available: false,
+    });
     container = document.createElement("div");
     document.body.append(container);
     reactRoot = createRoot(container);
@@ -146,6 +180,8 @@ describe("AccessTokenManager", () => {
       button("复制", row(firstToken.name)).click();
       await Promise.resolve();
     });
+    expect(bridgeMocks.revealAccessToken).not.toHaveBeenCalled();
+    await confirmReveal();
     expect(navigator.clipboard.writeText).toHaveBeenCalledWith(firstSecret);
     expect(container.textContent).not.toContain(firstSecret);
     expect(button("已复制", row(firstToken.name))).toBeTruthy();
@@ -154,12 +190,39 @@ describe("AccessTokenManager", () => {
       button("复制", row(secondToken.name)).click();
       await Promise.resolve();
     });
+    await confirmReveal();
     expect(navigator.clipboard.writeText).toHaveBeenLastCalledWith(
       secondSecret,
     );
     expect(container.textContent).not.toContain(secondSecret);
     expect(button("已复制", row(secondToken.name))).toBeTruthy();
     expect(button("复制", row(firstToken.name))).toBeTruthy();
+  });
+
+  it("asks for proof before a copy and copies nothing when it is cancelled", async () => {
+    await renderManager(readyCatalog([firstToken]));
+
+    await act(async () => {
+      button("复制", row(firstToken.name)).click();
+      await Promise.resolve();
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+    const proof = document.querySelector('[data-slot="proof-confirm-dialog"]');
+    expect(proof?.textContent).toContain("确认复制访问令牌");
+    expect(bridgeMocks.revealAccessToken).not.toHaveBeenCalled();
+
+    await act(async () => button("取消").click());
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(
+      document.querySelector('[data-slot="proof-confirm-dialog"]'),
+    ).toBeNull();
+    expect(bridgeMocks.revealAccessToken).not.toHaveBeenCalled();
+    expect(navigator.clipboard.writeText).not.toHaveBeenCalled();
+    expect(button("复制", row(firstToken.name)).disabled).toBe(false);
   });
 
   it("fills CC Switch with the selected token and edited model without revealing its secret", async () => {
@@ -460,6 +523,7 @@ describe("AccessTokenManager", () => {
       button("复制", row(firstToken.name)).click();
       await Promise.resolve();
     });
+    await confirmReveal();
     await renderManager(readyCatalog([firstToken]), "session-2");
     await act(async () => {
       resolveReveal?.({ access_token: firstSecret });
@@ -497,6 +561,7 @@ describe("AccessTokenManager", () => {
       button("复制", row(firstToken.name)).click();
       await Promise.resolve();
     });
+    await confirmReveal();
 
     await act(async () => button("刷新").click());
     await act(async () => {

@@ -173,9 +173,17 @@ func TestAuditPayloadMigrationCompactsLegacyWithoutChangingContent(t *testing.T)
 	if err := runner.Up(ctx); err != nil {
 		t.Fatal(err)
 	}
-	legacyStore := &Store{db: db, now: time.Now}
 	const id = contract.RequestID("request_legacy")
-	key := auditPayloadFixture(t, legacyStore, id)
+	// The current record upsert names later columns, so the v40 row is raw SQL.
+	if _, err := db.Exec(`INSERT INTO request_records (id, started_at, status, input_protocol, streaming, audit_json, created_at)
+VALUES (?, '2026-09-19T00:00:00Z', 'succeeded', 'openai.responses', 0, '{}', '2026-09-19T00:00:00Z')`, id); err != nil {
+		t.Fatal(err)
+	}
+	// v40 kept the audit key in plaintext; the key ring adopts it on open.
+	key := bytes.Repeat([]byte{0x5a}, storage.AuditKeyBytes)
+	if _, err := db.Exec(`INSERT INTO audit_keys (id, key_bytes, created_at) VALUES (1, ?, '2026-09-19T00:00:00Z')`, key); err != nil {
+		t.Fatal(err)
+	}
 	for _, direction := range []storage.AuditDirection{storage.AuditDirectionResponse, storage.AuditDirectionUpstreamResponse} {
 		blob := sealedPayload(t, key, id, direction, "legacy response")
 		if _, err := db.Exec(`INSERT INTO audit_blobs (request_id, direction, media_type, nonce, ciphertext, truncated, captured_bytes, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,

@@ -1,0 +1,789 @@
+package controlapi
+
+import (
+	"context"
+	"crypto/rand"
+	"encoding/binary"
+	"errors"
+	"fmt"
+	"sync"
+	"time"
+
+	"github.com/QuantumNous/astrlink/core/internal/storage"
+	"github.com/QuantumNous/astrlink/core/internal/storage/rawseal"
+)
+
+const (
+	// rawUnlockIdle ends the operator's unlock session after this long
+	// without a raw read (D13).
+	rawUnlockIdle = 15 * time.Minute
+	// rawBackoffFreeFailures wrong passwords in a row are answered at once;
+	// the next ones wait 2^(n-3) s, at most rawBackoffCap (§5.11.9.6).
+	rawBackoffFreeFailures = 2
+	rawBackoffCap          = 30 * time.Second
+	// rawResealBatch parts are committed per reseal transaction.
+	rawResealBatch = 100
+)
+
+var (
+	// ErrRawPasswordAlreadySet means set was asked for while a password
+	// envelope exists; change replaces it.
+	ErrRawPasswordAlreadySet = errors.New("a raw password is already set")
+	// ErrRawPasswordNotSet means change was asked for without a password.
+	ErrRawPasswordNotSet = errors.New("no raw password is set")
+	// ErrRawPasswordRequired means an action needs a new password that was
+	// not given.
+	ErrRawPasswordRequired = errors.New("a new raw password is required")
+	// ErrRawPasswordPolicy means a new password is outside the length policy.
+	ErrRawPasswordPolicy = rawseal.ErrPasswordPolicy
+)
+
+// RawPasswordAction is one operation on the raw password.
+type RawPasswordAction string
+
+const (
+	// RawPasswordSet adds the first password envelope, creating the key pair
+	// when none exists yet.
+	RawPasswordSet RawPasswordAction = "set"
+	// RawPasswordChange rewraps the private key under a new password.
+	RawPasswordChange RawPasswordAction = "change"
+	// RawPasswordReset replaces the key pair and discards every part sealed
+	// to the old one.
+	RawPasswordReset RawPasswordAction = "reset"
+)
+
+// RawPasswordOutcome reports a password action. Reset is set only for a
+// reset.
+type RawPasswordOutcome struct {
+	Status RawVaultStatus
+	Reset  *storage.RawResetResult
+}
+
+// RawVaultController is the operator side of the vault. A RawVault that does
+// not implement it cannot be unlocked or given a password.
+type RawVaultController interface {
+	// Unlock proves access and keeps the private key for the idle window.
+	Unlock(context.Context, RawProof) (RawVaultStatus, error)
+	// Lock ends the unlock session at once.
+	Lock()
+	// ChangePassword applies action. password is the new password and
+	// belongs to the caller; proof opens the existing key where needed.
+	ChangePassword(ctx context.Context, action RawPasswordAction, password []byte, proof RawProof) (RawPasswordOutcome, error)
+}
+
+// RawVaultOptions configures NewRawVault.
+type RawVaultOptions struct {
+	// LocalEnvelope is true when the local key came from the desktop's
+	// keychain. Only then does the vault create and accept the local
+	// envelope; a key file beside the database must never open raw
+	// content (§5.11.9.2).
+	LocalEnvelope bool
+	// KDF overrides the Argon2id parameters; zero means rawseal.DefaultKDF.
+	KDF rawseal.KDFParams
+	// Logf receives state changes; it never sees key material or passwords.
+	Logf func(string, ...any)
+	// ReadOnly is for a store opened read-only: a proof never repairs the
+	// public key MAC or the local envelope.
+	ReadOnly bool
+}
+
+// Vault guards the raw sealing private key inside Core (§5.11.9.4). The
+// private key is in memory only while a proof is checked, and while the
+// operator's unlock session lasts. Argon2id runs one at a time and never
+// inside a database transaction.
+type Vault struct {
+	store         storage.RawSealingStore
+	localEnvelope bool
+	readOnly      bool
+	kdf           rawseal.KDFParams
+	logf          func(string, ...any)
+	now           func() time.Time
+	// slot admits one key opening or password action at a time, so parallel
+	// guesses queue behind the backoff instead of racing past it.
+	slot   chan struct{}
+	reseal chan struct{}
+
+	mu          sync.Mutex
+	stateLoaded bool
+	configured  bool
+	state       storage.RawSealingState
+	// localOpens is true when the local envelope opened under this Core's
+	// local key; only then is local presence accepted.
+	localOpens bool
+
+	session      []byte
+	sessionKeyID int64
+	sessionUntil time.Time
+	sessionTimer *time.Timer
+
+	failures     int
+	blockedUntil time.Time
+
+	// privateCleared, when set by tests, sees each proof-opened private key
+	// right after the vault zeroes it.
+	privateCleared func([]byte)
+}
+
+var (
+	_ RawVault           = (*Vault)(nil)
+	_ RawVaultController = (*Vault)(nil)
+)
+
+// NewRawVault returns a vault over store. Call Run to reseal in the
+// background and EnsureRawSealing once the store is open.
+func NewRawVault(store storage.RawSealingStore, options RawVaultOptions) *Vault {
+	kdf := options.KDF
+	if kdf == (rawseal.KDFParams{}) {
+		kdf = rawseal.DefaultKDF
+	}
+	logf := options.Logf
+	if logf == nil {
+		logf = func(string, ...any) {}
+	}
+	vault := &Vault{
+		store:         store,
+		localEnvelope: options.LocalEnvelope,
+		readOnly:      options.ReadOnly,
+		kdf:           kdf,
+		logf:          logf,
+		now:           time.Now,
+		slot:          make(chan struct{}, 1),
+		reseal:        make(chan struct{}, 1),
+	}
+	// The first pass picks up parts left under the audit key by an earlier
+	// run that stopped mid-reseal.
+	vault.reseal <- struct{}{}
+	return vault
+}
+
+// Run reseals raw parts onto the raw sealing key whenever one appears or the
+// store reports a settled part it could not move itself, until ctx ends.
+func (vault *Vault) Run(ctx context.Context) {
+	vault.store.OnResealDeferred(vault.requestReseal)
+	defer vault.store.OnResealDeferred(nil)
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-vault.reseal:
+		}
+		result, err := vault.store.ResealRawParts(ctx, rawResealBatch)
+		switch {
+		case err != nil && ctx.Err() == nil:
+			vault.logf("raw sealing: reseal stopped: %v", err)
+		case result.Resealed > 0:
+			vault.logf("raw sealing: moved %d captured part(s) onto the raw sealing key", result.Resealed)
+		}
+	}
+}
+
+func (vault *Vault) requestReseal() {
+	select {
+	case vault.reseal <- struct{}{}:
+	default:
+	}
+}
+
+func (vault *Vault) acquire(ctx context.Context) error {
+	select {
+	case vault.slot <- struct{}{}:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (vault *Vault) release() { <-vault.slot }
+
+// loadLocked reads the stored key once; mutations call reloadLocked.
+func (vault *Vault) loadLocked(ctx context.Context) error {
+	if vault.stateLoaded {
+		return nil
+	}
+	return vault.reloadLocked(ctx)
+}
+
+func (vault *Vault) reloadLocked(ctx context.Context) error {
+	state, err := vault.store.LoadRawSealing(ctx)
+	if errors.Is(err, storage.ErrNotFound) {
+		vault.stateLoaded, vault.configured, vault.localOpens = true, false, false
+		vault.state = storage.RawSealingState{}
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	vault.stateLoaded, vault.configured, vault.state = true, true, state
+	vault.localOpens = false
+	if vault.localEnvelope && state.Local != nil {
+		if private, err := vault.store.OpenLocalRawKey(state); err == nil {
+			clear(private)
+			vault.localOpens = true
+		}
+	}
+	if vault.session != nil && vault.sessionKeyID != state.KeyID {
+		vault.clearSessionLocked()
+	}
+	return nil
+}
+
+func (vault *Vault) reload(ctx context.Context) error {
+	vault.mu.Lock()
+	defer vault.mu.Unlock()
+	return vault.reloadLocked(ctx)
+}
+
+// snapshot returns the stored key and whether local presence opens it.
+func (vault *Vault) snapshot(ctx context.Context) (storage.RawSealingState, bool, bool, error) {
+	vault.mu.Lock()
+	defer vault.mu.Unlock()
+	if err := vault.loadLocked(ctx); err != nil {
+		return storage.RawSealingState{}, false, false, err
+	}
+	return vault.state, vault.configured, vault.localOpens, nil
+}
+
+// Status implements RawVault.
+func (vault *Vault) Status(ctx context.Context) (RawVaultStatus, error) {
+	vault.mu.Lock()
+	defer vault.mu.Unlock()
+	if err := vault.loadLocked(ctx); err != nil {
+		return RawVaultStatus{}, err
+	}
+	now := vault.now()
+	status := RawVaultStatus{
+		Configured:    vault.configured,
+		LocalPresence: vault.localOpens,
+		PasswordSet:   vault.configured && vault.state.Password != nil,
+		LocalEnvelope: vault.configured && vault.state.Local != nil,
+		KeyVerified:   vault.configured && vault.state.MACValid,
+	}
+	if vault.sessionActiveLocked(now) {
+		until := vault.sessionUntil.UTC()
+		status.Unlocked, status.UnlockExpiresAt = true, &until
+	}
+	if remaining := vault.blockedUntil.Sub(now); remaining > 0 {
+		status.RetryAfter = remaining
+	}
+	return status, nil
+}
+
+func (vault *Vault) sessionActiveLocked(now time.Time) bool {
+	if vault.session == nil {
+		return false
+	}
+	if now.Before(vault.sessionUntil) {
+		return true
+	}
+	vault.clearSessionLocked()
+	return false
+}
+
+func (vault *Vault) clearSessionLocked() {
+	clear(vault.session)
+	vault.session, vault.sessionKeyID, vault.sessionUntil = nil, 0, time.Time{}
+	if vault.sessionTimer != nil {
+		vault.sessionTimer.Stop()
+		vault.sessionTimer = nil
+	}
+}
+
+// expireSession zeroes the session key once its idle deadline passes, so an
+// abandoned unlock does not leave the key in memory until the next read.
+func (vault *Vault) expireSession() {
+	vault.mu.Lock()
+	defer vault.mu.Unlock()
+	if vault.session == nil {
+		return
+	}
+	remaining := vault.sessionUntil.Sub(vault.now())
+	if remaining <= 0 {
+		vault.clearSessionLocked()
+		return
+	}
+	vault.sessionTimer = time.AfterFunc(remaining, vault.expireSession)
+}
+
+// UnlockedOpener implements RawVault. Each call is a raw read and restarts
+// the idle window.
+func (vault *Vault) UnlockedOpener() (RawKeyOpener, bool) {
+	vault.mu.Lock()
+	defer vault.mu.Unlock()
+	now := vault.now()
+	if !vault.sessionActiveLocked(now) {
+		return nil, false
+	}
+	vault.sessionUntil = now.Add(rawUnlockIdle)
+	return sessionOpener{vault: vault}, true
+}
+
+type sessionOpener struct{ vault *Vault }
+
+func (opener sessionOpener) OpenBlobKey(blob storage.AuditBlob) ([]byte, error) {
+	vault := opener.vault
+	vault.mu.Lock()
+	defer vault.mu.Unlock()
+	if !vault.sessionActiveLocked(vault.now()) {
+		return nil, fmt.Errorf("%w: the unlock session ended", rawseal.ErrBlobKey)
+	}
+	return openRawBlobKey(vault.session, vault.sessionKeyID, blob)
+}
+
+// proofOpener lends a proof-opened private key to one callback.
+type proofOpener struct {
+	mu      sync.Mutex
+	private []byte
+	keyID   int64
+}
+
+func (opener *proofOpener) OpenBlobKey(blob storage.AuditBlob) ([]byte, error) {
+	opener.mu.Lock()
+	defer opener.mu.Unlock()
+	if opener.private == nil {
+		return nil, fmt.Errorf("%w: the proof was already used", rawseal.ErrBlobKey)
+	}
+	return openRawBlobKey(opener.private, opener.keyID, blob)
+}
+
+func (opener *proofOpener) close() []byte {
+	opener.mu.Lock()
+	defer opener.mu.Unlock()
+	private := opener.private
+	clear(private)
+	opener.private = nil
+	return private
+}
+
+func openRawBlobKey(private []byte, keyID int64, blob storage.AuditBlob) ([]byte, error) {
+	if blob.Sealing != storage.AuditSealingRawV1 || blob.RawKeyID != keyID {
+		return nil, fmt.Errorf("%w: part is not sealed to this key", rawseal.ErrBlobKey)
+	}
+	return rawseal.OpenBlobKey(private, rawseal.BlobKeyInfo(string(blob.RequestID), string(blob.Direction)), blob.WrappedKey)
+}
+
+// WithProof implements RawVault. The private key is zeroed before it
+// returns; the unlock session is neither used nor extended.
+func (vault *Vault) WithProof(ctx context.Context, proof RawProof, use func(RawKeyOpener) error) error {
+	private, keyID, err := vault.openWithProof(ctx, proof)
+	if err != nil {
+		return err
+	}
+	opener := &proofOpener{private: private, keyID: keyID}
+	defer func() {
+		cleared := opener.close()
+		if vault.privateCleared != nil {
+			vault.privateCleared(cleared)
+		}
+	}()
+	return use(opener)
+}
+
+// Unlock implements RawVaultController.
+func (vault *Vault) Unlock(ctx context.Context, proof RawProof) (RawVaultStatus, error) {
+	private, keyID, err := vault.openWithProof(ctx, proof)
+	if err != nil {
+		return RawVaultStatus{}, err
+	}
+	vault.mu.Lock()
+	vault.clearSessionLocked()
+	vault.session, vault.sessionKeyID = private, keyID
+	vault.sessionUntil = vault.now().Add(rawUnlockIdle)
+	vault.sessionTimer = time.AfterFunc(rawUnlockIdle, vault.expireSession)
+	vault.mu.Unlock()
+	return vault.Status(ctx)
+}
+
+// Lock implements RawVaultController.
+func (vault *Vault) Lock() {
+	vault.mu.Lock()
+	defer vault.mu.Unlock()
+	vault.clearSessionLocked()
+}
+
+// backoffLocked returns how long proofs are still refused.
+func (vault *Vault) backoffLocked(now time.Time) time.Duration {
+	if remaining := vault.blockedUntil.Sub(now); remaining > 0 {
+		return remaining
+	}
+	return 0
+}
+
+func (vault *Vault) checkBackoff() error {
+	vault.mu.Lock()
+	defer vault.mu.Unlock()
+	if remaining := vault.backoffLocked(vault.now()); remaining > 0 {
+		return &RawBackoffError{Remaining: remaining}
+	}
+	return nil
+}
+
+func (vault *Vault) noteWrongPassword() {
+	vault.mu.Lock()
+	defer vault.mu.Unlock()
+	vault.failures++
+	if vault.failures <= rawBackoffFreeFailures {
+		return
+	}
+	delay := rawBackoffCap
+	if shift := vault.failures - rawBackoffFreeFailures - 1; shift < 5 {
+		delay = min(time.Second<<shift, rawBackoffCap)
+	}
+	vault.blockedUntil = vault.now().Add(delay)
+}
+
+func (vault *Vault) noteRightPassword() {
+	vault.mu.Lock()
+	defer vault.mu.Unlock()
+	vault.failures, vault.blockedUntil = 0, time.Time{}
+}
+
+// openWithProof checks a proof and returns the private key, which the
+// caller zeroes.
+func (vault *Vault) openWithProof(ctx context.Context, proof RawProof) ([]byte, int64, error) {
+	if proof.Empty() {
+		return nil, 0, ErrRawProofRequired
+	}
+	if err := vault.acquire(ctx); err != nil {
+		return nil, 0, err
+	}
+	defer vault.release()
+	if err := vault.checkBackoff(); err != nil {
+		return nil, 0, err
+	}
+	state, configured, localOpens, err := vault.snapshot(ctx)
+	if err != nil {
+		return nil, 0, err
+	}
+	if !configured {
+		return nil, 0, ErrRawNotConfigured
+	}
+	private, err := vault.openStateLocked(ctx, state, localOpens, proof)
+	if err != nil {
+		return nil, 0, err
+	}
+	return private, state.KeyID, nil
+}
+
+// openStateLocked opens state's private key with proof. The caller holds
+// the slot.
+func (vault *Vault) openStateLocked(ctx context.Context, state storage.RawSealingState, localOpens bool, proof RawProof) ([]byte, error) {
+	var private []byte
+	switch {
+	case proof.LocalPresence:
+		if !localOpens {
+			return nil, ErrRawProofRequired
+		}
+		opened, err := vault.store.OpenLocalRawKey(state)
+		if err != nil {
+			return nil, ErrRawProofRequired
+		}
+		private = opened
+	case len(proof.Password) > 0:
+		if state.Password == nil {
+			return nil, ErrRawProofRequired
+		}
+		envelope, err := passwordEnvelope(*state.Password)
+		if err != nil {
+			return nil, err
+		}
+		opened, err := rawseal.UnwrapPassword(envelope, proof.Password, state.KeyID, state.PublicKey)
+		if errors.Is(err, rawseal.ErrPassword) {
+			vault.noteWrongPassword()
+			return nil, ErrRawPasswordInvalid
+		}
+		if err != nil {
+			return nil, err
+		}
+		vault.noteRightPassword()
+		private = opened
+	default:
+		return nil, ErrRawProofRequired
+	}
+	vault.repairAfterProof(ctx, state, localOpens, private)
+	return private, nil
+}
+
+// repairAfterProof uses a proven private key to restore what start could
+// not: a public key whose MAC no longer verifies, and on keychain platforms
+// a local envelope lost with the keychain entry (§5.11.9.3).
+func (vault *Vault) repairAfterProof(ctx context.Context, state storage.RawSealingState, localOpens bool, private []byte) {
+	if vault.readOnly {
+		return
+	}
+	changed := false
+	if !state.MACValid {
+		if err := vault.store.RefreshRawSealingMAC(ctx, state.KeyID); err != nil {
+			vault.logf("raw sealing: re-authenticate the public key: %v", err)
+		} else {
+			vault.logf("raw sealing: the raw password confirmed the sealing key; raw captures are sealed to it again")
+			changed = true
+			vault.requestReseal()
+		}
+	}
+	if vault.localEnvelope && !localOpens {
+		envelope, err := vault.store.WrapLocalRawKey(state.KeyID, state.PublicKey, private)
+		if err == nil {
+			err = vault.store.PutRawKeyEnvelope(ctx, state.KeyID, envelope)
+		}
+		if err != nil {
+			vault.logf("raw sealing: rebuild the local envelope: %v", err)
+		} else {
+			vault.logf("raw sealing: rebuilt the local envelope from the raw password")
+			changed = true
+		}
+	}
+	if changed {
+		if err := vault.reload(ctx); err != nil {
+			vault.logf("raw sealing: reload the sealing key: %v", err)
+		}
+	}
+}
+
+func passwordEnvelope(stored storage.RawKeyEnvelope) (rawseal.PasswordEnvelope, error) {
+	params, err := rawseal.ParseKDFJSON(stored.KDFJSON)
+	if err != nil {
+		return rawseal.PasswordEnvelope{}, err
+	}
+	return rawseal.PasswordEnvelope{KDF: params, Salt: stored.Salt, Nonce: stored.Nonce, Wrapped: stored.Wrapped}, nil
+}
+
+func storedPasswordEnvelope(envelope rawseal.PasswordEnvelope) (storage.RawKeyEnvelope, error) {
+	kdfJSON, err := envelope.KDFJSON()
+	if err != nil {
+		return storage.RawKeyEnvelope{}, err
+	}
+	return storage.RawKeyEnvelope{
+		Kind: rawseal.KindPassword, KDFJSON: kdfJSON,
+		Salt: envelope.Salt, Nonce: envelope.Nonce, Wrapped: envelope.Wrapped,
+	}, nil
+}
+
+// newRawKeyID picks a random positive id, so a key restored elsewhere never
+// collides with a local one by counting.
+func newRawKeyID() (int64, error) {
+	var buffer [8]byte
+	for {
+		if _, err := rand.Read(buffer[:]); err != nil {
+			return 0, err
+		}
+		if id := int64(binary.BigEndian.Uint64(buffer[:]) >> 1); id > 0 {
+			return id, nil
+		}
+	}
+}
+
+// newKey generates a key pair wrapped under password (when given) and, on
+// keychain platforms, under the local key.
+func (vault *Vault) newKey(password []byte) (storage.NewRawSealingKey, error) {
+	private, public, err := rawseal.GenerateKeyPair()
+	if err != nil {
+		return storage.NewRawSealingKey{}, err
+	}
+	defer clear(private)
+	keyID, err := newRawKeyID()
+	if err != nil {
+		return storage.NewRawSealingKey{}, err
+	}
+	key := storage.NewRawSealingKey{KeyID: keyID, PublicKey: public}
+	if len(password) > 0 {
+		wrapped, err := rawseal.WrapPassword(private, password, vault.kdf, keyID, public)
+		if err != nil {
+			return storage.NewRawSealingKey{}, err
+		}
+		envelope, err := storedPasswordEnvelope(wrapped)
+		if err != nil {
+			return storage.NewRawSealingKey{}, err
+		}
+		key.Envelopes = append(key.Envelopes, envelope)
+	}
+	if vault.localEnvelope {
+		envelope, err := vault.store.WrapLocalRawKey(keyID, public, private)
+		if err != nil {
+			return storage.NewRawSealingKey{}, err
+		}
+		key.Envelopes = append(key.Envelopes, envelope)
+	}
+	return key, nil
+}
+
+// EnsureRawSealing creates the key pair and its local envelope without any
+// interaction when the local key came from the keychain (§5.11.9.3), and
+// re-authenticates a public key the local envelope proves intact. Elsewhere
+// it does nothing: without a password there is no secret to bind to.
+func (vault *Vault) EnsureRawSealing(ctx context.Context) error {
+	if !vault.localEnvelope {
+		return nil
+	}
+	if err := vault.acquire(ctx); err != nil {
+		return err
+	}
+	defer vault.release()
+	state, configured, localOpens, err := vault.snapshot(ctx)
+	if err != nil {
+		return err
+	}
+	if !configured {
+		key, err := vault.newKey(nil)
+		if err != nil {
+			return err
+		}
+		if err := vault.store.CreateRawSealingKey(ctx, key); err != nil && !errors.Is(err, storage.ErrConflict) {
+			return err
+		}
+		vault.logf("raw sealing: created the raw sealing key with a local envelope")
+		vault.requestReseal()
+		return vault.reload(ctx)
+	}
+	switch {
+	case !localOpens && state.Password != nil:
+		vault.logf("raw sealing: the local envelope is missing or does not open; enter the raw password to restore it")
+	case !localOpens:
+		vault.logf("raw sealing: the local envelope is missing or does not open and no raw password is set; raw captures stay unreadable")
+	case !state.MACValid:
+		private, err := vault.store.OpenLocalRawKey(state)
+		if err != nil {
+			return err
+		}
+		clear(private)
+		if err := vault.store.RefreshRawSealingMAC(ctx, state.KeyID); err != nil {
+			return err
+		}
+		vault.logf("raw sealing: the local envelope confirmed the sealing key; raw captures are sealed to it again")
+		vault.requestReseal()
+		return vault.reload(ctx)
+	}
+	return nil
+}
+
+// ChangePassword implements RawVaultController.
+func (vault *Vault) ChangePassword(
+	ctx context.Context,
+	action RawPasswordAction,
+	password []byte,
+	proof RawProof,
+) (RawPasswordOutcome, error) {
+	switch action {
+	case RawPasswordSet, RawPasswordChange, RawPasswordReset:
+	default:
+		return RawPasswordOutcome{}, fmt.Errorf("%w: unknown raw password action", storage.ErrInvalidArgument)
+	}
+	if err := vault.acquire(ctx); err != nil {
+		return RawPasswordOutcome{}, err
+	}
+	defer vault.release()
+	state, configured, localOpens, err := vault.snapshot(ctx)
+	if err != nil {
+		return RawPasswordOutcome{}, err
+	}
+	var outcome RawPasswordOutcome
+	switch action {
+	case RawPasswordSet:
+		if configured && state.Password != nil {
+			return RawPasswordOutcome{}, ErrRawPasswordAlreadySet
+		}
+		if err := requireNewPassword(password); err != nil {
+			return RawPasswordOutcome{}, err
+		}
+		if !configured {
+			err = vault.createWithPassword(ctx, password)
+		} else {
+			err = vault.rewrap(ctx, state, localOpens, password, proof)
+		}
+	case RawPasswordChange:
+		if !configured || state.Password == nil {
+			return RawPasswordOutcome{}, ErrRawPasswordNotSet
+		}
+		if err := requireNewPassword(password); err != nil {
+			return RawPasswordOutcome{}, err
+		}
+		err = vault.rewrap(ctx, state, localOpens, password, proof)
+	case RawPasswordReset:
+		if !configured {
+			return RawPasswordOutcome{}, ErrRawNotConfigured
+		}
+		if len(password) > 0 || !vault.localEnvelope {
+			if err := requireNewPassword(password); err != nil {
+				return RawPasswordOutcome{}, err
+			}
+		}
+		outcome.Reset, err = vault.replace(ctx, password)
+	}
+	if err != nil {
+		return RawPasswordOutcome{}, err
+	}
+	if err := vault.reload(ctx); err != nil {
+		return RawPasswordOutcome{}, err
+	}
+	outcome.Status, err = vault.Status(ctx)
+	return outcome, err
+}
+
+func requireNewPassword(password []byte) error {
+	if len(password) == 0 {
+		return ErrRawPasswordRequired
+	}
+	return rawseal.ValidatePassword(password)
+}
+
+func (vault *Vault) createWithPassword(ctx context.Context, password []byte) error {
+	key, err := vault.newKey(password)
+	if err != nil {
+		return err
+	}
+	if err := vault.store.CreateRawSealingKey(ctx, key); err != nil {
+		return err
+	}
+	vault.logf("raw sealing: created the raw sealing key")
+	vault.requestReseal()
+	return nil
+}
+
+// rewrap opens the existing key with proof and stores a password envelope
+// under a fresh salt. No captured part changes.
+func (vault *Vault) rewrap(ctx context.Context, state storage.RawSealingState, localOpens bool, password []byte, proof RawProof) error {
+	if proof.Empty() {
+		return ErrRawProofRequired
+	}
+	if err := vault.checkBackoff(); err != nil {
+		return err
+	}
+	private, err := vault.openStateLocked(ctx, state, localOpens, proof)
+	if err != nil {
+		return err
+	}
+	defer clear(private)
+	wrapped, err := rawseal.WrapPassword(private, password, vault.kdf, state.KeyID, state.PublicKey)
+	if err != nil {
+		return err
+	}
+	envelope, err := storedPasswordEnvelope(wrapped)
+	if err != nil {
+		return err
+	}
+	if err := vault.store.PutRawKeyEnvelope(ctx, state.KeyID, envelope); err != nil {
+		return err
+	}
+	vault.logf("raw sealing: the raw password was changed")
+	return nil
+}
+
+// replace discards the key pair and every part sealed to it. It needs no
+// proof: it is how a forgotten password is recovered from, at the cost of
+// the raw captures still in retention.
+func (vault *Vault) replace(ctx context.Context, password []byte) (*storage.RawResetResult, error) {
+	key, err := vault.newKey(password)
+	if err != nil {
+		return nil, err
+	}
+	result, err := vault.store.ReplaceRawSealingKey(ctx, key)
+	if err != nil {
+		return nil, err
+	}
+	vault.mu.Lock()
+	vault.clearSessionLocked()
+	vault.mu.Unlock()
+	vault.logf("raw sealing: replaced the raw sealing key; discarded %d raw part(s) of %d request(s)",
+		result.DeletedParts, result.AffectedRecords)
+	vault.requestReseal()
+	return &result, nil
+}

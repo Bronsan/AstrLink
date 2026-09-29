@@ -292,6 +292,10 @@ const resourceIDPattern = /^[a-z][a-z0-9_-]{2,95}$/;
 const protocolIDPattern = /^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$/;
 const headerNamePattern = /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/;
 const localCredentialRefPattern = /^local:\/\/service\/[a-z][a-z0-9_-]{2,95}$/;
+// Accounts keep their OAuth tokens sealed in Core's database; accounts not
+// migrated yet still name the OS keystore.
+const subscriptionCredentialRefPattern =
+  /^local:\/\/subscription\/[a-z][a-z0-9_-]{2,95}$/;
 const keyringCredentialRefPattern =
   /^keyring:\/\/[A-Za-z0-9._~-]+\/[A-Za-z0-9._~!$&'()*+,;=:@/-]*[A-Za-z0-9._~!$&'()*+,;=:@-]$/;
 const rfc3339Pattern =
@@ -734,8 +738,14 @@ function parseSubscriptionConnection(
       1,
       512,
     );
-    if (!keyringCredentialRefPattern.test(credentialRef)) {
-      invalid(`${path}.credential_ref`, "must use keyring://");
+    if (
+      !subscriptionCredentialRefPattern.test(credentialRef) &&
+      !keyringCredentialRefPattern.test(credentialRef)
+    ) {
+      invalid(
+        `${path}.credential_ref`,
+        "must use local://subscription/<id> or keyring://",
+      );
     }
     result.credential_ref = credentialRef;
   }

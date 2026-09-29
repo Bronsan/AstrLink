@@ -66,10 +66,12 @@ import { useExportEnvironment } from "./export-environment";
 import {
   deleteRequestRecord,
   getAuditSettings,
+  getRawSealingStatus,
   getRequestAuditContent,
   getRequestSession,
   listRequestRecordChildren,
   listRequestSessions,
+  lockRaw,
   purgeRequestRecords,
   saveTextFile,
   updateAuditSettings,
@@ -79,6 +81,19 @@ import { i18n, useT } from "./i18n";
 import { useLiveClock } from "./live-clock";
 import { notify } from "./notify";
 import { PageHeader } from "./PageHeader";
+import {
+  RawSealingDialogs,
+  rawUpgradeNeeded,
+  unlockIdleMinutes,
+  type RawDialog,
+} from "./RawSealingControls";
+import {
+  rawProofMode,
+  unlockCheckDelay,
+  withPresence,
+  type RawSealingState,
+} from "./raw-sealing-model";
+import { rawSealingErrorMessage } from "./raw-sealing-ui";
 import type { AccessTokenSummary } from "./access-token-model";
 import type { RoutableService } from "./service-model";
 import {
@@ -94,6 +109,7 @@ import {
   type RecordFilters,
 } from "./request-live-model";
 import {
+  holdsRawPart,
   isModelDiscoveryProtocol,
   statusLabel,
   statusTone,
@@ -299,6 +315,12 @@ export function RequestRecords({
   const [pendingConfirm, setPendingConfirm] = useState<PendingConfirm | null>(
     null,
   );
+  const [rawSealing, setRawSealing] = useState<RawSealingState | null>(null);
+  const [rawSealingError, setRawSealingError] = useState<string | null>(null);
+  const [rawDialog, setRawDialog] = useState<RawDialog | null>(null);
+  // Bumped to read the open record's audit content again, e.g. after an
+  // unlock changed which raw parts Core may return.
+  const [auditNonce, setAuditNonce] = useState(0);
 
   const generationRef = useRef(0);
   const listGenerationRef = useRef(0);
@@ -465,6 +487,9 @@ export function RequestRecords({
     setSettingsNotice(null);
     setPurgeOpen(false);
     setPendingConfirm(null);
+    setRawSealing(null);
+    setRawSealingError(null);
+    setRawDialog(null);
     setError(null);
     setSyncWarning(null);
 
@@ -478,6 +503,15 @@ export function RequestRecords({
       .catch((requestError: unknown) => {
         if (generationRef.current !== generation) return;
         setError(messageOf(requestError, i18n.t("records.auditReadFailed")));
+      });
+    void getRawSealingStatus()
+      .then((current) => {
+        if (generationRef.current !== generation) return;
+        setRawSealing(current);
+      })
+      .catch((requestError: unknown) => {
+        if (generationRef.current !== generation) return;
+        setRawSealingError(rawSealingErrorMessage(requestError));
       });
   }, [coreSessionKey, initialLocalAccessTokenId, isReady]);
 
@@ -677,7 +711,8 @@ export function RequestRecords({
   // Detail auto-decrypt: cached content shows instantly; a generation
   // counter drops stale responses when the selected turn changes quickly.
   // Pending records are never cached so the content refreshes once the
-  // record reaches a terminal status.
+  // record reaches a terminal status. Raw parts under a raw key are never
+  // cached either: they must not outlive the unlock that returned them.
   const selectedIsPending = selected?.status === "pending";
   const selectedAuditKey = selected
     ? [
@@ -698,13 +733,16 @@ export function RequestRecords({
     }
     const generation = ++auditGenerationRef.current;
     const cacheable = !selectedIsPending;
+    const rawLocks = rawSealing?.configured !== false;
     setAuditLoading(true);
     setAuditError(null);
     setAuditContent(null);
     void getRequestAuditContent(selected.id)
       .then((content) => {
         if (auditGenerationRef.current !== generation) return;
-        if (cacheable) cacheInsert(selected.id, content);
+        if (cacheable && !(rawLocks && holdsRawPart(content))) {
+          cacheInsert(selected.id, content);
+        }
         setAuditContent(content);
       })
       .catch((requestError: unknown) => {
@@ -721,7 +759,50 @@ export function RequestRecords({
         if (auditGenerationRef.current === generation) setAuditLoading(false);
       });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [view, selectedId, selected?.id, selectedIsPending, selectedAuditKey]);
+  }, [
+    view,
+    selectedId,
+    selected?.id,
+    selectedIsPending,
+    selectedAuditKey,
+    auditNonce,
+  ]);
+
+  // Core locks an idle unlock session on its own; a raw part that comes back
+  // locked means the unlock this page remembers has ended.
+  const rawLockedShown =
+    auditContent !== null &&
+    Object.values(auditContent.withheld).some(
+      (part) => part?.reason === "raw_locked",
+    );
+  const rawUnlockedShown = rawSealing?.unlocked === true;
+  useEffect(() => {
+    if (!rawLockedShown || !rawUnlockedShown) return;
+    void refreshRawSealing();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rawLockedShown, rawUnlockedShown]);
+
+  // Check again when the unlock this page knows of ends. Reads push Core's
+  // idle deadline back, so a session still open arms the next check; one
+  // that ended takes the raw parts off the screen.
+  const unlockExpiresAt = rawSealing?.unlocked
+    ? rawSealing.unlock_expires_at
+    : null;
+  const [unlockCheck, setUnlockCheck] = useState(0);
+  useEffect(() => {
+    if (!unlockExpiresAt) return;
+    const timer = window.setTimeout(() => {
+      void refreshRawSealing().then((current) => {
+        if (current?.unlocked) {
+          setUnlockCheck((count) => count + 1);
+          return;
+        }
+        reloadAudit();
+      });
+    }, unlockCheckDelay(unlockExpiresAt));
+    return () => window.clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [unlockExpiresAt, unlockCheck]);
 
   const openDetail = (sessionId: string) => {
     selectedFocusRef.current = sessionId;
@@ -885,6 +966,7 @@ export function RequestRecords({
     setSettingsBusy(true);
     setSettingsError(null);
     setSettingsNotice(null);
+    void refreshRawSealing();
     try {
       const current = await getAuditSettings();
       setSettings({ ...current });
@@ -945,6 +1027,7 @@ export function RequestRecords({
   const bodyCaptureEnabled = Boolean(
     settings?.request_body_enabled || settings?.response_content_enabled,
   );
+  const rawUpgrade = rawUpgradeNeeded(bodyCaptureEnabled, rawSealing);
 
   const toggleBodyCapture = (enabled: boolean) => {
     if (!settings || settingsBusy) return;
@@ -952,14 +1035,7 @@ export function RequestRecords({
       if (settings.request_body_enabled && settings.response_content_enabled) {
         return;
       }
-      setPendingConfirm({
-        kind: "audit-risk",
-        patch: {
-          request_body_enabled: true,
-          response_content_enabled: true,
-          audit_risk_acknowledged: true,
-        },
-      });
+      void confirmCaptureEnable();
       return;
     }
     if (!settings.request_body_enabled && !settings.response_content_enabled) {
@@ -972,6 +1048,139 @@ export function RequestRecords({
       },
       i18n.t("records.captureOff"),
     );
+  };
+
+  /** Reads the sealing state again; null when it failed or went stale. */
+  const refreshRawSealing = async (): Promise<RawSealingState | null> => {
+    const generation = generationRef.current;
+    try {
+      const current = await getRawSealingStatus();
+      if (generationRef.current !== generation) return null;
+      setRawSealing(current);
+      setRawSealingError(null);
+      return current;
+    } catch (requestError: unknown) {
+      if (generationRef.current !== generation) return null;
+      setRawSealingError(rawSealingErrorMessage(requestError));
+      return null;
+    }
+  };
+
+  const reloadAudit = () => {
+    auditCacheRef.current.clear();
+    auditGenerationRef.current += 1;
+    // The detail view fetches the content again. Away from it nothing would,
+    // and reopening it would paint the old raw parts before that fetch.
+    if (viewRef.current !== "detail") {
+      setAuditContent(null);
+      setAuditError(null);
+      setAuditLoading(false);
+    }
+    setAuditNonce((current) => current + 1);
+  };
+
+  // Without a raw key, turning capture on must set the raw password in the
+  // same confirmation (D11). This decides on Core's state, not the platform.
+  const confirmCaptureEnable = async () => {
+    const generation = generationRef.current;
+    setSettingsBusy(true);
+    const current = await refreshRawSealing();
+    setSettingsBusy(false);
+    if (generationRef.current !== generation) return;
+    // Without a fresh sealing state D11 cannot be decided; refuse rather than
+    // decide on the last one, which may predate a reset.
+    if (!current) {
+      const message = i18n.t("records.captureSealingUnknown");
+      if (settingsOpen) {
+        setSettingsError(message);
+      } else {
+        notify.error(message);
+      }
+      return;
+    }
+    if (!current.configured) {
+      setRawDialog({ kind: "capture" });
+      return;
+    }
+    setPendingConfirm({
+      kind: "audit-risk",
+      patch: {
+        request_body_enabled: true,
+        response_content_enabled: true,
+        audit_risk_acknowledged: true,
+      },
+    });
+  };
+
+  const closeRawDialog = (done: boolean) => {
+    const closing = rawDialog;
+    setRawDialog(null);
+    if (!closing) return;
+    if (closing.kind === "capture") {
+      if (done) {
+        void commitSettings(
+          {
+            request_body_enabled: true,
+            response_content_enabled: true,
+            audit_risk_acknowledged: true,
+          },
+          i18n.t("records.captureOn"),
+        );
+        return;
+      }
+      const cancelled = i18n.t("records.captureCancelled");
+      if (settingsOpen) {
+        setSettingsNotice(cancelled);
+      } else {
+        notify.success(cancelled);
+      }
+      return;
+    }
+    // An unlock shows raw parts; a reset deleted them.
+    if (done && (closing.kind === "unlock" || closing.kind === "reset")) {
+      reloadAudit();
+    }
+  };
+
+  const unlockRawContent = async () => {
+    const generation = generationRef.current;
+    const current = await refreshRawSealing();
+    if (generationRef.current !== generation) return;
+    // The last state read may be stale: it could offer a proof that no longer
+    // applies, or reload parts as if an ended unlock were still open.
+    if (!current) {
+      notify.error(i18n.t("records.unlockSealingUnknown"));
+      return;
+    }
+    if (current.unlocked) {
+      reloadAudit();
+      return;
+    }
+    if (!current.configured) {
+      notify.error(i18n.t("rawSealing.errors.notConfigured"));
+      return;
+    }
+    if (rawProofMode(current) === "confirm") {
+      notify.error(i18n.t("rawSealing.unlockUnavailable"));
+      return;
+    }
+    setRawDialog({ kind: "unlock" });
+  };
+
+  const lockRawContent = async () => {
+    try {
+      const current = await lockRaw();
+      setRawSealing((previous) => withPresence(current, previous));
+    } catch (requestError: unknown) {
+      notify.error(
+        i18n.t("rawSealing.lockFailed", {
+          message: rawSealingErrorMessage(requestError),
+        }),
+      );
+      return;
+    }
+    notify.success(i18n.t("rawSealing.lockedNow"));
+    reloadAudit();
   };
 
   const resolveConfirm = () => {
@@ -1045,10 +1254,19 @@ export function RequestRecords({
                           disabled={!isReady}
                           onClick={() => void openSettings()}
                           size="sm"
+                          title={
+                            rawUpgrade ? t("rawSealing.upgradeHint") : undefined
+                          }
                           type="button"
                         >
                           <Settings2 aria-hidden="true" />
                           {t("records.auditSettings")}
+                          {rawUpgrade ? (
+                            <StatusDot
+                              data-slot="raw-upgrade-dot"
+                              tone="pending"
+                            />
+                          ) : null}
                         </Button>
                       </>
                     }
@@ -1295,10 +1513,13 @@ export function RequestRecords({
             onDelete={() =>
               setPendingConfirm({ kind: "delete", requestId: selected.id })
             }
+            onLockRaw={() => void lockRawContent()}
             onRegisterRecords={(records) =>
               setOverlayRecords((current) => ({ ...current, ...records }))
             }
             onSelectTurn={setSelectedTurnId}
+            onUnlockRaw={() => void unlockRawContent()}
+            rawSealing={rawSealing}
             record={selected}
             serviceName={serviceLabel(selected.service_id, services)}
             serviceNames={Object.fromEntries(
@@ -1311,9 +1532,10 @@ export function RequestRecords({
         ) : null}
       </div>
 
-      {settingsOpen && pendingConfirm === null ? (
+      {settingsOpen && pendingConfirm === null && rawDialog === null ? (
         <AuditSettingsDialog
           busy={settingsBusy}
+          captureEnabled={bodyCaptureEnabled}
           draft={settingsDraft}
           error={settingsError}
           notice={settingsNotice}
@@ -1325,9 +1547,26 @@ export function RequestRecords({
             setSettingsError(null);
             setSettingsNotice(null);
           }}
+          onRawPasswordAction={(action) => {
+            setSettingsError(null);
+            setSettingsNotice(null);
+            setRawDialog({ kind: action });
+          }}
           onSave={saveSettings}
+          rawSealing={rawSealing}
+          rawSealingError={rawSealingError}
         />
       ) : null}
+
+      <RawSealingDialogs
+        dialog={rawDialog}
+        onClose={closeRawDialog}
+        onStatus={(next) => {
+          setRawSealing(next);
+          setRawSealingError(null);
+        }}
+        status={rawSealing}
+      />
 
       {purgeOpen && pendingConfirm === null ? (
         <PurgeDialog
@@ -1702,11 +1941,14 @@ function RecordDetail({
   auditError,
   auditSettings,
   deleting,
+  rawSealing,
   onBack,
   onDelete,
   onClearDecrypted,
+  onLockRaw,
   onSelectTurn,
   onRegisterRecords,
+  onUnlockRaw,
 }: {
   record: RequestRecord;
   serviceNames: Record<string, string>;
@@ -1719,11 +1961,14 @@ function RecordDetail({
   auditError: string | null;
   auditSettings: AuditSettings | null;
   deleting: boolean;
+  rawSealing: RawSealingState | null;
   onBack: () => void;
   onDelete: () => void;
   onClearDecrypted: () => void;
+  onLockRaw: () => void;
   onSelectTurn: (requestId: string) => void;
   onRegisterRecords: (records: Record<string, RequestRecord>) => void;
+  onUnlockRaw: () => void;
 }) {
   const t = useT();
   const copyFeedback = useCopyFeedback();
@@ -2287,6 +2532,27 @@ function RecordDetail({
             </p>
           ) : auditContent ? (
             <>
+              {rawSealing?.unlocked ? (
+                <FormMessage
+                  className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1.5"
+                  data-slot="raw-unlocked"
+                  tone="notice"
+                >
+                  <span className="min-w-0">
+                    {t("rawSealing.unlockedHint", {
+                      minutes: unlockIdleMinutes(rawSealing),
+                    })}
+                  </span>
+                  <Button
+                    onClick={onLockRaw}
+                    size="xs"
+                    type="button"
+                    variant="outline"
+                  >
+                    {t("rawSealing.lock")}
+                  </Button>
+                </FormMessage>
+              ) : null}
               {!isChild ? (
                 <>
                   <HTTPMetaSection
@@ -2296,17 +2562,21 @@ function RecordDetail({
                   />
                   <AuditPartSection
                     copyFeedback={copyFeedback}
+                    onUnlock={onUnlockRaw}
                     part={requestPart}
                     protocol={record.input_protocol}
                     sectionKey="request-body"
                     title={t("records.clientBody")}
+                    withheld={auditContent.withheld.request_body}
                   />
                   <AuditPartSection
                     copyFeedback={copyFeedback}
+                    onUnlock={onUnlockRaw}
                     part={responsePart}
                     protocol={record.input_protocol}
                     sectionKey="response-content"
                     title={t("records.clientResponseContent")}
+                    withheld={auditContent.withheld.response_content}
                   />
                 </>
               ) : null}
@@ -2318,17 +2588,21 @@ function RecordDetail({
               />
               <AuditPartSection
                 copyFeedback={copyFeedback}
+                onUnlock={onUnlockRaw}
                 part={upstreamRequestPart}
                 protocol={record.input_protocol}
                 sectionKey="upstream-request-body"
                 title={t("records.upstreamBody")}
+                withheld={auditContent.withheld.upstream_request_body}
               />
               <AuditPartSection
                 copyFeedback={copyFeedback}
+                onUnlock={onUnlockRaw}
                 part={upstreamResponsePart}
                 protocol={record.input_protocol}
                 sectionKey="upstream-response-content"
                 title={t("records.upstreamResponseContent")}
+                withheld={auditContent.withheld.upstream_response_content}
               />
             </>
           ) : (

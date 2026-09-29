@@ -65,6 +65,36 @@ jobs:
             core/astrlink-core-*.zip
           if-no-files-found: error
 
+  downgrade:
+    name: Core downgrade smoke
+    runs-on: ubuntu-24.04
+    env:
+      # The last commit before local data protection; its schema is migration
+      # 41, where `astrlink-core unseal` leaves the database.
+      PREVIOUS_CORE_COMMIT: a5ec229ab420a6fba30b74ef7d89013cf4a36ad4
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: core/go.mod
+          cache-dependency-path: |
+            core/go.mod
+            core/go.sum
+            convo/go.mod
+            contracts/go.mod
+            contracts/go.sum
+      - name: Build the previous Core
+        run: |
+          git fetch --no-tags --depth=1 origin "$PREVIOUS_CORE_COMMIT"
+          git worktree add --detach "$RUNNER_TEMP/previous" FETCH_HEAD
+          cd "$RUNNER_TEMP/previous/core"
+          go build -trimpath -o "$RUNNER_TEMP/previous-core" ./cmd/astrlink-core
+      - name: Upgrade, unseal, and reopen with the previous Core
+        working-directory: core
+        env:
+          ASTRLINK_PREVIOUS_CORE: ${{ runner.temp }}/previous-core
+        run: go test ./cmd/astrlink-core -run '^TestDowngradeSmoke$' -count=1 -v
+
   contracts:
     name: Contracts
     runs-on: ubuntu-24.04

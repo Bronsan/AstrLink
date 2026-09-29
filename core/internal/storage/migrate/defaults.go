@@ -696,5 +696,111 @@ WHEN OLD.payload_id IS NOT NULL AND OLD.payload_id IS NOT NEW.payload_id BEGIN
       AND NOT EXISTS (SELECT 1 FROM audit_blobs WHERE payload_id = OLD.payload_id);
 END`,
 		}},
+		{Version: 42, Name: "audit_exposure", Statements: []string{
+			// pending must be in the CHECK from the start: SQLite cannot alter a
+			// CHECK constraint without rebuilding the table.
+			`ALTER TABLE audit_blobs ADD COLUMN exposure TEXT NOT NULL DEFAULT 'raw'
+CHECK(exposure IN ('pending', 'shareable', 'raw'))`,
+			// Upstream parts already left the machine and meta is redacted before
+			// storage. Historical client-side parts stay raw: their privacy
+			// decision survives only as event summary text.
+			`UPDATE audit_blobs SET exposure = 'shareable'
+WHERE direction IN ('upstream_request', 'upstream_response', 'http_meta', 'upstream_http_meta')`,
+			`ALTER TABLE request_records ADD COLUMN privacy_decision TEXT`,
+			`ALTER TABLE request_records ADD COLUMN privacy_findings_json TEXT`,
+			`ALTER TABLE audit_settings ADD COLUMN agent_raw_access_enabled INTEGER NOT NULL DEFAULT 1
+CHECK(agent_raw_access_enabled IN (0, 1))`,
+		}},
+		{Version: 43, Name: "key_envelopes", Statements: []string{
+			// Data keys wrapped under the local key. Filling it needs the key, so
+			// the store does that after migrating; audit_keys stays until then.
+			// An envelope that no longer opens is renamed to
+			// '<kind>.orphaned.<timestamp>' and kept for recovery.
+			`CREATE TABLE key_envelopes (
+    kind TEXT PRIMARY KEY,
+    nonce BLOB NOT NULL CHECK(length(nonce) = 12),
+    wrapped BLOB NOT NULL,
+    created_at TEXT NOT NULL
+)`,
+			// A row asks the next start to rewrite the file so free pages no
+			// longer hold plaintext keys or secrets that were just removed.
+			`CREATE TABLE pending_file_scrub (
+    id INTEGER PRIMARY KEY CHECK(id = 1),
+    requested_at TEXT NOT NULL
+)`,
+		}},
+		{Version: 44, Name: "raw_sealing", Statements: []string{
+			// The public half of the raw sealing key. The store keeps one row;
+			// pk_mac is HMAC(dek_audit) over it, so a swapped key is noticed.
+			`CREATE TABLE raw_sealing_keys (
+    id INTEGER PRIMARY KEY,
+    public_key BLOB NOT NULL CHECK(length(public_key) = 32),
+    pk_mac BLOB NOT NULL CHECK(length(pk_mac) = 32),
+    created_at TEXT NOT NULL
+)`,
+			// The private half, wrapped under the raw password (kdf_json and
+			// salt describe the derivation) or under the local key.
+			`CREATE TABLE raw_key_envelopes (
+    key_id INTEGER NOT NULL REFERENCES raw_sealing_keys(id) ON DELETE CASCADE,
+    kind TEXT NOT NULL CHECK(kind IN ('password', 'local')),
+    kdf_json TEXT,
+    salt BLOB,
+    nonce BLOB NOT NULL CHECK(length(nonce) = 12),
+    wrapped BLOB NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY(key_id, kind),
+    CHECK((kind = 'password' AND kdf_json IS NOT NULL AND salt IS NOT NULL AND length(salt) = 16)
+       OR (kind = 'local' AND kdf_json IS NULL AND salt IS NULL))
+)`,
+			// raw_v1 payloads are sealed with their own part key, which is
+			// wrapped to the raw sealing public key (80 bytes of HPKE output).
+			`ALTER TABLE audit_payloads ADD COLUMN sealing TEXT NOT NULL DEFAULT 'audit'
+CHECK(sealing IN ('audit', 'raw_v1'))`,
+			`ALTER TABLE audit_payloads ADD COLUMN key_id INTEGER REFERENCES raw_sealing_keys(id)`,
+			`ALTER TABLE audit_payloads ADD COLUMN wrapped_key BLOB
+CHECK((sealing = 'audit' AND key_id IS NULL AND wrapped_key IS NULL)
+   OR (sealing = 'raw_v1' AND key_id IS NOT NULL AND wrapped_key IS NOT NULL AND length(wrapped_key) = 80))`,
+			`CREATE INDEX audit_payloads_raw_key_idx ON audit_payloads(key_id) WHERE key_id IS NOT NULL`,
+		}},
+		{Version: 45, Name: "sealed_secrets", Statements: []string{
+			// Secret values are sealed under dek_secrets as version ‖ nonce ‖
+			// ciphertext ‖ tag, 29 bytes more than the plaintext. sealed = 0
+			// rows are plaintext until the store seals them after migrating.
+			// Nothing references either rebuilt table.
+			`CREATE TABLE service_credentials_new (
+    service_id TEXT PRIMARY KEY REFERENCES services(id) ON DELETE CASCADE,
+    credential_value BLOB NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    sealed INTEGER NOT NULL DEFAULT 0 CHECK(sealed IN (0, 1)),
+    CHECK((sealed = 0 AND length(credential_value) BETWEEN 1 AND 16384)
+       OR (sealed = 1 AND length(credential_value) BETWEEN 30 AND 16413))
+)`,
+			`INSERT INTO service_credentials_new (service_id, credential_value, created_at, updated_at)
+SELECT service_id, credential_value, created_at, updated_at FROM service_credentials`,
+			`DROP TABLE service_credentials`,
+			`ALTER TABLE service_credentials_new RENAME TO service_credentials`,
+			`CREATE TABLE local_access_token_secrets_new (
+    token_id TEXT PRIMARY KEY REFERENCES local_access_tokens(id) ON DELETE CASCADE,
+    token_value BLOB NOT NULL,
+    sealed INTEGER NOT NULL DEFAULT 0 CHECK(sealed IN (0, 1)),
+    CHECK((sealed = 0 AND length(token_value) = 48) OR (sealed = 1 AND length(token_value) = 77))
+)`,
+			`INSERT INTO local_access_token_secrets_new (token_id, token_value)
+SELECT token_id, token_value FROM local_access_token_secrets`,
+			`DROP TABLE local_access_token_secrets`,
+			`ALTER TABLE local_access_token_secrets_new RENAME TO local_access_token_secrets`,
+			`ALTER TABLE builtin_tool_credentials ADD COLUMN sealed INTEGER NOT NULL DEFAULT 0
+CHECK(sealed IN (0, 1) AND (sealed = 0 OR length(credential_value) >= 30))`,
+			`ALTER TABLE service_proxy_credentials ADD COLUMN sealed INTEGER NOT NULL DEFAULT 0
+CHECK(sealed IN (0, 1) AND (sealed = 0 OR length(credential_value) >= 30))`,
+			// OAuth tokens move here from the OS keystore (§5.9). They are
+			// always sealed, so the table has no plaintext form.
+			`CREATE TABLE subscription_credentials (
+    service_id TEXT PRIMARY KEY REFERENCES services(id) ON DELETE CASCADE,
+    credential_value BLOB NOT NULL CHECK(length(credential_value) >= 30),
+    updated_at TEXT NOT NULL
+)`,
+		}},
 	}
 }

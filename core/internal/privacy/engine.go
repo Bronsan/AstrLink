@@ -176,6 +176,9 @@ func (engine *Engine) partitionFindings(
 	accepted := make([]Finding, 0, len(findings))
 	suppressed := make([]Finding, 0)
 	for _, finding := range findings {
+		if finding.Segment >= 0 && finding.Segment < len(segments) {
+			finding.Path = segments[finding.Segment].Path
+		}
 		if reason := suppressionFor(policy, list, finding, segments); reason != "" {
 			finding.Suppression = reason
 			suppressed = append(suppressed, finding)

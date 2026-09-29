@@ -1,8 +1,10 @@
 package agentmcp
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -33,6 +35,7 @@ type Client struct {
 	baseURL    string
 	token      string
 	socketAuth bool
+	raw        rawGrantTokens
 }
 
 func Dial(options DialOptions) (*Client, error) {
@@ -106,13 +109,39 @@ func unixHTTPClient(socket string) *http.Client {
 }
 
 func (client *Client) get(ctx context.Context, path string, query url.Values) (json.RawMessage, error) {
+	return client.do(ctx, http.MethodGet, path, query, nil, nil)
+}
+
+func (client *Client) post(ctx context.Context, path string, body any) (json.RawMessage, error) {
+	raw, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	return client.do(ctx, http.MethodPost, path, nil, raw, nil)
+}
+
+func (client *Client) do(
+	ctx context.Context, method, path string, query url.Values, body []byte, header http.Header,
+) (json.RawMessage, error) {
 	target := client.baseURL + path
 	if encoded := query.Encode(); encoded != "" {
 		target += "?" + encoded
 	}
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
+	var reader io.Reader
+	if body != nil {
+		reader = bytes.NewReader(body)
+	}
+	request, err := http.NewRequestWithContext(ctx, method, target, reader)
 	if err != nil {
 		return nil, err
+	}
+	for name, values := range header {
+		for _, value := range values {
+			request.Header.Add(name, value)
+		}
+	}
+	if body != nil {
+		request.Header.Set("Content-Type", "application/json")
 	}
 	// Names the MCP bridge on the loopback fallback too, so the desktop can
 	// show "an agent is reading" regardless of transport.
@@ -125,20 +154,20 @@ func (client *Client) get(ctx context.Context, path string, query url.Values) (j
 		return nil, fmt.Errorf("control API request failed: %w", err)
 	}
 	defer response.Body.Close()
-	body, err := io.ReadAll(io.LimitReader(response.Body, 8<<20))
+	payload, err := io.ReadAll(io.LimitReader(response.Body, 8<<20))
 	if err != nil {
 		return nil, fmt.Errorf("read control API response: %w", err)
 	}
 	if response.StatusCode >= 300 {
-		return nil, &APIError{Status: response.StatusCode, Body: json.RawMessage(body)}
+		return nil, &APIError{Status: response.StatusCode, Body: json.RawMessage(payload)}
 	}
-	if len(body) == 0 {
+	if len(payload) == 0 {
 		return json.RawMessage("null"), nil
 	}
-	if !json.Valid(body) {
+	if !json.Valid(payload) {
 		return nil, fmt.Errorf("control API returned non-JSON")
 	}
-	return json.RawMessage(body), nil
+	return json.RawMessage(payload), nil
 }
 
 // APIError is a non-2xx Control API response.
@@ -152,4 +181,22 @@ func (err *APIError) Error() string {
 		return fmt.Sprintf("control API HTTP %d: %s", err.Status, string(err.Body))
 	}
 	return fmt.Sprintf("control API HTTP %d", err.Status)
+}
+
+// apiErrorCode is the Control API error code carried by err, or "" when err
+// is not an API error or its body names none.
+func apiErrorCode(err error) string {
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) {
+		return ""
+	}
+	var payload struct {
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	if json.Unmarshal(apiErr.Body, &payload) != nil {
+		return ""
+	}
+	return payload.Error.Code
 }

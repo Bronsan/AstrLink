@@ -92,19 +92,40 @@ func toolCatalog() []toolDef {
 		},
 		{
 			Name:        "get_request_audit",
-			Description: "Get captured audit content for a request. Bodies are present only when the user enabled body capture in AstrLink.",
+			Description: "Get the shareable audit content for a request. Bodies are present only when the user enabled body capture in AstrLink. Parts the privacy policy did not clear (the client's original request, restored responses, uninspected parts) are withheld with a reason; every part carries content_view. privacy_findings lists what was found by kind and JSON path, never the values.",
 			Schema:      idQuery,
 			Call: func(ctx context.Context, client *Client, arguments map[string]any) (json.RawMessage, error) {
 				id, err := requiredID(arguments)
 				if err != nil {
 					return nil, err
 				}
-				raw, err := client.get(ctx, controlapi.RequestsPath+"/"+url.PathEscape(id)+"/audit", nil)
+				raw, err := client.get(ctx, controlapi.RequestsPath+"/"+url.PathEscape(id)+"/audit",
+					url.Values{"view": {"shareable"}})
 				if err != nil {
 					return nil, err
 				}
 				return annotateAudit(raw)
 			},
+		},
+		{
+			Name: "request_raw_audit",
+			Description: "Ask the user to let you read the raw audit parts that get_request_audit withheld for one request. Use it only when a withheld part says raw_available: true and the shareable parts are not enough. " +
+				"Raw content enters your context and is sent to the model provider you use, so first tell the user why you need it and pass that as reason. " +
+				"The first call returns approval_required at once. Only the user can approve, in the AstrLink desktop with their raw password or Touch ID; never try to approve it yourself. " +
+				"After the user says they approved, call again with the same arguments: it returns the audit with content_view raw, or pending, or an error if the user denied it or raw access is unavailable. An approval may allow only one read.",
+			Schema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"request_id": map[string]any{"type": "string"},
+					"reason": map[string]any{
+						"type": "string", "minLength": 1, "maxLength": maxRawReasonRunes,
+						"description": "Why you need the raw parts, as you explained it to the user; shown in the approval dialog",
+					},
+				},
+				"required":             []string{"request_id", "reason"},
+				"additionalProperties": false,
+			},
+			Call: requestRawAudit,
 		},
 		{
 			Name:        "get_audit_settings",
@@ -130,6 +151,68 @@ func toolCatalog() []toolDef {
 				return client.get(ctx, controlapi.RoutingSettingsPath, nil)
 			},
 		},
+		{
+			Name:        "search_requests",
+			Description: "Search root AstrLink request records whose stored input preview contains q (case-insensitive literal text, not a pattern). Accepts the list_request_records filters as well. Previews are short, so this finds requests by how they began, not by full body content.",
+			Schema:      searchQuery(listQuery),
+			Call: func(ctx context.Context, client *Client, arguments map[string]any) (json.RawMessage, error) {
+				q, ok := arguments["q"].(string)
+				if !ok || strings.TrimSpace(q) == "" {
+					return nil, fmt.Errorf("q must be a non-empty string")
+				}
+				query := listQueryValues(arguments)
+				query.Set("q", q)
+				return client.get(ctx, controlapi.RequestsPath, query)
+			},
+		},
+		{
+			Name:        "explain_request",
+			Description: "Explain one AstrLink request: a summary (final status, HTTP status, service, attempt count, error, routing reason) plus the record, its failed retry attempts, and which audit parts were captured. It does not return bodies; call get_request_audit for those.",
+			Schema:      idQuery,
+			Call:        explainRequest,
+		},
+		{
+			Name:        "list_services",
+			Description: "List configured AstrLink upstream services: id, name, kind, enabled, models, capabilities, the base URL origin (scheme and host only), and subscription status. Credentials, credential references, proxy addresses, and provider account ids are never included.",
+			Schema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"enabled": map[string]any{"type": "boolean", "description": "Only services with this enabled state"},
+				},
+				"additionalProperties": false,
+			},
+			Call: listServices,
+		},
+		{
+			Name:        "get_service_status",
+			Description: "Get the health of one AstrLink service: its projected configuration, subscription token and risk state, recent risk events for subscription services, and a summary of its latest 20 request records (counts by status, last success, last failure with error code).",
+			Schema:      idQuery,
+			Call:        getServiceStatus,
+		},
+		{
+			Name:        "get_privacy_policy",
+			Description: "Read AstrLink privacy policies: detector, enabled entity kinds, request/response actions, restore options, and match scope. Allowlist entries and custom regex patterns are reported as counts and types only; their values are never returned.",
+			Schema: map[string]any{
+				"type":                 "object",
+				"properties":           map[string]any{},
+				"additionalProperties": false,
+			},
+			Call: getPrivacyPolicy,
+		},
+	}
+}
+
+func searchQuery(listQuery map[string]any) map[string]any {
+	properties := map[string]any{
+		"q": map[string]any{"type": "string", "minLength": 1, "maxLength": 200, "description": "Text to find in the input preview"},
+	}
+	for key, value := range listQuery["properties"].(map[string]any) {
+		properties[key] = value
+	}
+	return map[string]any{
+		"type":       "object",
+		"properties": properties,
+		"required":   []string{"q"},
 	}
 }
 
@@ -159,21 +242,77 @@ func requiredID(arguments map[string]any) (string, error) {
 	return id, nil
 }
 
+var auditBodyParts = []string{"request_body", "response_content", "upstream_request_body", "upstream_response_content"}
+
+// withheldReasonDetails explains each withheld reason to the agent.
+var withheldReasonDetails = map[string]string{
+	"privacy_redacted":  "The privacy policy redacted this before it went upstream; the upstream parts show what the model saw, with placeholders.",
+	"privacy_blocked":   "The privacy policy blocked this request.",
+	"privacy_restored":  "Placeholders in this response were restored to the original values.",
+	"privacy_fail_open": "Privacy inspection failed and the request went upstream uninspected.",
+	"privacy_pending":   "Privacy inspection had not finished when this was read.",
+	"privacy_unknown":   "Captured before AstrLink recorded privacy decisions, or its inspection never finished.",
+	"raw_locked":        "Raw reading is locked in the desktop.",
+}
+
+// annotateAudit wraps a shareable audit read for the agent.
 func annotateAudit(raw json.RawMessage) (json.RawMessage, error) {
-	var payload map[string]any
-	if err := json.Unmarshal(raw, &payload); err != nil {
+	wrapped, err := annotateAuditPayload(raw, "shareable")
+	if err != nil {
 		return raw, nil
 	}
-	bodiesCaptured := payload["request_body"] != nil || payload["response_content"] != nil ||
-		payload["upstream_request_body"] != nil || payload["upstream_response_content"] != nil
+	return json.Marshal(wrapped)
+}
+
+// annotateAuditPayload labels every body part with content_view — the view
+// its content came from, or "withheld" — and explains what was withheld.
+func annotateAuditPayload(raw json.RawMessage, view string) (map[string]any, error) {
+	var payload map[string]any
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return nil, err
+	}
+	bodiesCaptured := false
+	withheld := []string{}
+	rawAvailable := false
+	for _, name := range auditBodyParts {
+		part, ok := payload[name].(map[string]any)
+		if !ok {
+			continue
+		}
+		bodiesCaptured = true
+		if part["withheld"] == true {
+			part["content_view"] = "withheld"
+			if detail, ok := withheldReasonDetails[fmt.Sprint(part["reason"])]; ok {
+				part["reason_detail"] = detail
+			}
+			withheld = append(withheld, name)
+			rawAvailable = rawAvailable || part["raw_available"] == true
+			continue
+		}
+		if part["exposure"] == "raw" {
+			part["content_view"] = "raw"
+		} else {
+			part["content_view"] = "shareable"
+		}
+	}
 	wrapped := map[string]any{
 		"audit":           payload,
+		"content_view":    view,
 		"bodies_captured": bodiesCaptured,
 	}
-	if !bodiesCaptured {
+	switch {
+	case !bodiesCaptured:
 		wrapped["hint"] = "Request/response bodies were not captured for this request. Enable body audit in the AstrLink desktop (risk confirmation required). Metadata, trajectory events, and optional HTTP meta may still be present."
+	case len(withheld) > 0 && view == "raw":
+		wrapped["withheld_parts"] = withheld
+	case len(withheld) > 0 && rawAvailable:
+		wrapped["withheld_parts"] = withheld
+		wrapped["hint"] = "Some parts are withheld. Work from the shareable parts and privacy_findings first. If you still need the raw parts, tell the user why, then call request_raw_audit; the user must approve it in the AstrLink desktop."
+	case len(withheld) > 0:
+		wrapped["withheld_parts"] = withheld
+		wrapped["hint"] = "Some parts are withheld and raw access is not available: the user has not set up raw sealing or has turned off agent raw access requests. Do not call request_raw_audit; work from the shareable parts and privacy_findings."
 	}
-	return json.Marshal(wrapped)
+	return wrapped, nil
 }
 
 func toolsListPayload() []map[string]any {

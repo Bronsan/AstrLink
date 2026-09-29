@@ -14,27 +14,38 @@ import {
 
 import type { AuditSettings } from "./audit-settings-model";
 import { useT } from "./i18n";
+import type { RawPasswordAction, RawSealingState } from "./raw-sealing-model";
+import { RawPasswordPanel } from "./RawSealingControls";
 
 const MIB = 1024 * 1024;
 
 export function AuditSettingsDialog({
   draft,
   busy,
+  captureEnabled,
   error,
   notice,
+  rawSealing,
+  rawSealingError,
   onChange,
   onCancel,
+  onRawPasswordAction,
   onSave,
 }: {
   draft: AuditSettings | null;
   busy: boolean;
+  /** Body capture is on, as saved. */
+  captureEnabled: boolean;
   error: string | null;
   notice: string | null;
+  rawSealing: RawSealingState | null;
+  rawSealingError: string | null;
   onChange: <K extends keyof AuditSettings>(
     key: K,
     value: AuditSettings[K],
   ) => void;
   onCancel: () => void;
+  onRawPasswordAction: (action: RawPasswordAction) => void;
   onSave: () => void;
 }) {
   const t = useT();
@@ -73,6 +84,17 @@ export function AuditSettingsDialog({
                     }
                   />
                 </section>
+                <RawPasswordPanel
+                  agentAccess={draft.agent_raw_access_enabled}
+                  busy={busy}
+                  captureEnabled={captureEnabled}
+                  error={rawSealingError}
+                  onAction={onRawPasswordAction}
+                  onAgentAccessChange={(value) =>
+                    onChange("agent_raw_access_enabled", value)
+                  }
+                  status={rawSealing}
+                />
                 <section
                   className="border-t pt-3"
                   aria-label={t("records.captureLimits")}

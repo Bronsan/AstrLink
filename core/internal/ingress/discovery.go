@@ -118,12 +118,15 @@ func (handler *Handler) aggregateModelDiscovery(
 	}
 	if session := recordSessionFromContext(request.Context()); session != nil {
 		decision := "allow"
+		outcome := contract.PrivacyDecisionAllow
 		for _, result := range results {
 			if result.warning != "" {
 				decision = "warn"
+				outcome = contract.PrivacyDecisionWarn
 			}
 		}
 		session.notePrivacyDecision(decision, contract.RequestStatusSucceeded)
+		session.notePrivacyOutcome(outcome, nil)
 	}
 	merged, succeeded := mergeDiscoveryEntries(results)
 	if succeeded == 0 {

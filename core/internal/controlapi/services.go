@@ -66,10 +66,20 @@ type authorizationStartRequest struct {
 }
 
 func (handler *Handler) registerServiceRoutes() {
-	handler.mux.HandleFunc(ServicesPath, handler.authenticated(handler.serviceCollection))
-	handler.mux.HandleFunc(ServicesPath+"/", handler.authenticated(handler.serviceItem))
-	handler.mux.HandleFunc(ServiceModelProbesPath, handler.authenticated(handler.probeDraftServiceModels))
-	handler.mux.HandleFunc(ServiceProxyProbesPath, handler.authenticated(handler.probeServiceProxy))
+	handler.mux.HandleFunc(ServicesPath, handler.authenticated(handler.serviceCollection, RoleObserver))
+	handler.mux.HandleFunc(ServicesPath+"/", handler.authenticatedBy(handler.serviceItem, serviceItemRole))
+	handler.mux.HandleFunc(ServiceModelProbesPath, handler.authenticated(handler.probeDraftServiceModels, RoleOperator))
+	handler.mux.HandleFunc(ServiceProxyProbesPath, handler.authenticated(handler.probeServiceProxy, RoleOperator))
+}
+
+// serviceItemRole lets observers read a service and its usage and risk
+// events. The OAuth authorization session carries device codes and sign-in
+// URLs, so every method on it is operator-only, like all writes.
+func serviceItemRole(request *http.Request) Role {
+	if isSafeMethod(request.Method) && !strings.HasSuffix(request.URL.Path, "/authorization") {
+		return RoleObserver
+	}
+	return RoleOperator
 }
 
 func (handler *Handler) serviceCollection(writer http.ResponseWriter, request *http.Request) {

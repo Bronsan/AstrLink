@@ -2,13 +2,17 @@ mod agent_install;
 mod cc_switch;
 mod client_updates;
 mod control_session;
+mod data_hygiene;
 #[cfg(debug_assertions)]
 mod dev_reload;
 mod failure_policy;
 mod i18n;
+mod kek_store;
 #[cfg(target_os = "macos")]
 mod macos_app;
 mod preferences;
+mod raw_access;
+mod raw_presence;
 mod recovery_path;
 mod service_proxy;
 mod sidecar;
@@ -53,6 +57,9 @@ struct SettingsSnapshot {
     preferences: PreferencesSnapshot,
     autostart_actual: Option<bool>,
     autostart_error: Option<String>,
+    data_backups: Vec<data_hygiene::DataBackupFile>,
+    /// Where Core's local key lives; `None` before the first Core start.
+    local_key_storage: Option<kek_store::LocalKeyStorage>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -146,14 +153,19 @@ async fn restart_core(
     Ok(AppSnapshot::capture(&app, &manager))
 }
 
+// Async so the start, which may wait on a keychain prompt, runs on a
+// blocking worker rather than the main thread.
 #[tauri::command]
-fn start_core(
+async fn start_core(
     app: tauri::AppHandle,
     manager: State<'_, Arc<CoreManager>>,
 ) -> Result<AppSnapshot, String> {
     let _lifecycle = updates::lifecycle_guard(&app)?;
     let manager = Arc::clone(manager.inner());
-    manager.start(&app)?;
+    let (starter, handle) = (Arc::clone(&manager), app.clone());
+    tauri::async_runtime::spawn_blocking(move || starter.start(&handle))
+        .await
+        .map_err(|error| format!("unable to start astrlink-core: {error}"))??;
     Ok(AppSnapshot::capture(&app, &manager))
 }
 
@@ -169,11 +181,22 @@ async fn stop_core(
 }
 
 fn settings_snapshot(app: &tauri::AppHandle, store: &PreferencesStore) -> SettingsSnapshot {
+    // Rescanned on every snapshot so a backup the user deletes stops showing.
+    let data_backups = app
+        .path()
+        .app_data_dir()
+        .map(|directory| data_hygiene::scan_backup_files(&directory))
+        .unwrap_or_default();
+    let local_key_storage = app
+        .try_state::<Arc<CoreManager>>()
+        .and_then(|manager| manager.local_key_storage());
     match app.autolaunch().is_enabled() {
         Ok(actual) => SettingsSnapshot {
             preferences: store.snapshot(),
             autostart_actual: Some(actual),
             autostart_error: None,
+            data_backups,
+            local_key_storage,
         },
         Err(error) => SettingsSnapshot {
             preferences: store.snapshot(),
@@ -183,6 +206,8 @@ fn settings_snapshot(app: &tauri::AppHandle, store: &PreferencesStore) -> Settin
                 "host.autostart.readFailed",
                 &[("error", &error.to_string())],
             )),
+            data_backups,
+            local_key_storage,
         },
     }
 }
@@ -195,33 +220,36 @@ fn get_preferences(
     settings_snapshot(&app, store.inner())
 }
 
-fn agent_install_context() -> Result<agent_install::InstallContext, String> {
+fn agent_install_context(app: &tauri::AppHandle) -> Result<agent_install::InstallContext, String> {
     Ok(agent_install::InstallContext {
         home: control_session::user_home()?,
         mcp_source: agent_install::resolve_sidecar_binary("astrlink-mcp")?,
+        data_directory: app.path().app_data_dir().ok(),
     })
 }
 
 #[tauri::command]
-fn agent_debug_status() -> Result<agent_install::AgentInstallStatus, String> {
+fn agent_debug_status(app: tauri::AppHandle) -> Result<agent_install::AgentInstallStatus, String> {
     let home = control_session::user_home()?;
     let mcp_source = agent_install::resolve_sidecar_binary("astrlink-mcp").unwrap_or_default();
     Ok(agent_install::status(&agent_install::InstallContext {
         home,
         mcp_source,
+        data_directory: app.path().app_data_dir().ok(),
     }))
 }
 
 #[tauri::command]
 fn install_agent_debug(
+    app: tauri::AppHandle,
     tool_ids: Vec<agent_install::AgentToolId>,
 ) -> Result<agent_install::InstallReceipt, String> {
-    agent_install::install(&agent_install_context()?, &tool_ids)
+    agent_install::install(&agent_install_context(&app)?, &tool_ids)
 }
 
 #[tauri::command]
-fn uninstall_agent_debug() -> Result<(), String> {
-    agent_install::uninstall(&agent_install_context()?)
+fn uninstall_agent_debug(app: tauri::AppHandle) -> Result<(), String> {
+    agent_install::uninstall(&agent_install_context(&app)?)
 }
 
 #[tauri::command]
@@ -1138,6 +1166,177 @@ async fn get_request_audit_content(
 }
 
 #[tauri::command]
+async fn list_raw_access(
+    manager: State<'_, Arc<CoreManager>>,
+) -> Result<serde_json::Value, String> {
+    manager.list_raw_access().await
+}
+
+/// Why the system presence prompt is shown. The WebView picks one; the
+/// prompt text stays in the host locale files.
+#[derive(Clone, Copy, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum PresencePurpose {
+    ApproveRawAccess,
+    UnlockRaw,
+    ChangeRawPassword,
+    RevealAccessToken,
+}
+
+impl PresencePurpose {
+    fn reason_key(self) -> &'static str {
+        match self {
+            Self::ApproveRawAccess => "host.rawPresence.approveRawAccess",
+            Self::UnlockRaw => "host.rawPresence.unlockRaw",
+            Self::ChangeRawPassword => "host.rawPresence.changeRawPassword",
+            Self::RevealAccessToken => "host.rawPresence.revealAccessToken",
+        }
+    }
+}
+
+/// Runs the LocalAuthentication prompt off the async runtime. A presence
+/// proof only reaches Core from here, after the prompt succeeded, so the
+/// WebView cannot send one on its own.
+async fn confirm_raw_proof(
+    app: &tauri::AppHandle,
+    arg: raw_access::ProofArg,
+    purpose: PresencePurpose,
+) -> Result<Result<raw_access::Proof, raw_access::ProofOutcome>, String> {
+    let locale = app
+        .state::<Arc<PreferencesStore>>()
+        .snapshot()
+        .values
+        .locale;
+    let reason = i18n::t(locale, purpose.reason_key(), &[]);
+    tauri::async_runtime::spawn_blocking(move || {
+        raw_access::confirm_proof(arg, raw_presence::system(), &reason)
+    })
+    .await
+    .map_err(|error| format!("local presence check failed: {error}"))
+}
+
+fn proof_outcome_value(outcome: raw_access::ProofOutcome) -> Result<serde_json::Value, String> {
+    serde_json::to_value(outcome).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn decide_raw_access(
+    app: tauri::AppHandle,
+    grant_id: String,
+    decision: String,
+    proof: Option<raw_access::ProofArg>,
+    manager: State<'_, Arc<CoreManager>>,
+) -> Result<serde_json::Value, String> {
+    // The desktop never keeps the proof: it is wiped once it has been sent.
+    let proof = match proof {
+        Some(arg) if decision != "deny" => {
+            match confirm_raw_proof(&app, arg, PresencePurpose::ApproveRawAccess).await? {
+                Ok(proof) => Some(proof),
+                Err(outcome) => return proof_outcome_value(outcome),
+            }
+        }
+        _ => None,
+    };
+    manager
+        .decide_raw_access(&grant_id, &decision, proof.as_ref())
+        .await
+}
+
+/// Raw sealing state plus whether this build can offer the presence prompt.
+#[tauri::command]
+async fn raw_sealing_status(
+    manager: State<'_, Arc<CoreManager>>,
+) -> Result<serde_json::Value, String> {
+    let mut status = manager.raw_sealing_status().await?;
+    let presence = tauri::async_runtime::spawn_blocking(|| raw_presence::system().available())
+        .await
+        .unwrap_or(false);
+    if let Some(object) = status.as_object_mut() {
+        object.insert("presence_available".to_string(), presence.into());
+    }
+    Ok(status)
+}
+
+/// Tells every window that the raw unlock or key may have changed, so one
+/// showing raw parts, such as a pinned inspector, reads the state again.
+const RAW_SEALING_CHANGED_EVENT: &str = "raw-sealing-changed";
+
+fn broadcast_raw_sealing_change(
+    app: &tauri::AppHandle,
+    result: Result<serde_json::Value, String>,
+) -> Result<serde_json::Value, String> {
+    if result.is_ok() {
+        if let Err(error) = app.emit(RAW_SEALING_CHANGED_EVENT, ()) {
+            eprintln!("unable to broadcast a raw sealing change: {error}");
+        }
+    }
+    result
+}
+
+#[tauri::command]
+async fn unlock_raw(
+    app: tauri::AppHandle,
+    proof: raw_access::ProofArg,
+    manager: State<'_, Arc<CoreManager>>,
+) -> Result<serde_json::Value, String> {
+    match confirm_raw_proof(&app, proof, PresencePurpose::UnlockRaw).await? {
+        Ok(proof) => broadcast_raw_sealing_change(&app, manager.unlock_raw(&proof).await),
+        Err(outcome) => proof_outcome_value(outcome),
+    }
+}
+
+#[tauri::command]
+async fn lock_raw(
+    app: tauri::AppHandle,
+    manager: State<'_, Arc<CoreManager>>,
+) -> Result<serde_json::Value, String> {
+    broadcast_raw_sealing_change(&app, manager.lock_raw().await)
+}
+
+/// Sets, changes, or resets the raw password. `password` is the new one;
+/// `proof` opens the existing key where Core needs it.
+#[tauri::command]
+async fn set_raw_password(
+    app: tauri::AppHandle,
+    action: String,
+    password: Option<zeroize::Zeroizing<String>>,
+    proof: Option<raw_access::ProofArg>,
+    manager: State<'_, Arc<CoreManager>>,
+) -> Result<serde_json::Value, String> {
+    let proof = match proof {
+        Some(arg) => {
+            match confirm_raw_proof(&app, arg, PresencePurpose::ChangeRawPassword).await? {
+                Ok(proof) => Some(proof),
+                Err(outcome) => return proof_outcome_value(outcome),
+            }
+        }
+        None => None,
+    };
+    let result = manager
+        .change_raw_password(
+            &action,
+            password.as_deref().map(String::as_str),
+            proof.as_ref(),
+        )
+        .await;
+    broadcast_raw_sealing_change(&app, result)
+}
+
+/// Shows the system presence prompt alone, for desktop actions whose proof
+/// never reaches Core (D14). It returns an outcome, never an error, for a
+/// cancelled or unsupported prompt.
+#[tauri::command]
+async fn verify_local_presence(
+    app: tauri::AppHandle,
+    purpose: PresencePurpose,
+) -> Result<serde_json::Value, String> {
+    match confirm_raw_proof(&app, raw_access::ProofArg::LocalPresence {}, purpose).await? {
+        Ok(_) => Ok(serde_json::json!({ "outcome": "verified" })),
+        Err(outcome) => proof_outcome_value(outcome),
+    }
+}
+
+#[tauri::command]
 async fn builtin_tool_action(
     kind: String,
     action: String,
@@ -1167,6 +1366,13 @@ async fn get_audit_settings(
     manager: State<'_, Arc<CoreManager>>,
 ) -> Result<serde_json::Value, String> {
     manager.get_audit_settings().await
+}
+
+#[tauri::command]
+async fn local_data_status(
+    manager: State<'_, Arc<CoreManager>>,
+) -> Result<serde_json::Value, String> {
+    manager.local_data_status().await
 }
 
 #[tauri::command]
@@ -1459,11 +1665,19 @@ pub fn run() {
             delete_request_record,
             purge_request_records,
             get_request_audit_content,
+            list_raw_access,
+            decide_raw_access,
+            raw_sealing_status,
+            unlock_raw,
+            lock_raw,
+            set_raw_password,
+            verify_local_presence,
             builtin_tool_action,
             get_routing_settings,
             update_routing_settings,
             get_audit_settings,
             update_audit_settings,
+            local_data_status,
             list_access_tokens,
             list_access_token_usage,
             get_usage_summary,
@@ -1550,11 +1764,17 @@ pub fn run() {
                 if let Err(error) = agent_install::sync_installed_skills(&home) {
                     eprintln!("failed to sync AstrLink agent skills: {error}");
                 }
+                if let Err(error) =
+                    agent_install::sync_installed_host_guards(&home, Some(&data_directory))
+                {
+                    eprintln!("failed to sync AstrLink agent host guards: {error}");
+                }
                 if let Ok(mcp_source) = agent_install::resolve_sidecar_binary("astrlink-mcp") {
                     if let Err(error) =
                         agent_install::sync_installed_mcp(&agent_install::InstallContext {
                             home,
                             mcp_source,
+                            data_directory: Some(data_directory.clone()),
                         })
                     {
                         eprintln!("failed to sync AstrLink MCP binary: {error}");
@@ -1563,9 +1783,14 @@ pub fn run() {
             }
 
             if values.core_auto_start {
-                if let Err(error) = setup_manager.start(app.handle()) {
-                    eprintln!("failed to start astrlink-core: {error}");
-                }
+                // Off the main thread: resolving the local key may wait on a
+                // keychain prompt.
+                let handle = app.handle().clone();
+                tauri::async_runtime::spawn_blocking(move || {
+                    if let Err(error) = setup_manager.start(&handle) {
+                        eprintln!("failed to start astrlink-core: {error}");
+                    }
+                });
             }
             Ok(())
         })

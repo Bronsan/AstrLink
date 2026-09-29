@@ -13,23 +13,23 @@ import (
 func (handler *Handler) registerPrivacyModelsRoutes() {
 	handler.mux.HandleFunc(
 		PrivacyModelCatalogPath,
-		handler.authenticated(handler.privacyModelCatalog),
+		handler.authenticated(handler.privacyModelCatalog, RoleObserver),
 	)
 	handler.mux.HandleFunc(
 		PrivacyModelProbePath,
-		handler.authenticated(handler.privacyModelProbe),
+		handler.authenticated(handler.privacyModelProbe, RoleObserver),
 	)
 	handler.mux.HandleFunc(
 		PrivacyModelLocalProbePath,
-		handler.authenticated(handler.privacyModelLocalProbe),
+		handler.authenticated(handler.privacyModelLocalProbe, RoleObserver),
 	)
 	handler.mux.HandleFunc(
 		PrivacyModelsPath,
-		handler.authenticated(handler.privacyModelCollection),
+		handler.authenticated(handler.privacyModelCollection, RoleObserver),
 	)
 	handler.mux.HandleFunc(
 		PrivacyModelsPath+"/",
-		handler.authenticated(handler.privacyModelItem),
+		handler.authenticated(handler.privacyModelItem, RoleObserver),
 	)
 }
 

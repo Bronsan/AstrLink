@@ -16,6 +16,7 @@ import (
 	"github.com/QuantumNous/astrlink/convo"
 	"github.com/QuantumNous/astrlink/core/contract"
 	"github.com/QuantumNous/astrlink/core/internal/endpoint"
+	"github.com/QuantumNous/astrlink/core/internal/privacy"
 	"github.com/QuantumNous/astrlink/core/internal/storage"
 )
 
@@ -117,26 +118,38 @@ type recordSession struct {
 	channelBinding *channelBindingAttempt
 	// routingSettings is the request's single settings read; nil when the
 	// store has none or the read failed.
-	routingSettings          *contract.RoutingSettings
-	pendingAttempt           *pendingAttemptRecord
-	recovery                 *contract.RequestRecovery
-	modelRedirect            *contract.RequestModelRedirect
-	id                       contract.RequestID
-	startedAt                time.Time
-	classified               Request
-	accessTokenID            *contract.AccessTokenID
-	scanner                  *usageScanner
-	upstreamScanner          *usageScanner
-	status                   contract.RequestStatus
-	httpStatus               int
-	hasHTTPStatus            bool
-	upstreamHTTPStatus       int
-	hasUpstreamHTTPStatus    bool
-	endpointID               *contract.ServiceID
-	plan                     *contract.ExecutionPlan
-	errorSummary             *contract.ErrorSummary
-	privacyRestore           *contract.PrivacyRestoreSummary
-	privacyBatch             string
+	routingSettings       *contract.RoutingSettings
+	pendingAttempt        *pendingAttemptRecord
+	recovery              *contract.RequestRecovery
+	modelRedirect         *contract.RequestModelRedirect
+	id                    contract.RequestID
+	startedAt             time.Time
+	classified            Request
+	accessTokenID         *contract.AccessTokenID
+	scanner               *usageScanner
+	upstreamScanner       *usageScanner
+	status                contract.RequestStatus
+	httpStatus            int
+	hasHTTPStatus         bool
+	upstreamHTTPStatus    int
+	hasUpstreamHTTPStatus bool
+	endpointID            *contract.ServiceID
+	plan                  *contract.ExecutionPlan
+	errorSummary          *contract.ErrorSummary
+	privacyRestore        *contract.PrivacyRestoreSummary
+	privacyBatch          string
+	// privacyGated is set when a privacy filter is configured, so the client
+	// body may not be shared before a decision (plan §5.11.3).
+	privacyGated bool
+	// privacyDecision is the most severe decision any attempt reached; empty
+	// until one inspection decides.
+	privacyDecision contract.PrivacyDecision
+	privacyFindings []contract.PrivacyFinding
+	// requestExposure is the label of the stored client body; empty until
+	// it is stored.
+	requestExposure storage.AuditExposure
+	// finishing tells capture-time labels that no decision is still coming.
+	finishing                bool
 	attemptIndex             int
 	childCount               int
 	networkAttemptOpen       bool
@@ -307,6 +320,7 @@ func (session *recordSession) persistAvailableAudit(ctx context.Context) {
 	}
 	if session.persistBlobs != nil {
 		session.persistReadyAuditBlobs(persistCtx, session.persistBlobs, session.persistLogf)
+		session.settleRequestExposure(persistCtx, session.persistBlobs, session.persistLogf)
 	}
 	if session.persistStore == nil {
 		return
@@ -372,6 +386,7 @@ func (session *recordSession) persistOneAuditBlob(
 		return
 	}
 	session.markAuditPersisted(direction)
+	session.noteStoredExposure(blob)
 }
 
 func (session *recordSession) noteInboundBodyReady() {
@@ -425,7 +440,12 @@ func (session *recordSession) recordSnapshot(
 		Error:              session.errorSummary,
 		Audit:              session.liveAuditSummary(),
 		PrivacyRestore:     session.privacyRestore,
+		PrivacyFindings:    append([]contract.PrivacyFinding(nil), session.privacyFindings...),
 		Events:             append([]contract.RequestEvent(nil), session.events...),
+	}
+	if session.privacyDecision != "" {
+		decision := session.privacyDecision
+		record.PrivacyDecision = &decision
 	}
 	if session.upstreamScanner != nil && !session.upstreamScanner.firstOutputAt.IsZero() {
 		firstTokenMs := int(max(0, session.upstreamScanner.firstOutputAt.Sub(session.startedAt).Milliseconds()))
@@ -1121,6 +1141,7 @@ func (session *recordSession) finish(
 		latency = 0
 	}
 	audit := session.liveAuditSummary()
+	session.finishing = true
 	pendingBlobs := make([]storage.AuditBlob, 0, 6)
 	if blobs != nil {
 		key, keyErr := session.prepareAuditKey(ctx, blobs, logf)
@@ -1174,7 +1195,9 @@ func (session *recordSession) finish(
 			continue
 		}
 		session.markAuditPersisted(blob.Direction)
+		session.noteStoredExposure(blob)
 	}
+	session.settleRequestExposure(ctx, blobs, logf)
 }
 
 func (session *recordSession) prepareAuditKey(
@@ -1256,7 +1279,99 @@ func (session *recordSession) sealCapture(
 		Truncated:     buffer.truncated,
 		CapturedBytes: len(buffer.bytes),
 		CreatedAt:     createdAt,
+		Exposure:      session.auditExposure(direction),
 	}, true
+}
+
+// auditExposure labels a part at capture time with who may read it without
+// proof (plan §5.11.3). Upstream parts already left the machine and meta is
+// redacted before storage; the client body follows the privacy decision and
+// the client response is withheld once real values were restored into it.
+func (session *recordSession) auditExposure(direction storage.AuditDirection) storage.AuditExposure {
+	switch direction {
+	case storage.AuditDirectionRequest:
+		switch session.privacyDecision {
+		case contract.PrivacyDecisionNone, contract.PrivacyDecisionAllow, contract.PrivacyDecisionWarn:
+			return storage.AuditExposureShareable
+		case "":
+			if !session.privacyGated {
+				return storage.AuditExposureShareable
+			}
+			if session.finishing {
+				return storage.AuditExposureRaw
+			}
+			return storage.AuditExposurePending
+		default:
+			return storage.AuditExposureRaw
+		}
+	case storage.AuditDirectionResponse:
+		if restore := session.privacyRestore; restore != nil &&
+			(restore.RestoredCount > 0 || restore.ToolArgumentRestoredCount > 0) {
+			return storage.AuditExposureRaw
+		}
+		return storage.AuditExposureShareable
+	default:
+		return storage.AuditExposureShareable
+	}
+}
+
+func (session *recordSession) noteStoredExposure(blob storage.AuditBlob) {
+	if blob.Direction != storage.AuditDirectionRequest {
+		return
+	}
+	exposure := blob.Exposure
+	if exposure == "" {
+		exposure = storage.AuditExposureRaw
+	}
+	// The store keeps raw once set; mirror that so a later label is not
+	// mistaken for the stored one.
+	if session.requestExposure != storage.AuditExposureRaw {
+		session.requestExposure = exposure
+	}
+}
+
+// settleRequestExposure relabels a client body stored before its privacy
+// decision, or narrows one a later attempt withheld. It runs with the
+// metadata upsert that already follows each decision, never as an extra
+// write on the request path. Only the label changes.
+func (session *recordSession) settleRequestExposure(
+	ctx context.Context,
+	blobs AuditBlobPersister,
+	logf func(string, ...any),
+) {
+	current := session.requestExposure
+	if current == "" || current == storage.AuditExposureRaw {
+		return
+	}
+	next := session.auditExposure(storage.AuditDirectionRequest)
+	if next == current || next == storage.AuditExposurePending || !current.CanBecome(next) {
+		return
+	}
+	updater, ok := blobs.(storage.AuditExposureStore)
+	if !ok {
+		return
+	}
+	if err := updater.UpdateAuditExposure(ctx, session.id, storage.AuditDirectionRequest, next); err != nil {
+		logRequestRecordFailure(logf, "audit_exposure_update", err)
+		return
+	}
+	session.requestExposure = next
+}
+
+// notePrivacyOutcome keeps the structured decision beside the event summary.
+// Findings are kept only for decisions that withhold the client body; their
+// paths are reduced to structure so no request value reaches the record.
+func (session *recordSession) notePrivacyOutcome(decision contract.PrivacyDecision, findings []privacy.Finding) {
+	if session == nil || !decision.Valid() {
+		return
+	}
+	if session.privacyDecision == "" || decision.Severity() > session.privacyDecision.Severity() {
+		session.privacyDecision = decision
+	}
+	if decision != contract.PrivacyDecisionRedact && decision != contract.PrivacyDecisionBlock {
+		return
+	}
+	session.privacyFindings = mergePrivacyFindings(session.privacyFindings, findings)
 }
 
 // sealHTTPMeta encrypts the redacted HTTP envelope as a third blob direction.
@@ -1288,6 +1403,7 @@ func (session *recordSession) sealHTTPMeta(
 		Truncated:     false,
 		CapturedBytes: len(payload),
 		CreatedAt:     createdAt,
+		Exposure:      storage.AuditExposureShareable,
 	}, true
 }
 
@@ -1317,6 +1433,7 @@ func (session *recordSession) sealUpstreamHTTPMeta(
 		Truncated:     false,
 		CapturedBytes: len(payload),
 		CreatedAt:     createdAt,
+		Exposure:      storage.AuditExposureShareable,
 	}, true
 }
 

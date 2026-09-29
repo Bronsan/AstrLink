@@ -29,7 +29,11 @@ import {
   installAgentDebug,
   uninstallAgentDebug,
 } from "./bridge";
-import type { AgentInstallStatus, AgentToolId } from "./agent-install-model";
+import type {
+  AgentInstallStatus,
+  AgentToolId,
+  AgentToolStatus,
+} from "./agent-install-model";
 import { i18n, useT } from "./i18n";
 import { notify } from "./notify";
 import { PageHeader } from "./PageHeader";
@@ -38,6 +42,49 @@ const toolIds = ["cursor", "claude", "codex", "grok"] as const;
 
 function messageOf(error: unknown): string {
   return error instanceof Error ? error.message : i18n.t("agentDebug.failed");
+}
+
+// Host guards differ in strength: Claude enforces deny rules, Codex only reads
+// prompt guidance, and the rest have no verifiable location at all.
+function AgentGuardCell({
+  checked,
+  tool,
+}: {
+  checked: boolean;
+  tool: AgentToolStatus | undefined;
+}) {
+  const t = useT();
+  if (!tool?.detected && !tool?.guard_installed) {
+    return (
+      <span
+        className="text-muted-foreground"
+        aria-label={t(
+          checked ? "agentDebug.notDetected" : "agentDebug.unavailable",
+        )}
+      >
+        —
+      </span>
+    );
+  }
+  if (tool.guard === "skill_only") {
+    return (
+      <span className="text-xs text-muted-foreground">
+        {t("agentDebug.guard.skillOnly")}
+      </span>
+    );
+  }
+  if (!tool.guard_installed) {
+    return (
+      <StatusBadge tone="pending">{t("agentDebug.guard.missing")}</StatusBadge>
+    );
+  }
+  return tool.guard === "deny_rules" ? (
+    <StatusBadge tone="positive">{t("agentDebug.guard.denyRules")}</StatusBadge>
+  ) : (
+    <StatusBadge tone="neutral">
+      {t("agentDebug.guard.instructions")}
+    </StatusBadge>
+  );
 }
 
 export function AgentDebugSettings() {
@@ -223,7 +270,15 @@ export function AgentDebugSettings() {
                       {t("agentDebug.toolColumn")}
                     </TableHead>
                     <TableHead>Skill</TableHead>
-                    <TableHead className="pr-4">MCP</TableHead>
+                    <TableHead>MCP</TableHead>
+                    <TableHead className="pr-4">
+                      <span className="inline-flex items-center gap-0.5">
+                        {t("agentDebug.guardColumn")}
+                        <HelpPopover label={t("agentDebug.guardTitle")}>
+                          {t("agentDebug.guardBody")}
+                        </HelpPopover>
+                      </span>
+                    </TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -289,6 +344,12 @@ export function AgentDebugSettings() {
                             </TableCell>
                           ),
                         )}
+                        <TableCell className="last:pr-4">
+                          <AgentGuardCell
+                            checked={status !== null}
+                            tool={tool}
+                          />
+                        </TableCell>
                       </TableRow>
                     );
                   })}

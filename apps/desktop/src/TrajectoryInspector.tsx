@@ -46,6 +46,7 @@ import {
   EndpointLine,
   ResultInspector,
   UpstreamInspector,
+  withheldHint,
 } from "./TrajectoryResponse";
 
 /** The parts backed by a captured body, as opposed to record metadata. */
@@ -512,6 +513,10 @@ function BodyInspector({
       : [];
   const sectionKey = `trajectory-${row.chip}-${part}`;
   const missingHint = auditLoading ? null : missingBodyHint(record);
+  // Tabs with a view switch pick each view's own withheld hint.
+  const partHint =
+    withheldHint(omitCapturedBody ? null : auditContent?.withheld[part]) ??
+    missingHint;
 
   if (row.chip === "CLIENT" || row.chip === "TURN") {
     return (
@@ -538,11 +543,7 @@ function BodyInspector({
 
   if (row.chip === "RESULT") {
     return (
-      <ResultInspector
-        missingHint={missingHint}
-        part={captured}
-        record={record}
-      />
+      <ResultInspector missingHint={partHint} part={captured} record={record} />
     );
   }
 
@@ -568,7 +569,7 @@ function BodyInspector({
           className="text-xs leading-6 text-muted-foreground"
           data-testid="inspector-missing-body"
         >
-          {missingBodyHint(record)}
+          {partHint}
         </p>
       ) : null}
       {captured ? (
@@ -636,6 +637,7 @@ function ClientInspector({
             value: "request",
             label: t("audit.upstreamViews.request"),
             body,
+            withheld: auditContent?.withheld.request_body,
           },
           { value: "http", label: "HTTP", meta },
         ]}
@@ -737,6 +739,9 @@ function PolicyInspector({
               value: "request",
               label: t("trajectory.redactedRequest"),
               body,
+              withheld: redacted
+                ? auditContent?.withheld.upstream_request_body
+                : null,
             },
           ]}
         />

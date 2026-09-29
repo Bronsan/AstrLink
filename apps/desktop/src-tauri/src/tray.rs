@@ -29,7 +29,7 @@ use crate::{
     preferences::{
         PreferencesStore, QuotaDisplayMode, TrayMenubarText, TrayPreferences, TrayUsagePreferences,
     },
-    sidecar::{CoreManager, CorePhase, CoreView},
+    sidecar::{CoreManager, CorePhase, CoreView, ObserverReadLevel},
 };
 
 pub const TRAY_ID: &str = "main";
@@ -292,7 +292,25 @@ fn status_line(view: &CoreView, locale: Locale) -> (String, TrayIconState) {
             let mut text = t("host.tray.status.ready", &[("address", &address)]);
             if view.observer_active {
                 text.push_str(" · ");
-                text.push_str(&t("host.tray.status.observed", &[]));
+                text.push_str(&t(
+                    if view.observer_read_level == Some(ObserverReadLevel::Raw) {
+                        "host.tray.status.observedRaw"
+                    } else {
+                        "host.tray.status.observed"
+                    },
+                    &[],
+                ));
+            }
+            // An agent waiting on the operator is as worth noticing as one
+            // reading; both switch to the watched icon.
+            if view.pending_raw_access > 0 {
+                text.push_str(" · ");
+                text.push_str(&t(
+                    "host.tray.status.rawAccessPending",
+                    &[("count", &view.pending_raw_access.to_string())],
+                ));
+            }
+            if view.observer_active || view.pending_raw_access > 0 {
                 return (text, TrayIconState::Watched);
             }
             (text, TrayIconState::Ready)
@@ -1264,9 +1282,15 @@ fn run_core(app: &AppHandle, op: CoreOp) {
     let manager = Arc::clone(manager.inner());
     match op {
         CoreOp::Start => {
-            if let Err(error) = manager.start(app) {
-                eprintln!("unable to start astrlink-core from the tray: {error}");
-            }
+            // Off the main thread: resolving the local key may wait on a
+            // keychain prompt.
+            let app = app.clone();
+            tauri::async_runtime::spawn_blocking(move || {
+                let _lifecycle = lifecycle;
+                if let Err(error) = manager.start(&app) {
+                    eprintln!("unable to start astrlink-core from the tray: {error}");
+                }
+            });
         }
         CoreOp::Stop => {
             tauri::async_runtime::spawn(async move {
@@ -1725,6 +1749,8 @@ mod tests {
             recovery_attempt: 0,
             recovery_scheduled: false,
             observer_active: false,
+            observer_read_level: None,
+            pending_raw_access: 0,
         }
     }
 
@@ -1818,6 +1844,33 @@ mod tests {
             model.tooltip,
             "AstrLink · 网关运行中 · 127.0.0.1:8317 · Agent 正在通过 MCP 读取"
         );
+        watched.observer_read_level = Some(ObserverReadLevel::Raw);
+        watched.pending_raw_access = 2;
+        let model = tray_model(
+            &watched,
+            &TrayPreferences::default(),
+            None,
+            Locale::ZhCN,
+            QuotaDisplayMode::Remaining,
+        );
+        assert_eq!(
+            model.tooltip,
+            "AstrLink · 网关运行中 · 127.0.0.1:8317 · Agent 正在读取已批准的原文 · 2 个原文申请待批准"
+        );
+        let mut waiting = ready_view();
+        waiting.pending_raw_access = 1;
+        let model = tray_model(
+            &waiting,
+            &TrayPreferences::default(),
+            None,
+            Locale::En,
+            QuotaDisplayMode::Remaining,
+        );
+        assert_eq!(model.icon, TrayIconState::Watched);
+        assert_eq!(
+            model.tooltip,
+            "AstrLink · Gateway running · 127.0.0.1:8317 · Raw access requests awaiting you: 1"
+        );
         // Only a running gateway can be read; the badge drops with it.
         watched.phase = CorePhase::Error;
         let model = tray_model(
@@ -1841,6 +1894,8 @@ mod tests {
             recovery_attempt: 2,
             recovery_scheduled: true,
             observer_active: false,
+            observer_read_level: None,
+            pending_raw_access: 0,
         };
         let prefs = TrayPreferences {
             menubar_text: TrayMenubarText::Tokens,
@@ -2146,6 +2201,11 @@ mod tests {
         let value = serde_json::to_value(snapshot).unwrap();
         assert_eq!(value["view"]["phase"], "ready");
         assert_eq!(value["view"]["observer_active"], false);
+        assert_eq!(
+            value["view"]["observer_read_level"],
+            serde_json::Value::Null
+        );
+        assert_eq!(value["view"]["pending_raw_access"], 0);
         assert_eq!(value["popover_below"], true);
         assert_eq!(value["view"]["inference_url"], "http://127.0.0.1:8317");
         assert_eq!(value["digest"]["today"]["requests"], 128);

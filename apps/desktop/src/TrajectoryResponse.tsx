@@ -29,6 +29,7 @@ import {
   type AuditContent,
   type AuditContentPart,
   type AuditHTTPMeta,
+  type AuditWithheldPart,
   type RequestRecord,
   type RequestStatus,
 } from "./request-record-model";
@@ -179,6 +180,7 @@ export function UpstreamInspector({
             value: "response",
             label: t("audit.upstreamViews.response"),
             body: response,
+            withheld: auditContent?.withheld.upstream_response_content,
             lead:
               errors.length > 0 ? (
                 <Diagnosis errors={errors} tone="error" />
@@ -188,6 +190,7 @@ export function UpstreamInspector({
             value: "request",
             label: t("audit.upstreamViews.request"),
             body: request,
+            withheld: auditContent?.withheld.upstream_request_body,
           },
           { value: "http", label: "HTTP", meta },
         ]}
@@ -228,6 +231,8 @@ export type CaptureView =
       value: string;
       label: string;
       body: AuditContentPart | null;
+      /** Why a captured body is left out of this read, if it is. */
+      withheld?: AuditWithheldPart | null;
       /** Shown above the body, such as the error the provider sent. */
       lead?: ReactNode;
     }
@@ -267,6 +272,7 @@ export function CapturePane({
   if (!view) return null;
   const meta = "meta" in view ? view.meta : null;
   const body = "body" in view ? view.body : null;
+  const hint = ("body" in view && withheldHint(view.withheld)) || missingHint;
   const structuredLabel = body ? wireStructuredLabel(body) : null;
   const viewCopyKey = `${copyKey}:${view.value}`;
   const copyValue =
@@ -341,17 +347,30 @@ export function CapturePane({
             mode={structuredLabel ? mode : "raw"}
             part={body}
           />
-        ) : missingHint ? (
+        ) : hint ? (
           <p
             className="text-xs leading-6 text-muted-foreground"
             data-testid="inspector-missing-body"
           >
-            {missingHint}
+            {hint}
           </p>
         ) : null}
       </div>
     </Panel>
   );
+}
+
+/**
+ * The hint for a captured body this read leaves out: a raw part waits for
+ * an unlock, so the capture switch is not the reason it is missing.
+ */
+export function withheldHint(
+  withheld: AuditWithheldPart | null | undefined,
+): string | null {
+  if (!withheld) return null;
+  return withheld.reason === "raw_locked"
+    ? i18n.t("rawSealing.lockedDetail")
+    : i18n.t("rawSealing.withheldDetail");
 }
 
 type FactLabel = "http" | "duration" | "ttft" | "tokens" | "size";

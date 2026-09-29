@@ -318,9 +318,28 @@ describe("TrayPopoverPanel", () => {
     });
     const badge = document.querySelector('[data-slot="tray-observed"]');
     expect(badge?.textContent).toBe("Agent 正在通过 MCP 读取");
+    expect(document.querySelector('[data-slot="tray-raw-pending"]')).toBeNull();
     // Cost is shown without an unpriced caveat.
     expect(container.textContent).toContain("$0.83");
     expect(container.textContent).not.toContain("待计价");
+  });
+
+  it("names approved raw reads and pending raw access requests", async () => {
+    await render({
+      ...readyTrayState,
+      view: {
+        ...readyTrayState.view,
+        observer_active: true,
+        observer_read_level: "raw",
+        pending_raw_access: 2,
+      },
+    });
+    expect(
+      document.querySelector('[data-slot="tray-observed"]')?.textContent,
+    ).toBe("Agent 正在读取已批准的原文");
+    expect(
+      document.querySelector('[data-slot="tray-raw-pending"]')?.textContent,
+    ).toBe("2 个原文申请待批准");
   });
 
   it("hides what the preferences switch off", async () => {

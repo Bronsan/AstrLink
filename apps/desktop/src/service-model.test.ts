@@ -112,6 +112,36 @@ describe("service model", () => {
     ).toThrow(/provider does not match service kind/);
   });
 
+  it("accepts sealed account credentials and still reads keystore ones", () => {
+    const account = (credential_ref: string) =>
+      parseService({
+        id: "service_codex_personal",
+        name: "Codex",
+        kind: "codex_subscription",
+        enabled: true,
+        models: [],
+        capabilities: [],
+        subscription: {
+          provider: "openai_codex",
+          status: "connected",
+          credential_ref,
+        },
+        created_at: createdAt,
+        updated_at: createdAt,
+      });
+    expect(
+      account("local://subscription/service_codex_personal").subscription
+        ?.credential_ref,
+    ).toBe("local://subscription/service_codex_personal");
+    expect(
+      account("keyring://astrlink/subscription/service_codex_personal")
+        .subscription?.credential_ref,
+    ).toBe("keyring://astrlink/subscription/service_codex_personal");
+    expect(() => account("local://service/service_codex_personal")).toThrow(
+      /credential_ref/,
+    );
+  });
+
   it("rejects a leftover disabled_models field", () => {
     expect(() =>
       parseService({

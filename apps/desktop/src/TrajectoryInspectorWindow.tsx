@@ -15,7 +15,12 @@ import { getRequestAuditContent } from "./bridge";
 import { useCopyFeedback } from "./copy-feedback";
 import { i18n } from "./i18n";
 import { notify } from "./notify";
-import type { AuditContent, RequestRecord } from "./request-record-model";
+import {
+  holdsLockedPart,
+  holdsRawPart,
+  type AuditContent,
+  type RequestRecord,
+} from "./request-record-model";
 import { TrajectoryInspector } from "./TrajectoryInspector";
 import {
   listenInspectorSelection,
@@ -23,6 +28,7 @@ import {
   trajectoryInspectorState,
   type TrajectoryInspectorSelection,
 } from "./trajectory-inspector-window";
+import { useRawUnlockWatch } from "./use-raw-unlock-watch";
 import { WindowChromeAccessory } from "./WindowChrome";
 
 /**
@@ -38,6 +44,8 @@ import { WindowChromeAccessory } from "./WindowChrome";
  *
  * Audit content is decrypted here rather than forwarded, so captured bodies
  * never cross the channel and the main window's cache stays the main window's.
+ * The main window owns the raw unlock; this one watches it, so raw parts go
+ * when the unlock ends — pinned or not — and locked parts fill in after one.
  */
 export function TrajectoryInspectorWindow() {
   const t = i18n.t.bind(i18n);
@@ -92,10 +100,22 @@ export function TrajectoryInspectorWindow() {
       });
   }, []);
 
+  const [rawCheck, setRawCheck] = useState(0);
   const audit = useRequestAudit(
     selection?.record.id ?? null,
     selection?.record.status ?? null,
     auditCaptureKey(selection?.record ?? null),
+    rawCheck,
+  );
+  const refetchAudit = useCallback(() => setRawCheck((count) => count + 1), []);
+  useRawUnlockWatch(
+    selection !== null && !audit.loading,
+    {
+      holdsRaw: () => audit.content !== null && holdsRawPart(audit.content),
+      holdsLocked: () =>
+        audit.content !== null && holdsLockedPart(audit.content),
+    },
+    refetchAudit,
   );
 
   return (
@@ -191,14 +211,16 @@ interface AuditState {
 }
 
 /**
- * Refetches when the request changes, when a running request settles, and
- * when a pending record's captured flags flip — request-side blobs can land
- * before the call finishes.
+ * Refetches when the request changes, when a running request settles, when a
+ * pending record's captured flags flip — request-side blobs can land before
+ * the call finishes — and when the raw unlock watch asks. Every refetch drops
+ * the content first, so raw parts leave the screen before the read returns.
  */
 function useRequestAudit(
   requestId: string | null,
   status: string | null,
   captureKey: string,
+  rawCheck: number,
 ): AuditState {
   const [state, setState] = useState<AuditState>({
     content: null,
@@ -234,7 +256,7 @@ function useRequestAudit(
     return () => {
       active = false;
     };
-  }, [requestId, status, captureKey]);
+  }, [requestId, status, captureKey, rawCheck]);
 
   return state;
 }

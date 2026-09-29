@@ -34,6 +34,7 @@ import { PageHeader } from "./PageHeader";
 import { useT } from "./i18n";
 import { notify } from "./notify";
 import type { useOnboarding } from "./use-onboarding";
+import { useRevealProof } from "./use-reveal-proof";
 import type { UsageState } from "./usage-range";
 
 export function GettingStarted({
@@ -86,6 +87,7 @@ export function GettingStarted({
     onboarding.serviceReady &&
     onboarding.tokenReady &&
     Boolean(baseURL);
+  const revealProof = useRevealProof(canConnect);
   const complete =
     onboarding.catalogsReady &&
     onboarding.serviceReady &&
@@ -144,6 +146,8 @@ export function GettingStarted({
     copyPending.current = true;
     setCopying(true);
     try {
+      const proved = await revealProof.prove();
+      if (!proved || !mounted.current) return;
       const result = await revealAccessToken(token.id);
       if (!mounted.current) return;
       await navigator.clipboard.writeText(result.access_token);
@@ -460,6 +464,7 @@ export function GettingStarted({
           onClose={() => setImportOpen(false)}
         />
       ) : null}
+      {revealProof.dialog}
     </section>
   );
 }

@@ -18,6 +18,20 @@ type HealthResponse struct {
 	Status string `json:"status"`
 }
 
+// LocalDataStatus reports saved data this device cannot decrypt: the data
+// directory came from another device, or the keychain entry or key file
+// holding its local key is gone (plan §5.7).
+type LocalDataStatus struct {
+	// UnreadableCredentials counts service API keys, proxy and built-in tool
+	// credentials, and subscription sign-ins that must be entered again.
+	UnreadableCredentials int `json:"unreadable_credentials"`
+	// UnreadableAccessTokens counts local access tokens whose value can no
+	// longer be shown. They still authenticate.
+	UnreadableAccessTokens int `json:"unreadable_access_tokens"`
+	// AuditKeyMissing is true when bodies captured earlier cannot be opened.
+	AuditKeyMissing bool `json:"audit_key_missing"`
+}
+
 type VersionResponse struct {
 	CoreVersion             string `json:"core_version"`
 	ControlAPIVersion       string `json:"control_api_version"`

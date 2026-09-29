@@ -55,7 +55,12 @@ type Dependencies struct {
 	AuditSettings      storage.AuditSettingsStore
 	AuditKeys          storage.AuditKeyStore
 	AuditBlobs         storage.AuditBlobStore
-	Subscriptions      *subscription.Manager
+	// RawVault guards raw audit parts. Nil until raw sealing is set up
+	// by the runtime; see RawVault.
+	RawVault RawVault
+	// LocalData reports saved data this device cannot decrypt. Optional.
+	LocalData     storage.LocalDataStore
+	Subscriptions *subscription.Manager
 	// CodingPlans reads first-party plan quotas for API-key coding plan
 	// services (Kimi, GLM, MiniMax, OpenCode Go). Optional.
 	CodingPlans      CodingPlanUsage
@@ -64,6 +69,7 @@ type Dependencies struct {
 	AutoClassifiers  AutoClassifierRegistry
 	AutoClassifier   AutoClassifier
 	ControlToken     string
+	ObserverToken    string
 	NewServiceID     func() (contract.ServiceID, error)
 	ConversionEngine relaykitbridge.ConversionEngine
 	Shutdown         context.CancelFunc
@@ -113,6 +119,9 @@ type Handler struct {
 	auditSettings     storage.AuditSettingsStore
 	auditKeys         storage.AuditKeyStore
 	auditBlobs        storage.AuditBlobStore
+	rawVault          RawVault
+	rawGrants         *rawGrantManager
+	localData         storage.LocalDataStore
 	subscriptions     *subscription.Manager
 	codingPlans       CodingPlanUsage
 	serviceModels     ServiceModelProber
@@ -120,6 +129,7 @@ type Handler struct {
 	autoClassifiers   AutoClassifierRegistry
 	autoClassifier    AutoClassifier
 	controlToken      []byte
+	observerToken     []byte
 	newServiceID      func() (contract.ServiceID, error)
 	mux               *http.ServeMux
 	privacyMu         sync.Mutex
@@ -141,6 +151,14 @@ func NewWithDependencies(version contract.VersionResponse, dependencies Dependen
 	}
 	if len(dependencies.ControlToken) < 16 {
 		return nil, fmt.Errorf("control token must contain at least 16 bytes")
+	}
+	if dependencies.ObserverToken != "" {
+		if len(dependencies.ObserverToken) < 16 {
+			return nil, fmt.Errorf("observer token must contain at least 16 bytes")
+		}
+		if dependencies.ObserverToken == dependencies.ControlToken {
+			return nil, fmt.Errorf("observer token must differ from the control token")
+		}
 	}
 	return newHandler(version, dependencies)
 }
@@ -167,6 +185,9 @@ func newHandler(version contract.VersionResponse, dependencies Dependencies) (*H
 		auditSettings:   dependencies.AuditSettings,
 		auditKeys:       dependencies.AuditKeys,
 		auditBlobs:      dependencies.AuditBlobs,
+		rawVault:        dependencies.RawVault,
+		rawGrants:       newRawGrantManager(),
+		localData:       dependencies.LocalData,
 		subscriptions:   dependencies.Subscriptions,
 		codingPlans:     dependencies.CodingPlans,
 		serviceModels:   dependencies.ServiceModels,
@@ -174,15 +195,17 @@ func newHandler(version contract.VersionResponse, dependencies Dependencies) (*H
 		autoClassifiers: dependencies.AutoClassifiers,
 		autoClassifier:  dependencies.AutoClassifier,
 		controlToken:    []byte(dependencies.ControlToken),
+		observerToken:   []byte(dependencies.ObserverToken),
 		newServiceID:    dependencies.NewServiceID,
 		shutdown:        dependencies.Shutdown,
 		mux:             http.NewServeMux(),
 		observers:       newObserverTracker(),
 	}
-	handler.mux.HandleFunc(ObserversPath, handler.authenticated(handler.getObservers))
-	handler.mux.HandleFunc(PricingPath+"/", handler.authenticated(handler.pricingResource))
-	handler.mux.HandleFunc(BuiltinToolsPath, handler.authenticated(handler.builtinToolResource))
-	handler.mux.HandleFunc(RoutingSettingsPath, handler.authenticated(handler.routingSettingsResource))
+	handler.observers.pending = handler.rawGrants.pendingCount
+	handler.mux.HandleFunc(ObserversPath, handler.authenticated(handler.getObservers, RoleObserver))
+	handler.mux.HandleFunc(PricingPath+"/", handler.authenticated(handler.pricingResource, RoleObserver))
+	handler.mux.HandleFunc(BuiltinToolsPath, handler.authenticated(handler.builtinToolResource, RoleOperator))
+	handler.mux.HandleFunc(RoutingSettingsPath, handler.authenticated(handler.routingSettingsResource, RoleObserver))
 	handler.mux.HandleFunc(HealthPath, handler.getOnly(func(writer http.ResponseWriter, _ *http.Request) {
 		writeJSON(writer, http.StatusOK, contract.HealthResponse{Status: "ok"})
 	}))
@@ -201,7 +224,7 @@ func newHandler(version contract.VersionResponse, dependencies Dependencies) (*H
 			}
 			writeJSON(writer, http.StatusAccepted, map[string]string{"status": "shutting_down"})
 			go handler.shutdown()
-		}))
+		}, RoleOperator))
 	}
 	if handler.serviceStore != nil {
 		if handler.newServiceID == nil {
@@ -209,9 +232,9 @@ func newHandler(version contract.VersionResponse, dependencies Dependencies) (*H
 		}
 		handler.registerServiceRoutes()
 	}
-	handler.mux.HandleFunc(ServiceOrderPath, handler.authenticated(handler.serviceOrderResource))
+	handler.mux.HandleFunc(ServiceOrderPath, handler.authenticated(handler.serviceOrderResource, RoleObserver))
 	for _, path := range []string{RoutesPath, RoutesPath + "/", RecoveryPathsPath, RecoveryPathsPath + "/", AutoClassifierPath, AutoClassifierPath + "/"} {
-		handler.mux.HandleFunc(path, handler.authenticated(handler.retiredRouting))
+		handler.mux.HandleFunc(path, handler.authenticated(handler.retiredRouting, RoleObserver))
 	}
 	if handler.accessTokens != nil {
 		handler.registerAccessTokenRoutes()
@@ -227,6 +250,13 @@ func newHandler(version contract.VersionResponse, dependencies Dependencies) (*H
 	}
 	if handler.auditSettings != nil {
 		handler.registerAuditSettingsRoutes()
+	}
+	if handler.requestRecords != nil && handler.auditBlobs != nil {
+		handler.registerRawAccessRoutes()
+		handler.registerRawSealingRoutes()
+	}
+	if handler.localData != nil {
+		handler.registerLocalDataRoutes()
 	}
 	handler.mux.HandleFunc("/", func(writer http.ResponseWriter, _ *http.Request) {
 		writeError(writer, http.StatusNotFound, "not_found", "control API path not found")
@@ -279,6 +309,7 @@ type errorDetail struct {
 	Protocol          string   `json:"protocol,omitempty"`
 	ServiceID         string   `json:"service_id,omitempty"`
 	RequiredPlanTypes []string `json:"required_plan_types,omitempty"`
+	RetryAfterSeconds int      `json:"retry_after_seconds,omitempty"`
 }
 
 func writeError(writer http.ResponseWriter, status int, code, message string) {

@@ -31,6 +31,8 @@ const status = {
       detected: true,
       skill_installed: false,
       mcp_installed: false,
+      guard: "skill_only" as const,
+      guard_installed: false,
       preview_paths: [
         "/tmp/.cursor/skills/astrlink-debug",
         "/tmp/.cursor/mcp.json",
@@ -41,6 +43,8 @@ const status = {
       detected: false,
       skill_installed: false,
       mcp_installed: false,
+      guard: "deny_rules" as const,
+      guard_installed: false,
       preview_paths: [
         "/tmp/.claude/skills/astrlink-debug",
         "/tmp/.claude.json",
@@ -51,6 +55,8 @@ const status = {
       detected: true,
       skill_installed: true,
       mcp_installed: true,
+      guard: "instructions" as const,
+      guard_installed: true,
       preview_paths: [
         "/tmp/.agents/skills/astrlink-debug",
         "/tmp/.codex/config.toml",
@@ -61,6 +67,8 @@ const status = {
       detected: true,
       skill_installed: false,
       mcp_installed: false,
+      guard: "skill_only" as const,
+      guard_installed: false,
       preview_paths: [
         "/tmp/.grok/skills/astrlink-debug",
         "/tmp/.grok/config.toml",
@@ -174,6 +182,35 @@ describe("AgentDebugSettings", () => {
     expect(bridge.installAgentDebug).toHaveBeenCalledTimes(1);
     expect(button("安装 / 更新").disabled).toBe(false);
     expect(container.textContent).toContain("1 / 1");
+  });
+
+  it("reports each tool's host guard with its strength", async () => {
+    bridge.getAgentDebugStatus.mockResolvedValue({
+      ...status,
+      tools: [
+        status.tools[0],
+        { ...status.tools[1], detected: true, guard_installed: true },
+        status.tools[2],
+        { ...status.tools[3], detected: false },
+      ],
+    });
+    await act(async () => root.render(<AgentDebugSettings />));
+    const guardCell = (name: string) =>
+      [...container.querySelectorAll("tbody tr")]
+        .find((row) => row.textContent?.includes(name))
+        ?.querySelectorAll("td")[3];
+    expect(guardCell("Cursor")?.textContent).toBe("仅 Skill");
+    expect(guardCell("Claude")?.textContent).toBe("已拦截");
+    expect(guardCell("Codex")?.textContent).toBe("仅提示词");
+    expect(guardCell("Grok")?.textContent).toBe("—");
+    expect(container.querySelector("thead")?.textContent).toContain("文件访问");
+
+    bridge.getAgentDebugStatus.mockResolvedValue({
+      ...status,
+      tools: [{ ...status.tools[1], detected: true }],
+    });
+    await act(async () => button("重新检测").click());
+    expect(guardCell("Claude")?.textContent).toBe("未写入");
   });
 
   it("installs only Grok and previews only its paths and the shared runtime", async () => {

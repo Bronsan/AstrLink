@@ -11,11 +11,14 @@ import (
 const (
 	mcpProtocolVersion = "2024-11-05"
 	mcpServerName      = "astrlink"
-	mcpServerVersion   = "0.1.2"
+	mcpServerVersion   = "0.2.0"
 )
 
 type initializeParams struct {
 	ProtocolVersion string `json:"protocolVersion"`
+	ClientInfo      struct {
+		Name string `json:"name"`
+	} `json:"clientInfo"`
 }
 
 type toolsCallParams struct {
@@ -29,6 +32,8 @@ type toolsCallParams struct {
 type Server struct {
 	Client  *Client
 	Options DialOptions
+	// clientName is the MCP client's self-reported clientInfo.name.
+	clientName string
 }
 
 func (server *Server) clientForCall() (*Client, error) {
@@ -115,6 +120,7 @@ func dispatch(ctx context.Context, server *Server, request rpcRequest) (any, *rp
 			if params.ProtocolVersion != "" {
 				version = params.ProtocolVersion
 			}
+			server.clientName = params.ClientInfo.Name
 		}
 		return map[string]any{
 			"protocolVersion": version,
@@ -140,6 +146,7 @@ func dispatch(ctx context.Context, server *Server, request rpcRequest) (any, *rp
 				"isError": true,
 			}, nil
 		}
+		client.setAgentName(server.clientName)
 		payload, err := callTool(ctx, client, params.Name, params.Arguments)
 		if err != nil {
 			return map[string]any{

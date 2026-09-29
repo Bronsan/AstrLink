@@ -15,6 +15,8 @@ const status = {
       detected: true,
       skill_installed: true,
       mcp_installed: false,
+      guard: "skill_only",
+      guard_installed: false,
       preview_paths: [
         "/tmp/.cursor/skills/astrlink-debug",
         "/tmp/.cursor/mcp.json",
@@ -48,6 +50,26 @@ describe("agent-install-model", () => {
         tools: [{ ...status.tools[0], preview_paths: "not an array" }],
       }),
     ).toThrow(/preview_paths/);
+  });
+
+  it("validates the host guard fields", () => {
+    expect(parseAgentInstallStatus(status).tools[0]?.guard).toBe("skill_only");
+    expect(() =>
+      parseAgentInstallStatus({
+        ...status,
+        tools: [{ ...status.tools[0], guard: "sandbox" }],
+      }),
+    ).toThrow(/guard/);
+    expect(() =>
+      parseAgentInstallStatus({
+        ...status,
+        tools: [{ ...status.tools[0], guard_installed: "yes" }],
+      }),
+    ).toThrow(/guard_installed/);
+    const { guard: _guard, ...legacy } = status.tools[0];
+    expect(() =>
+      parseAgentInstallStatus({ ...status, tools: [legacy] }),
+    ).toThrow(/missing field/);
   });
 
   it("parses an install receipt", () => {

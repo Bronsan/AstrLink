@@ -9,6 +9,7 @@ import {
   type RoutingSettings,
 } from "./failure-policy-model";
 import { invoke as invokeCommand } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import {
   parseServiceProxyProbe,
   type ServiceProxyProbeInput,
@@ -92,10 +93,31 @@ import {
   type RequestSessionPage,
 } from "./request-record-model";
 import {
+  parseRawAccessList,
+  parseRawAccessProofOutcome,
+  type RawAccessDecision,
+  type RawAccessGrant,
+  type RawAccessProofOutcome,
+} from "./raw-access-model";
+import {
+  parsePresenceOutcome,
+  parseRawSealingOutcome,
+  parseRawSealingState,
+  parseRawSealingStatus,
+  type PresenceOutcome,
+  type PresencePurpose,
+  type RawPasswordAction,
+  type RawProof,
+  type RawSealingOutcome,
+  type RawSealingState,
+  type RawSealingStatus,
+} from "./raw-sealing-model";
+import {
   parseAuditSettings,
   type AuditSettings,
   type AuditSettingsPatch,
 } from "./audit-settings-model";
+import { parseLocalDataStatus, type LocalDataStatus } from "./local-data-model";
 import {
   parseAuthorizationSession,
   parseBeginCodexAuthorizationResult,
@@ -583,6 +605,87 @@ export async function getRequestAuditContent(
   );
 }
 
+export async function listRawAccess(): Promise<RawAccessGrant[]> {
+  requireNativeBridge();
+  return parseRawAccessList(await invoke<unknown>("list_raw_access"));
+}
+
+/**
+ * Decides one agent raw access request. Approving needs a proof: the raw
+ * password, which the host forwards once and keeps no copy of, or a
+ * presence check the host runs itself. Denying carries none.
+ */
+export async function decideRawAccess(
+  grantId: string,
+  decision: RawAccessDecision,
+  proof?: RawProof,
+): Promise<RawAccessProofOutcome> {
+  requireNativeBridge();
+  return parseRawAccessProofOutcome(
+    await invoke<unknown>("decide_raw_access", {
+      grantId,
+      decision,
+      proof: decision === "deny" ? null : (proof ?? null),
+    }),
+  );
+}
+
+export async function getRawSealingStatus(): Promise<RawSealingState> {
+  requireNativeBridge();
+  return parseRawSealingState(await invoke<unknown>("raw_sealing_status"));
+}
+
+/** Opens the operator's raw unlock session; Core ends it after idling. */
+export async function unlockRaw(proof: RawProof): Promise<RawSealingOutcome> {
+  requireNativeBridge();
+  return parseRawSealingOutcome(await invoke<unknown>("unlock_raw", { proof }));
+}
+
+export async function lockRaw(): Promise<RawSealingStatus> {
+  requireNativeBridge();
+  return parseRawSealingStatus(await invoke<unknown>("lock_raw"));
+}
+
+/**
+ * Calls `onChange` whenever any window locks, unlocks, or changes the raw
+ * password. Core's own idle lock sends nothing; watch the unlock expiry too.
+ */
+export async function listenRawSealingChanged(
+  onChange: () => void,
+): Promise<() => void> {
+  if (!hasNativeBridge()) return () => {};
+  return listen("raw-sealing-changed", () => onChange());
+}
+
+/**
+ * Sets, changes, or resets the raw password. `password` is the new one;
+ * `proof` opens the existing key where Core needs it.
+ */
+export async function setRawPassword(
+  action: RawPasswordAction,
+  password?: string,
+  proof?: RawProof,
+): Promise<RawSealingOutcome> {
+  requireNativeBridge();
+  return parseRawSealingOutcome(
+    await invoke<unknown>("set_raw_password", {
+      action,
+      password: password ?? null,
+      proof: proof ?? null,
+    }),
+  );
+}
+
+/** Shows the system presence prompt for a desktop-only action (D14). */
+export async function verifyLocalPresence(
+  purpose: PresencePurpose,
+): Promise<PresenceOutcome> {
+  requireNativeBridge();
+  return parsePresenceOutcome(
+    await invoke<unknown>("verify_local_presence", { purpose }),
+  );
+}
+
 export async function getAuditSettings(): Promise<AuditSettings> {
   requireNativeBridge();
   return parseAuditSettings(await invoke<unknown>("get_audit_settings"));
@@ -595,6 +698,12 @@ export async function updateAuditSettings(
   return parseAuditSettings(
     await invoke<unknown>("update_audit_settings", { patch }),
   );
+}
+
+/** Counts of saved data this device can no longer decrypt. */
+export async function getLocalDataStatus(): Promise<LocalDataStatus> {
+  requireNativeBridge();
+  return parseLocalDataStatus(await invoke<unknown>("local_data_status"));
 }
 
 export async function listAccessTokens(): Promise<AccessTokenPage> {

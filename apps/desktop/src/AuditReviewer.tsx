@@ -17,12 +17,17 @@ import { EmptyState } from "@/components/EmptyState";
 import { FormMessage } from "@/components/FormMessage";
 import { MarkdownContent } from "@/components/MarkdownContent";
 import { ResponseViewer } from "@/components/ResponseViewer";
+import { StatusBadge } from "@/components/StatusBadge";
 import { cn } from "@/lib/utils";
 
 import { buildHeadersText } from "./audit-bundle";
 import { i18n } from "./i18n";
 import { copyButtonLabel, type CopyFeedback } from "./copy-feedback";
-import type { AuditContentPart, AuditHTTPMeta } from "./request-record-model";
+import type {
+  AuditContentPart,
+  AuditHTTPMeta,
+  AuditWithheldPart,
+} from "./request-record-model";
 import { splitPrivacyHighlights } from "./request-trajectory-model";
 import {
   parseResponsePreview,
@@ -387,14 +392,21 @@ export function AuditPartSection({
   protocol,
   sectionKey,
   copyFeedback,
+  withheld = null,
+  onUnlock,
 }: {
   title: string;
   part: AuditContentPart | null;
   protocol: string;
   sectionKey: string;
   copyFeedback: CopyFeedback;
+  /** Why a captured part is missing from this read, if it is. */
+  withheld?: AuditWithheldPart | null;
+  /** Opens the raw unlock for a part sealed with the raw key. */
+  onUnlock?: () => void;
 }) {
   const t = i18n.t.bind(i18n);
+  const locked = part === null && withheld?.reason === "raw_locked";
   return (
     <DetailBlock
       actions={
@@ -407,16 +419,40 @@ export function AuditPartSection({
           >
             {copyButtonLabel(copyFeedback, sectionKey)}
           </Button>
+        ) : locked && onUnlock ? (
+          <Button
+            className="h-auto px-0 text-xs"
+            onClick={onUnlock}
+            type="button"
+            variant="link"
+          >
+            {t("rawSealing.unlock")}
+          </Button>
         ) : null
       }
       title={title}
     >
-      {part === null ? (
+      {part !== null ? (
+        <AuditPartView part={part} protocol={protocol} />
+      ) : withheld ? (
+        <div
+          className="flex flex-wrap items-center gap-2 text-xs leading-6 text-muted-foreground"
+          data-slot="audit-part-withheld"
+        >
+          {locked ? (
+            <StatusBadge tone="neutral">{t("rawSealing.locked")}</StatusBadge>
+          ) : null}
+          <span>
+            {locked
+              ? t("rawSealing.lockedDetail")
+              : t("rawSealing.withheldDetail")}
+          </span>
+          <span>{formatBytes(withheld.captured_bytes)}</span>
+        </div>
+      ) : (
         <p className="text-xs leading-6 text-muted-foreground">
           {t("audit.uncapturedDetail")}
         </p>
-      ) : (
-        <AuditPartView part={part} protocol={protocol} />
       )}
     </DetailBlock>
   );

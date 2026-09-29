@@ -365,7 +365,11 @@ export function TrayPopoverPanel({
                 variant="outline"
               >
                 <Eye aria-hidden="true" className="size-3" />
-                {t("tray.observed")}
+                {t(
+                  view.observer_read_level === "raw"
+                    ? "tray.observedRaw"
+                    : "tray.observed",
+                )}
               </Badge>
             ) : null}
           </div>
@@ -380,6 +384,14 @@ export function TrayPopoverPanel({
                 </span>
               ) : null}
             </div>
+          ) : null}
+          {view?.pending_raw_access ? (
+            <p
+              className="mt-0.5 text-micro text-warning-foreground"
+              data-slot="tray-raw-pending"
+            >
+              {t("tray.rawAccessPending", { count: view.pending_raw_access })}
+            </p>
           ) : null}
           {view?.inference_port_fallback ? (
             <p className="mt-0.5 text-micro text-warning-foreground">

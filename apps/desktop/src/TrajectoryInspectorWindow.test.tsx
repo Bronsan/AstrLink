@@ -25,9 +25,12 @@ vi.mock("@tauri-apps/api/window", () => ({
 
 const bridgeMocks = vi.hoisted(() => ({
   getRequestAuditContent: vi.fn(),
+  getRawSealingStatus: vi.fn(),
+  listenRawSealingChanged: vi.fn(),
 }));
 vi.mock("./bridge", () => bridgeMocks);
 
+import type { RawSealingState } from "./raw-sealing-model";
 import type { AuditContent, RequestRecord } from "./request-record-model";
 import { emptyTrajectoryFields } from "./request-record-model";
 import type { TrajectoryRow } from "./request-trajectory-model";
@@ -97,6 +100,9 @@ const laterRow: TrajectoryRow = {
 
 const auditContent: AuditContent = {
   request_id: record.id,
+  view: "full",
+  withheld: {},
+  privacy_findings: [],
   http_meta: null,
   request_body: null,
   response_content: null,
@@ -109,6 +115,59 @@ const auditContent: AuditContent = {
     captured_bytes: 11,
   },
 };
+
+function sealing(
+  unlocked: boolean,
+  unlockExpiresAt: string | null = null,
+): RawSealingState {
+  return {
+    raw_available: true,
+    configured: true,
+    password_set: true,
+    local_presence: false,
+    envelopes: ["password"],
+    key_verified: true,
+    unlocked,
+    unlock_expires_at: unlockExpiresAt,
+    unlock_idle_seconds: 900,
+    retry_after_seconds: 0,
+    password_min_length: 8,
+    password_max_length: 128,
+    presence_available: false,
+  };
+}
+
+const rawContent: AuditContent = {
+  ...auditContent,
+  upstream_response_content: {
+    media_type: "application/json",
+    content: '{"secret":"raw-only"}',
+    truncated: false,
+    captured_bytes: 21,
+    exposure: "raw",
+  },
+};
+
+const lockedContent: AuditContent = {
+  ...auditContent,
+  upstream_response_content: null,
+  withheld: {
+    upstream_response_content: {
+      reason: "raw_locked",
+      raw_available: false,
+      media_type: "application/json",
+      truncated: false,
+      captured_bytes: 21,
+    },
+  },
+};
+
+/** Tells the window, as the host does, that another window changed the unlock. */
+async function announceSealingChange(): Promise<void> {
+  const call = bridgeMocks.listenRawSealingChanged.mock.calls.at(-1);
+  if (!call) throw new Error("The inspector window never watched the unlock");
+  await act(async () => (call[0] as () => void)());
+}
 
 /** What the host reports when this window pulls its state on mount. */
 const hostState: { current: TrajectoryInspectorWindowState } = {
@@ -158,6 +217,11 @@ describe("TrajectoryInspectorWindow", () => {
       },
     );
     bridgeMocks.getRequestAuditContent.mockResolvedValue(auditContent);
+    bridgeMocks.getRawSealingStatus.mockResolvedValue({
+      ...sealing(false),
+      configured: false,
+    });
+    bridgeMocks.listenRawSealingChanged.mockResolvedValue(() => undefined);
     Object.assign(window, {
       __TAURI_INTERNALS__: {},
       __ASTRLINK_DESKTOP_PLATFORM__: "macos",
@@ -822,6 +886,63 @@ describe("TrajectoryInspectorWindow", () => {
     ).toBeNull();
   });
 
+  it("says a withheld body waits for an unlock instead of capture", async () => {
+    await render();
+    const withheld = {
+      reason: "raw_locked",
+      raw_available: false,
+      media_type: "application/json",
+      truncated: false,
+      captured_bytes: 64,
+    } as const;
+    bridgeMocks.getRequestAuditContent.mockResolvedValue({
+      ...auditContent,
+      withheld: {
+        request_body: withheld,
+        upstream_request_body: { ...withheld, reason: "privacy_redacted" },
+      },
+    });
+    const captured: RequestRecord = {
+      ...record,
+      audit: {
+        ...record.audit,
+        request_body_captured: true,
+        upstream_request_body_captured: true,
+      },
+    };
+    const hint = (testId: string) =>
+      container
+        .querySelector(`[data-testid="${testId}"]`)
+        ?.querySelector('[data-testid="inspector-missing-body"]')?.textContent;
+
+    await act(async () => {
+      pushSelection({ row: laterRow, record: captured });
+    });
+    await flush();
+    expect(hint("inspector-client-body")).toBe("原文已封存，解锁后才能查看。");
+
+    await act(async () => {
+      container
+        .querySelector<HTMLButtonElement>(
+          '[data-testid="inspector-tab"][data-chip="UPSTREAM"]',
+        )!
+        .click();
+    });
+    await flush();
+    await act(async () =>
+      [
+        ...container.querySelectorAll<HTMLButtonElement>(
+          '[aria-label="上游内容"] button',
+        ),
+      ]
+        .find((button) => button.textContent === "请求")!
+        .click(),
+    );
+    expect(hint("inspector-upstream-body")).toBe(
+      "此部分已捕获，当前视图不显示。",
+    );
+  });
+
   it("refetches audit when a pending record's captured flags flip", async () => {
     await render();
     const pendingRecord: RequestRecord = {
@@ -843,6 +964,7 @@ describe("TrajectoryInspectorWindow", () => {
       endedAt: null,
     };
     bridgeMocks.getRequestAuditContent.mockResolvedValue({
+      ...auditContent,
       request_id: record.id,
       http_meta: null,
       request_body: null,
@@ -864,6 +986,7 @@ describe("TrajectoryInspectorWindow", () => {
     ).toContain("进行中");
 
     bridgeMocks.getRequestAuditContent.mockResolvedValue({
+      ...auditContent,
       request_id: record.id,
       http_meta: null,
       request_body: {
@@ -890,6 +1013,82 @@ describe("TrajectoryInspectorWindow", () => {
 
     expect(bridgeMocks.getRequestAuditContent).toHaveBeenCalledTimes(2);
     expect(inspector(container)?.textContent).toContain("live");
+  });
+
+  it("drops raw parts from a pinned window once another window locks", async () => {
+    bridgeMocks.getRawSealingStatus.mockResolvedValue(sealing(true));
+    bridgeMocks.getRequestAuditContent.mockResolvedValue(rawContent);
+    hostState.current = { selection: { record, row }, pinned: true };
+    await render();
+    await flush();
+    expect(inspector(container)?.textContent).toContain("raw-only");
+    expect(bridgeMocks.getRequestAuditContent).toHaveBeenCalledTimes(1);
+
+    bridgeMocks.getRawSealingStatus.mockResolvedValue(sealing(false));
+    let settle: (content: AuditContent) => void = () => undefined;
+    bridgeMocks.getRequestAuditContent.mockReturnValue(
+      new Promise<AuditContent>((resolve) => {
+        settle = resolve;
+      }),
+    );
+    await announceSealingChange();
+    await flush();
+    // The raw part leaves before Core answers the refetch.
+    expect(bridgeMocks.getRequestAuditContent).toHaveBeenCalledTimes(2);
+    expect(inspector(container)?.textContent).not.toContain("raw-only");
+
+    await act(async () => settle(lockedContent));
+    await flush();
+    expect(inspector(container)?.textContent).not.toContain("raw-only");
+    expect(pinButton(container).getAttribute("aria-pressed")).toBe("true");
+
+    // A lock that changes nothing more does not refetch again.
+    await announceSealingChange();
+    await flush();
+    expect(bridgeMocks.getRequestAuditContent).toHaveBeenCalledTimes(2);
+
+    // An unlock elsewhere fills the locked part in.
+    bridgeMocks.getRawSealingStatus.mockResolvedValue(sealing(true));
+    bridgeMocks.getRequestAuditContent.mockResolvedValue(rawContent);
+    await announceSealingChange();
+    await flush();
+    expect(bridgeMocks.getRequestAuditContent).toHaveBeenCalledTimes(3);
+    expect(inspector(container)?.textContent).toContain("raw-only");
+  });
+
+  it("drops raw parts when the unlock idles out without any event", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+    try {
+      const tick = async (ms: number) => {
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(ms);
+        });
+      };
+      const expiresAt = new Date(Date.now() + 60_000).toISOString();
+      bridgeMocks.getRawSealingStatus.mockResolvedValue(
+        sealing(true, expiresAt),
+      );
+      bridgeMocks.getRequestAuditContent.mockResolvedValue(rawContent);
+      hostState.current = { selection: { record, row }, pinned: true };
+      await act(async () => {
+        root.render(<TrajectoryInspectorWindow />);
+      });
+      await tick(0);
+      await tick(0);
+      expect(inspector(container)?.textContent).toContain("raw-only");
+
+      // Core locks on its own; the window reads the state after the expiry.
+      bridgeMocks.getRawSealingStatus.mockResolvedValue(sealing(false));
+      bridgeMocks.getRequestAuditContent.mockResolvedValue(lockedContent);
+      await tick(59_000);
+      expect(bridgeMocks.getRequestAuditContent).toHaveBeenCalledTimes(1);
+      await tick(3_000);
+      await tick(0);
+      expect(bridgeMocks.getRequestAuditContent).toHaveBeenCalledTimes(2);
+      expect(inspector(container)?.textContent).not.toContain("raw-only");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("reports a broken audit key instead of the raw transport error", async () => {

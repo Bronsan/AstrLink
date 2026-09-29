@@ -412,6 +412,7 @@ func (handler *Handler) applyPrivacy(
 	session.beginPrivacyAttempt()
 	if handler.privacyFilter == nil {
 		session.notePrivacyDecision("allow", contract.RequestStatusSucceeded)
+		session.notePrivacyOutcome(contract.PrivacyDecisionNone, nil)
 		return func() {}, privacyOutcome{}, nil
 	}
 	accessTokenID, _ := AccessTokenIDFromContext(request.Context())
@@ -428,6 +429,7 @@ func (handler *Handler) applyPrivacy(
 		// This branch deliberately does not read, replace, or otherwise touch
 		// request.Body. Disabled policy preserves the original byte path.
 		session.notePrivacyDecision("allow", contract.RequestStatusSucceeded)
+		session.notePrivacyOutcome(contract.PrivacyDecisionNone, nil)
 		return func() {}, privacyOutcome{}, nil
 	}
 	encoding := strings.ToLower(strings.TrimSpace(request.Header.Get("Content-Encoding")))
@@ -468,6 +470,7 @@ func (handler *Handler) applyPrivacy(
 	switch result.Decision {
 	case privacy.DecisionAllow:
 		session.notePrivacyDecision("allow", contract.RequestStatusSucceeded)
+		session.notePrivacyOutcome(contract.PrivacyDecisionAllow, nil)
 		return finish, privacyOutcome{}, nil
 	case privacy.DecisionWarn:
 		// This is a response-only signal. Never add it to request.Header, where
@@ -482,9 +485,11 @@ func (handler *Handler) applyPrivacy(
 			)
 		}
 		session.notePrivacyDecision("warn", contract.RequestStatusSucceeded)
+		session.notePrivacyOutcome(contract.PrivacyDecisionWarn, nil)
 		return finish, privacyOutcome{}, nil
 	case privacy.DecisionBlock:
 		session.notePrivacyDecision("block", contract.RequestStatusBlocked)
+		session.notePrivacyOutcome(contract.PrivacyDecisionBlock, result.Findings)
 		return finish, privacyOutcome{}, errPrivacyBlocked
 	case privacy.DecisionRedact:
 		if buffered == nil {
@@ -494,6 +499,7 @@ func (handler *Handler) applyPrivacy(
 			return finish, privacyOutcome{}, errMetadataTooLarge
 		}
 		buffered.Replace(result.Body)
+		session.notePrivacyOutcome(contract.PrivacyDecisionRedact, result.Findings)
 		mappingCount := uniqueRedactionMappingCount(result.Redactions)
 		session.notePrivacyMapping(
 			policy.ResponseRestore,
@@ -766,6 +772,7 @@ func (handler *Handler) startRecordSession(request *http.Request, classified Req
 	accessTokenID, _ := AccessTokenIDFromContext(request.Context())
 	session := newRecordSession(classified, accessTokenID, handler.loadAuditSettings(request.Context()))
 	session.clientType = detectClientType(request.Header)
+	session.privacyGated = handler.privacyFilter != nil
 	session.bindPersistence(handler.requestRecords, handler.auditBlobs, handler.recordLogger)
 	if handler.requestRecords != nil {
 		session.fingerprinter = handler.sessionFingerprints.get(request.Context(), handler.auditBlobs, handler.recordLogger)
