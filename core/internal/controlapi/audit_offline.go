@@ -25,7 +25,7 @@ var ErrAuditUndecryptable = errors.New("audit content cannot be decrypted")
 type provenRawVault struct{ opener RawKeyOpener }
 
 func (vault provenRawVault) Status(context.Context) (RawVaultStatus, error) {
-	return RawVaultStatus{Configured: vault.opener != nil}, nil
+	return RawVaultStatus{Configured: vault.opener != nil, PasswordSet: vault.opener != nil}, nil
 }
 
 func (vault provenRawVault) UnlockedOpener() (RawKeyOpener, bool) {
@@ -37,9 +37,9 @@ func (provenRawVault) WithProof(context.Context, RawProof, func(RawKeyOpener) er
 }
 
 // ReadFullAudit returns the full audit view of one request as an unlocked
-// operator sees it. opener is the raw key the caller proved, or nil when raw
-// sealing is not set up; parts sealed to a raw key are then withheld as
-// raw_locked. It serves `astrlink-core audit show`, so the private key only
+// operator sees it. opener is the raw key the caller proved with the raw
+// password, or nil when none is set; raw parts are then withheld as
+// raw_password_required. It serves `astrlink-core audit show`, so the private key only
 // lives in that short-lived process.
 func ReadFullAudit(ctx context.Context, store OfflineAuditStore, opener RawKeyOpener, id contract.RequestID) (contract.AuditContent, error) {
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, RequestsPath, nil)

@@ -46,7 +46,8 @@ var (
 	ErrRawProofRequired = errors.New("raw access proof is required")
 	// ErrRawPasswordInvalid means the raw password did not open the key.
 	ErrRawPasswordInvalid = errors.New("raw password is invalid")
-	// ErrRawNotConfigured means no raw sealing key exists yet.
+	// ErrRawNotConfigured means no raw password protects a raw sealing key
+	// yet, so nothing raw can be opened.
 	ErrRawNotConfigured = errors.New("raw sealing is not configured")
 )
 
@@ -73,15 +74,17 @@ type RawVaultStatus struct {
 	// Configured is true once a raw sealing key exists.
 	Configured bool
 	// LocalPresence is true when Core holds the local envelope, so a
-	// desktop LocalAuthentication success is accepted as proof.
+	// desktop LocalAuthentication success is accepted as proof once a
+	// password is set too.
 	LocalPresence bool
-	// PasswordSet is true when a password envelope exists.
+	// PasswordSet is true when a password envelope exists. Until then raw
+	// captures are not kept and nothing raw is readable.
 	PasswordSet bool
 	// LocalEnvelope is true when a local envelope is stored, whether or not
 	// this Core's local key opens it.
 	LocalEnvelope bool
 	// KeyVerified is false while the stored public key fails its MAC; raw
-	// captures then stay under the audit key until a proof confirms it.
+	// captures are then not kept until a proof confirms it.
 	KeyVerified bool
 	// Unlocked is true while the operator's unlock session lasts.
 	Unlocked bool
@@ -89,6 +92,9 @@ type RawVaultStatus struct {
 	UnlockExpiresAt *time.Time
 	// RetryAfter is how long wrong-password backoff still refuses proofs.
 	RetryAfter time.Duration
+	// KeyFingerprint is the hex SHA-256 of the stored public key, or empty
+	// before a key exists. A change keeps it; a reset replaces it.
+	KeyFingerprint string
 }
 
 // RawKeyOpener unwraps the per-part keys of raw-sealed audit parts. The
@@ -98,8 +104,8 @@ type RawKeyOpener interface {
 }
 
 // RawVault guards the raw sealing private key. A nil vault means raw
-// sealing is unavailable: raw parts stay sealed by the audit key, operator
-// reads work as before, and agents cannot ask for raw content.
+// sealing is unavailable: raw parts are withheld from every reader, and
+// agents cannot ask for raw content.
 type RawVault interface {
 	Status(context.Context) (RawVaultStatus, error)
 	// UnlockedOpener returns the operator's unlock session, extending its
@@ -554,9 +560,8 @@ func (handler *Handler) writeRawAccessAvailability(writer http.ResponseWriter, r
 		writeError(writer, http.StatusInternalServerError, "raw_vault_unavailable", "raw sealing state is unavailable")
 		return false
 	}
-	if !status.Configured {
-		writeErrorDetails(writer, http.StatusConflict, "raw_access_unavailable",
-			"raw content sealing is not set up", []errorDetail{{Reason: "raw_password_not_set"}})
+	if !status.PasswordSet {
+		writeRawPasswordNotSet(writer)
 		return false
 	}
 	enabled, err := handler.agentRawAccessEnabled(request.Context())
@@ -576,6 +581,16 @@ func (handler *Handler) rawVaultStatus(ctx context.Context) (RawVaultStatus, err
 		return RawVaultStatus{}, nil
 	}
 	return handler.rawVault.Status(ctx)
+}
+
+// rawPasswordRequired is true while a raw vault exists without a raw
+// password. A status error reads as false; the main window still asks.
+func (handler *Handler) rawPasswordRequired(ctx context.Context) bool {
+	if handler.rawVault == nil {
+		return false
+	}
+	status, err := handler.rawVault.Status(ctx)
+	return err == nil && !status.PasswordSet
 }
 
 func (handler *Handler) agentRawAccessEnabled(ctx context.Context) (bool, error) {
@@ -727,13 +742,17 @@ func (handler *Handler) writeRawProofError(writer http.ResponseWriter, err error
 	case errors.Is(err, ErrRawProofRequired):
 		writeError(writer, http.StatusUnprocessableEntity, "raw_proof_required", "this proof is not accepted here")
 	case errors.Is(err, ErrRawNotConfigured):
-		writeErrorDetails(writer, http.StatusConflict, "raw_access_unavailable",
-			"raw content sealing is not set up", []errorDetail{{Reason: "raw_password_not_set"}})
+		writeRawPasswordNotSet(writer)
 	case errors.Is(err, storage.ErrNotFound):
 		writeError(writer, http.StatusNotFound, "not_found", "request record not found")
 	default:
 		writeError(writer, http.StatusInternalServerError, "raw_vault_unavailable", "raw sealing key could not be opened")
 	}
+}
+
+func writeRawPasswordNotSet(writer http.ResponseWriter) {
+	writeErrorDetails(writer, http.StatusConflict, "raw_access_unavailable",
+		"no raw password is set", []errorDetail{{Reason: "raw_password_not_set"}})
 }
 
 const maxSecretBodyBytes = 16 << 10

@@ -342,6 +342,71 @@ describe("TrayPopoverPanel", () => {
     ).toBe("2 个原文申请待批准");
   });
 
+  it("points a missing raw password at the main window", async () => {
+    await render(readyTrayState);
+    expect(
+      document.querySelector('[data-slot="tray-raw-password-required"]'),
+    ).toBeNull();
+
+    await render({
+      ...readyTrayState,
+      view: { ...readyTrayState.view, raw_password_required: true },
+    });
+    const hint = document.querySelector<HTMLButtonElement>(
+      '[data-slot="tray-raw-password-required"]',
+    );
+    expect(hint?.textContent).toBe("尚未设置原文口令，点此打开 AstrLink 设置");
+    await act(async () => hint!.click());
+    expect(actions).toEqual([{ kind: "open" }]);
+  });
+
+  it("points a raw key replaced outside the desktop at the main window", async () => {
+    await render(readyTrayState);
+    expect(
+      document.querySelector('[data-slot="tray-raw-key-replaced"]'),
+    ).toBeNull();
+
+    await render({
+      ...readyTrayState,
+      view: { ...readyTrayState.view, raw_key_replaced: true },
+    });
+    const hint = document.querySelector<HTMLButtonElement>(
+      '[data-slot="tray-raw-key-replaced"]',
+    );
+    expect(hint?.textContent).toBe(
+      "原文密钥在 AstrLink 之外被更换，点此打开 AstrLink 查看",
+    );
+    await act(async () => hint!.click());
+    expect(actions).toEqual([{ kind: "open" }]);
+  });
+
+  it("names the latest raw password or key change", async () => {
+    await render({
+      ...readyTrayState,
+      view: {
+        ...readyTrayState.view,
+        raw_key_event: {
+          kind: "raw_password_changed",
+          at: "2026-09-22T09:57:00Z",
+        },
+      },
+    });
+    expect(
+      document.querySelector('[data-slot="tray-raw-key-event"]')?.textContent,
+    ).toBe("原文口令已更改 · 3 分钟前");
+
+    await render({
+      ...readyTrayState,
+      view: {
+        ...readyTrayState.view,
+        raw_key_event: { kind: "raw_key_reset", at: "2026-09-22T10:00:00Z" },
+      },
+    });
+    expect(
+      document.querySelector('[data-slot="tray-raw-key-event"]')?.textContent,
+    ).toBe("原文密钥已重置 · 刚刚");
+  });
+
   it("hides what the preferences switch off", async () => {
     const tray = {
       ...defaultTrayPreferences(),

@@ -8,6 +8,7 @@ import { applyLocale, i18n } from "./i18n";
 import type { RawSealingState } from "./raw-sealing-model";
 
 const mocks = vi.hoisted(() => ({
+  acknowledgeRawKey: vi.fn(),
   setRawPassword: vi.fn(),
   unlockRaw: vi.fn(),
   toastError: vi.fn(),
@@ -16,6 +17,7 @@ const mocks = vi.hoisted(() => ({
 }));
 
 vi.mock("./bridge", () => ({
+  acknowledgeRawKey: mocks.acknowledgeRawKey,
   setRawPassword: mocks.setRawPassword,
   unlockRaw: mocks.unlockRaw,
 }));
@@ -28,9 +30,10 @@ vi.mock("sonner", () => ({
 }));
 
 import {
+  RawPasswordGate,
   RawPasswordPanel,
   RawSealingDialogs,
-  rawUpgradeNeeded,
+  rawPasswordMissing,
   unlockIdleMinutes,
   type RawDialog,
 } from "./RawSealingControls";
@@ -43,6 +46,7 @@ function sealing(overrides: Partial<RawSealingState> = {}): RawSealingState {
     raw_available: true,
     configured: true,
     password_set: true,
+    password_required: overrides.password_set === false,
     local_presence: false,
     envelopes: ["password"],
     key_verified: true,
@@ -52,7 +56,9 @@ function sealing(overrides: Partial<RawSealingState> = {}): RawSealingState {
     retry_after_seconds: 0,
     password_min_length: 8,
     password_max_length: 128,
+    key_replaced: false,
     presence_available: false,
+    keychain_build: false,
     ...overrides,
   };
 }
@@ -65,11 +71,24 @@ const unconfigured = sealing({
   key_verified: false,
 });
 
+/** A signed Mac from before D11: a keychain key Touch ID opens. */
+const keychainOnly = sealing({
+  raw_available: false,
+  password_set: false,
+  envelopes: ["local"],
+  local_presence: true,
+  presence_available: true,
+});
+
 function sealed(
   status: Partial<RawSealingState> = {},
   reset: { deleted_parts: number; affected_records: number } | null = null,
 ) {
-  const { presence_available: _presence, ...rest } = sealing(status);
+  const {
+    presence_available: _presence,
+    keychain_build: _keychain,
+    ...rest
+  } = sealing(status);
   return { outcome: "sealing", status: rest, reset };
 }
 
@@ -111,6 +130,13 @@ function queryButton(label: string, scope: ParentNode = document) {
 function dialog(): HTMLElement | null {
   return document.querySelector<HTMLElement>(
     '[data-slot="proof-confirm-dialog"]',
+  );
+}
+
+/** The plain confirmation, such as the destructive one before a reset. */
+function confirmDialog(): HTMLElement | null {
+  return document.querySelector<HTMLElement>(
+    '[data-slot="alert-dialog-content"]',
   );
 }
 
@@ -158,11 +184,12 @@ describe("raw sealing helpers", () => {
     expect(unlockIdleMinutes(sealing({ unlock_idle_seconds: 20 }))).toBe(1);
   });
 
-  it("needs an upgrade only while capture runs without a raw key", () => {
-    expect(rawUpgradeNeeded(true, unconfigured)).toBe(true);
-    expect(rawUpgradeNeeded(false, unconfigured)).toBe(false);
-    expect(rawUpgradeNeeded(true, sealing())).toBe(false);
-    expect(rawUpgradeNeeded(true, null)).toBe(false);
+  it("misses a password on every platform until one is set (D11)", () => {
+    expect(rawPasswordMissing(unconfigured)).toBe(true);
+    // A keychain key with Touch ID is no longer enough on its own.
+    expect(rawPasswordMissing(keychainOnly)).toBe(true);
+    expect(rawPasswordMissing(sealing())).toBe(false);
+    expect(rawPasswordMissing(null)).toBe(false);
   });
 });
 
@@ -177,7 +204,6 @@ describe("RawPasswordPanel", () => {
         <RawPasswordPanel
           agentAccess
           busy={false}
-          captureEnabled={false}
           error={null}
           onAction={onAction}
           onAgentAccessChange={onAgentAccessChange}
@@ -228,48 +254,35 @@ describe("RawPasswordPanel", () => {
     expect(panel().textContent).toContain("Touch ID");
   });
 
-  it("lets a keychain-only key add a password or reset", async () => {
-    const { onAction } = await renderPanel({
-      status: sealing({
-        password_set: false,
-        envelopes: ["local"],
-        local_presence: true,
-        presence_available: true,
-      }),
-    });
+  it("asks a keychain-only key for a password, or a reset", async () => {
+    const { onAction } = await renderPanel({ status: keychainOnly });
     expect(
       panel().querySelector('[data-slot="raw-password-state"]')?.textContent,
-    ).toBe("仅钥匙串");
-    await click(button("设置", panel()));
+    ).toBe("未设置");
+    const missing = panel().querySelector<HTMLElement>(
+      '[data-slot="raw-password-missing"]',
+    );
+    expect(missing?.textContent).toContain("本机钥匙串中已有原文密钥");
+    expect(missing?.textContent).toContain("原文正文不会被记录");
+    await click(button("设置口令", missing!));
     expect(onAction).toHaveBeenLastCalledWith("set");
-    expect(queryButton("重置", panel())).not.toBeNull();
-  });
-
-  it("keeps set off while a keychain-only key cannot be opened", async () => {
-    const { onAction } = await renderPanel({
-      status: sealing({
-        password_set: false,
-        envelopes: ["local"],
-        local_presence: true,
-      }),
-    });
-
-    expect(panel().textContent).toContain("暂时无法使用 Touch ID");
-    expect(button("设置", panel()).disabled).toBe(true);
     await click(button("重置", panel()));
     expect(onAction).toHaveBeenLastCalledWith("reset");
+    expect(agentSwitch().disabled).toBe(true);
   });
 
-  it("asks a capturing user without a raw key to set a password first", async () => {
-    const { onAction } = await renderPanel({
-      captureEnabled: true,
-      status: unconfigured,
-    });
+  it("asks for a password whenever none is set, capture or not", async () => {
+    const { onAction } = await renderPanel({ status: unconfigured });
 
-    const hint = panel().querySelector('[data-slot="raw-upgrade-hint"]');
-    expect(hint?.textContent).toContain("设置原文口令后 Agent 才能申请原文");
+    expect(
+      panel().querySelector('[data-slot="raw-password-state"]')?.textContent,
+    ).toBe("未设置");
+    const missing = panel().querySelector<HTMLElement>(
+      '[data-slot="raw-password-missing"]',
+    );
+    expect(missing?.textContent).toContain("原文正文不会被记录");
     expect(queryButton("设置", panel())).toBeNull();
-    await click(button("设置口令", panel()));
+    await click(button("设置口令", missing!));
     expect(onAction).toHaveBeenCalledWith("set");
 
     expect(agentSwitch().disabled).toBe(true);
@@ -277,14 +290,9 @@ describe("RawPasswordPanel", () => {
     expect(panel().textContent).toContain("请先设置原文口令");
   });
 
-  it("keeps the set action in the header when capture is off", async () => {
-    const { onAction } = await renderPanel({ status: unconfigured });
-    expect(panel().querySelector('[data-slot="raw-upgrade-hint"]')).toBeNull();
-    expect(
-      panel().querySelector('[data-slot="raw-password-state"]')?.textContent,
-    ).toBe("未设置");
-    await click(button("设置", panel()));
-    expect(onAction).toHaveBeenCalledWith("set");
+  it("leaves the agent toggle to pages that pass it", async () => {
+    await renderPanel({ onAgentAccessChange: undefined });
+    expect(panel().querySelector('[role="switch"]')).toBeNull();
   });
 
   it("shows a status failure instead of the hint", async () => {
@@ -405,6 +413,8 @@ describe("RawSealingDialogs", () => {
     expect(dialog()?.querySelector('[data-slot="proof-presence"]')).not.toBe(
       null,
     );
+    expect(dialog()?.textContent).toContain("设置时需用 Touch ID 确认");
+    expect(dialog()?.querySelector('[data-slot="raw-replace-key"]')).toBeNull();
     await typeNewPassword("correct horse");
     await click(button("设置口令", dialog()!));
 
@@ -417,16 +427,131 @@ describe("RawSealingDialogs", () => {
     expect(onClose).toHaveBeenCalledWith(true);
   });
 
-  it("explains instead of asking for a password no proof can add", async () => {
+  it("replaces a keychain key nothing here opens only after a destructive confirmation", async () => {
+    mocks.setRawPassword.mockResolvedValue(
+      sealed({}, { deleted_parts: 2, affected_records: 1 }),
+    );
+    // The keychain entry is gone: the local envelope no longer opens.
     await renderDialogs(
       { kind: "set" },
       sealing({ password_set: false, envelopes: ["local"] }),
     );
 
-    expect(dialog()?.textContent).toContain("暂时无法使用 Touch ID");
+    const warning = dialog()?.querySelector('[data-slot="raw-replace-key"]');
+    expect(warning?.textContent).toContain("已无法打开");
+    expect(warning?.textContent).toContain("升级前记录的原文会被丢弃");
     expect(newPasswordInputs()).toHaveLength(0);
-    expect(button("设置口令", dialog()!).disabled).toBe(true);
+    await click(button("重置原文密钥", dialog()!));
     expect(mocks.setRawPassword).not.toHaveBeenCalled();
+    expect(dialog()).toBeNull();
+    expect(confirmDialog()?.textContent).toContain("重置原文密钥？");
+    expect(confirmDialog()?.textContent).toContain("永久丢弃");
+    expect(confirmDialog()?.textContent).not.toContain("Touch ID");
+
+    await click(button("取消", confirmDialog()!));
+    expect(confirmDialog()).toBeNull();
+    expect(onClose).not.toHaveBeenCalled();
+    await click(button("重置原文密钥", dialog()!));
+    await click(button("重置并删除原文", confirmDialog()!));
+
+    expect(dialog()?.querySelector('[data-slot="proof-presence"]')).toBeNull();
+    await typeNewPassword("correct horse");
+    await click(button("重置口令", dialog()!));
+
+    expect(mocks.setRawPassword).toHaveBeenCalledExactlyOnceWith(
+      "reset",
+      "correct horse",
+      undefined,
+    );
+    expect(mocks.toastSuccess).toHaveBeenCalledWith(
+      "已重置原文口令，删除了 1 条记录中的 2 份原文。",
+    );
+    expect(onClose).toHaveBeenCalledExactlyOnceWith(true);
+  });
+
+  it("replaces a keychain key on request behind the destructive confirmation and Touch ID", async () => {
+    mocks.setRawPassword.mockResolvedValue(sealed());
+    await renderDialogs({ kind: "set" }, keychainOnly);
+
+    await click(button("不保留升级前的原文？重置原文密钥", dialog()!));
+    expect(mocks.setRawPassword).not.toHaveBeenCalled();
+    expect(dialog()).toBeNull();
+    expect(confirmDialog()?.textContent).toContain("重置原文密钥？");
+    expect(confirmDialog()?.textContent).toContain(
+      "升级前记录的原文会被永久丢弃",
+    );
+    expect(confirmDialog()?.textContent).toContain(
+      "重置时仍需用 Touch ID 或 Mac 登录密码确认",
+    );
+    // Cancelling goes back to setting a password on the key.
+    await click(button("取消", confirmDialog()!));
+    expect(dialog()?.textContent).toContain("设置时需用 Touch ID 确认");
+    expect(button("设置口令", dialog()!)).toBeTruthy();
+
+    await click(button("不保留升级前的原文？重置原文密钥", dialog()!));
+    await click(button("重置并删除原文", confirmDialog()!));
+    expect(
+      dialog()?.querySelector('[data-slot="raw-replace-key"]')?.textContent,
+    ).toContain("重置会生成新的原文密钥");
+    expect(dialog()?.querySelector('[data-slot="proof-presence"]')).not.toBe(
+      null,
+    );
+    // Back, and forward again, without resetting anything.
+    await click(button("返回", dialog()!));
+    expect(button("设置口令", dialog()!)).toBeTruthy();
+    expect(onClose).not.toHaveBeenCalled();
+    await click(button("不保留升级前的原文？重置原文密钥", dialog()!));
+    await click(button("重置并删除原文", confirmDialog()!));
+
+    await typeNewPassword("correct horse");
+    await click(button("重置口令", dialog()!));
+
+    expect(mocks.setRawPassword).toHaveBeenCalledExactlyOnceWith(
+      "reset",
+      "correct horse",
+      { kind: "local_presence" },
+    );
+    expect(onClose).toHaveBeenCalledExactlyOnceWith(true);
+  });
+
+  it("keeps asking for Touch ID when the host cannot show it right now", async () => {
+    mocks.setRawPassword
+      .mockResolvedValueOnce({ outcome: "presence_unsupported" })
+      .mockResolvedValueOnce(
+        sealed({ local_presence: true, envelopes: ["local", "password"] }),
+      );
+    await renderDialogs(
+      { kind: "set" },
+      sealing({
+        password_set: false,
+        envelopes: ["local"],
+        local_presence: true,
+        presence_available: false,
+      }),
+    );
+
+    // Nothing switches to a reset on its own: the key and what it sealed
+    // stay, and asking again is the retry.
+    expect(dialog()?.querySelector('[data-slot="raw-replace-key"]')).toBeNull();
+    expect(
+      dialog()?.querySelector('[data-slot="raw-presence-unavailable"]')
+        ?.textContent,
+    ).toContain("升级前记录的原文不会丢失");
+    expect(dialog()?.querySelector('[data-slot="proof-presence"]')).not.toBe(
+      null,
+    );
+    await typeNewPassword("correct horse");
+    await click(button("设置口令", dialog()!));
+    expect(dialog()?.textContent).toContain("此设备暂时无法使用 Touch ID 验证");
+    expect(onClose).not.toHaveBeenCalled();
+
+    await typeNewPassword("correct horse");
+    await click(button("设置口令", dialog()!));
+    expect(mocks.setRawPassword.mock.calls).toEqual([
+      ["set", "correct horse", { kind: "local_presence" }],
+      ["set", "correct horse", { kind: "local_presence" }],
+    ]);
+    expect(onClose).toHaveBeenCalledExactlyOnceWith(true);
   });
 
   it("changes the password with the current one as proof", async () => {
@@ -489,22 +614,30 @@ describe("RawSealingDialogs", () => {
     expect(onClose).toHaveBeenCalledExactlyOnceWith(true);
   });
 
-  it("resets a key with a keychain envelope without a new password", async () => {
+  it("resets a keychain key only together with a new password (D11)", async () => {
     mocks.setRawPassword.mockResolvedValue(
       sealed(
-        { password_set: false, envelopes: ["local"] },
+        { envelopes: ["password", "local"] },
         { deleted_parts: 1, affected_records: 1 },
       ),
     );
-    await renderDialogs(
-      { kind: "reset" },
-      sealing({ envelopes: ["local", "password"], local_presence: true }),
-    );
+    await renderDialogs({ kind: "reset" }, keychainOnly);
 
     await click(button("重置并删除原文"));
+    expect(mocks.setRawPassword).not.toHaveBeenCalled();
+    expect(dialog()?.textContent).toContain("设置新的原文口令");
+    // The local envelope opens this key, so Core wants its proof.
+    expect(dialog()?.querySelector('[data-slot="proof-presence"]')).not.toBe(
+      null,
+    );
+    await typeNewPassword("fresh passphrase");
+    await click(button("重置口令", dialog()!));
 
-    expect(mocks.setRawPassword).toHaveBeenCalledExactlyOnceWith("reset");
-    expect(dialog()).toBeNull();
+    expect(mocks.setRawPassword).toHaveBeenCalledExactlyOnceWith(
+      "reset",
+      "fresh passphrase",
+      { kind: "local_presence" },
+    );
     expect(mocks.toastSuccess).toHaveBeenCalledWith(
       "已重置原文口令，删除了 1 条记录中的 1 份原文。",
     );
@@ -529,20 +662,48 @@ describe("RawSealingDialogs", () => {
     const keychainKey = sealing({
       envelopes: ["local", "password"],
       local_presence: true,
+      presence_available: true,
     });
 
-    await renderDialogs({ kind: "reset" }, keychainKey);
-    await click(button(i18n.t("rawSealing.resetConfirm")));
+    const reset = async () => {
+      await renderDialogs({ kind: "reset" }, keychainKey);
+      await click(button(i18n.t("rawSealing.resetConfirm")));
+      await typeNewPassword("fresh passphrase");
+      await click(button(i18n.t("rawSealing.resetAction"), dialog()!));
+    };
+
+    await reset();
     expect(mocks.toastSuccess).toHaveBeenLastCalledWith(
       "Raw password reset. Deleted 1 raw part from 1 record.",
     );
 
     await act(async () => root.unmount());
     root = createRoot(container);
-    await renderDialogs({ kind: "reset" }, keychainKey);
-    await click(button(i18n.t("rawSealing.resetConfirm")));
+    await reset();
     expect(mocks.toastSuccess).toHaveBeenLastCalledWith(
       "Raw password reset. Deleted 6 raw parts from 3 records.",
+    );
+  });
+
+  it("resets a password key with the current password where Touch ID is unavailable", async () => {
+    mocks.setRawPassword.mockResolvedValue(
+      sealed({}, { deleted_parts: 1, affected_records: 1 }),
+    );
+    await renderDialogs(
+      { kind: "reset" },
+      sealing({ envelopes: ["local", "password"], local_presence: true }),
+    );
+
+    await click(button("重置并删除原文"));
+    expect(dialog()?.textContent).toContain("当前口令");
+    await type(proofPasswordInput()!, "old passphrase");
+    await typeNewPassword("fresh passphrase");
+    await click(button("重置口令", dialog()!));
+
+    expect(mocks.setRawPassword).toHaveBeenCalledExactlyOnceWith(
+      "reset",
+      "fresh passphrase",
+      { kind: "password", password: "old passphrase" },
     );
   });
 
@@ -582,7 +743,7 @@ describe("RawSealingDialogs", () => {
     await click(button("解锁", dialog()!));
 
     expect(mocks.unlockRaw).not.toHaveBeenCalled();
-    expect(dialog()?.textContent).toContain("此设备现在无法解锁原文");
+    expect(dialog()?.textContent).toContain("尚未设置原文口令，无法解锁原文");
     expect(onClose).not.toHaveBeenCalled();
   });
 
@@ -604,11 +765,310 @@ describe("RawSealingDialogs", () => {
     expect(onClose).toHaveBeenCalledExactlyOnceWith(true);
   });
 
+  it("asks a signed Mac for a password before turning on capture", async () => {
+    mocks.setRawPassword.mockResolvedValue(
+      sealed({ local_presence: true, envelopes: ["password", "local"] }),
+    );
+    await renderDialogs({ kind: "capture" }, keychainOnly);
+
+    expect(dialog()?.textContent).toContain("开启前需要设置原文口令");
+    expect(dialog()?.querySelector('[data-slot="proof-presence"]')).not.toBe(
+      null,
+    );
+    expect(button("确认开启", dialog()!).disabled).toBe(true);
+    await typeNewPassword("correct horse");
+    await click(button("确认开启", dialog()!));
+
+    expect(mocks.setRawPassword).toHaveBeenCalledExactlyOnceWith(
+      "set",
+      "correct horse",
+      { kind: "local_presence" },
+    );
+    expect(onClose).toHaveBeenCalledExactlyOnceWith(true);
+  });
+
   it("reports a cancelled capture confirmation", async () => {
     await renderDialogs({ kind: "capture" }, unconfigured);
     await typeNewPassword("correct horse");
     await click(button("取消", dialog()!));
     expect(mocks.setRawPassword).not.toHaveBeenCalled();
     expect(onClose).toHaveBeenCalledExactlyOnceWith(false);
+  });
+});
+
+describe("RawPasswordGate", () => {
+  function Gate({
+    initialStatus,
+    suspended = false,
+  }: {
+    initialStatus: RawSealingState | null;
+    suspended?: boolean;
+  }) {
+    const [status, setStatus] = useState(initialStatus);
+    return (
+      <RawPasswordGate
+        onStatus={setStatus}
+        status={status}
+        suspended={suspended}
+      />
+    );
+  }
+
+  async function renderGate(
+    initialStatus: RawSealingState | null,
+    suspended = false,
+  ) {
+    await act(async () =>
+      root.render(<Gate initialStatus={initialStatus} suspended={suspended} />),
+    );
+    await act(async () => {});
+  }
+
+  it("keeps asking for a password until one is set", async () => {
+    mocks.setRawPassword.mockResolvedValue(sealed());
+    await renderGate(unconfigured);
+
+    expect(dialog()?.textContent).toContain("设置原文口令后继续");
+    expect(dialog()?.textContent).toContain("设置前不会记录请求和响应的原文");
+    expect(dialog()?.textContent).toContain("忘记后只能重置");
+    expect(queryButton("取消", dialog()!)).toBeNull();
+    await act(async () => {
+      document.activeElement?.dispatchEvent(
+        new KeyboardEvent("keydown", { bubbles: true, key: "Escape" }),
+      );
+    });
+    await act(async () => {
+      document
+        .querySelector('[data-slot="alert-dialog-overlay"]')
+        ?.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+    });
+    expect(dialog()).not.toBeNull();
+
+    await typeNewPassword("correct horse");
+    await click(button("设置口令", dialog()!));
+
+    expect(mocks.setRawPassword).toHaveBeenCalledExactlyOnceWith(
+      "set",
+      "correct horse",
+      undefined,
+    );
+    expect(mocks.toastSuccess).toHaveBeenCalledWith("已设置原文口令");
+    expect(dialog()).toBeNull();
+  });
+
+  it("stays up after a failed attempt", async () => {
+    mocks.setRawPassword.mockRejectedValue(new Error("Core is offline"));
+    await renderGate(keychainOnly);
+
+    expect(dialog()?.querySelector('[data-slot="proof-presence"]')).not.toBe(
+      null,
+    );
+    await typeNewPassword("correct horse");
+    await click(button("设置口令", dialog()!));
+
+    expect(dialog()?.textContent).toContain("Core is offline");
+    expect(queryButton("取消", dialog()!)).toBeNull();
+  });
+
+  it("keeps the gate up on the way to replacing a keychain key", async () => {
+    mocks.setRawPassword.mockResolvedValue(sealed());
+    await renderGate(keychainOnly);
+
+    await click(button("不保留升级前的原文？重置原文密钥", dialog()!));
+    await click(button("取消", confirmDialog()!));
+    expect(dialog()?.textContent).toContain("设置原文口令后继续");
+    expect(queryButton("取消", dialog()!)).toBeNull();
+
+    await click(button("不保留升级前的原文？重置原文密钥", dialog()!));
+    await click(button("重置并删除原文", confirmDialog()!));
+    await click(button("返回", dialog()!));
+    expect(dialog()?.textContent).toContain("设置原文口令后继续");
+    expect(mocks.setRawPassword).not.toHaveBeenCalled();
+
+    await click(button("不保留升级前的原文？重置原文密钥", dialog()!));
+    await click(button("重置并删除原文", confirmDialog()!));
+    await typeNewPassword("correct horse");
+    await click(button("重置口令", dialog()!));
+    expect(mocks.setRawPassword).toHaveBeenCalledExactlyOnceWith(
+      "reset",
+      "correct horse",
+      { kind: "local_presence" },
+    );
+    expect(dialog()).toBeNull();
+    expect(confirmDialog()).toBeNull();
+  });
+
+  /** A key an offline `astrlink-core raw-password` reset while the app was closed. */
+  const replacedKey = sealing({ key_replaced: true });
+
+  it("warns about a key replaced outside the desktop until its password confirms it", async () => {
+    mocks.acknowledgeRawKey
+      .mockResolvedValueOnce({ outcome: "password_invalid" })
+      .mockResolvedValueOnce(sealed());
+    // A build without the keychain has no presence check to add.
+    await renderGate(replacedKey);
+
+    expect(dialog()?.textContent).toContain("原文密钥在 AstrLink 之外被更换");
+    expect(
+      dialog()?.querySelector('[data-slot="raw-key-replaced"]')?.textContent,
+    ).toContain("设置它的人可能读得到");
+    expect(dialog()?.textContent).toContain("astrlink-core raw-password");
+    expect(dialog()?.textContent).toContain("确认不会解锁原文");
+    expect(dialog()?.querySelector('[data-slot="proof-presence"]')).toBeNull();
+    expect(
+      dialog()?.querySelector('[data-slot="raw-acknowledge-presence"]'),
+    ).toBeNull();
+    expect(queryButton("取消", dialog()!)).toBeNull();
+    await act(async () => {
+      document.activeElement?.dispatchEvent(
+        new KeyboardEvent("keydown", { bubbles: true, key: "Escape" }),
+      );
+    });
+    expect(dialog()).not.toBeNull();
+
+    await type(proofPasswordInput()!, "wrong passphrase");
+    await click(button("确认是我设置的", dialog()!));
+    expect(dialog()?.textContent).toContain("原文密钥在 AstrLink 之外被更换");
+
+    await type(proofPasswordInput()!, "terminal passphrase");
+    await click(button("确认是我设置的", dialog()!));
+    expect(mocks.acknowledgeRawKey).toHaveBeenLastCalledWith(
+      "terminal passphrase",
+    );
+    expect(mocks.acknowledgeRawKey).toHaveBeenCalledTimes(2);
+    expect(mocks.setRawPassword).not.toHaveBeenCalled();
+    expect(mocks.unlockRaw).not.toHaveBeenCalled();
+    expect(mocks.toastSuccess).toHaveBeenCalledWith("已确认新的原文密钥");
+    expect(dialog()).toBeNull();
+  });
+
+  it("asks a keychain build for the password and the presence check together", async () => {
+    mocks.acknowledgeRawKey
+      .mockResolvedValueOnce({ outcome: "presence_cancelled" })
+      .mockResolvedValueOnce(sealed());
+    await renderGate(
+      sealing({
+        key_replaced: true,
+        keychain_build: true,
+        envelopes: ["password", "local"],
+        local_presence: true,
+        presence_available: true,
+      }),
+    );
+
+    // Touch ID works here, yet it never stands in for the password: the
+    // dialog asks for the password and says the host checks presence too.
+    expect(dialog()?.querySelector('[data-slot="proof-presence"]')).toBeNull();
+    expect(proofPasswordInput()).not.toBeNull();
+    expect(
+      dialog()?.querySelector('[data-slot="raw-acknowledge-presence"]')
+        ?.textContent,
+    ).toContain("Touch ID");
+    expect(button("确认是我设置的", dialog()!).disabled).toBe(true);
+
+    // A cancelled prompt keeps the warning up for another attempt.
+    await type(proofPasswordInput()!, "terminal passphrase");
+    await click(button("确认是我设置的", dialog()!));
+    expect(dialog()?.textContent).toContain("已取消验证，可以再试一次。");
+    expect(mocks.toastSuccess).not.toHaveBeenCalled();
+
+    await type(proofPasswordInput()!, "terminal passphrase");
+    await click(button("确认是我设置的", dialog()!));
+    expect(mocks.acknowledgeRawKey).toHaveBeenCalledTimes(2);
+    expect(mocks.acknowledgeRawKey).toHaveBeenLastCalledWith(
+      "terminal passphrase",
+    );
+    expect(mocks.unlockRaw).not.toHaveBeenCalled();
+    expect(mocks.toastSuccess).toHaveBeenCalledWith("已确认新的原文密钥");
+    expect(dialog()).toBeNull();
+  });
+
+  it("leaves only a reset where a keychain build cannot check presence", async () => {
+    mocks.setRawPassword.mockResolvedValue(
+      sealed({}, { deleted_parts: 2, affected_records: 1 }),
+    );
+    await renderGate(sealing({ key_replaced: true, keychain_build: true }));
+
+    expect(dialog()?.textContent).toContain("原文密钥在 AstrLink 之外被更换");
+    expect(
+      dialog()?.querySelector('[data-slot="raw-acknowledge-unavailable"]')
+        ?.textContent,
+    ).toContain("只凭口令不能在这里确认这把密钥");
+    // No password field and no way to accept the key: the only action is
+    // the destructive reset, and the warning cannot be dismissed.
+    expect(proofPasswordInput()).toBeNull();
+    expect(queryButton("确认是我设置的", dialog()!)).toBeNull();
+    expect(queryButton("取消", dialog()!)).toBeNull();
+
+    await click(button("重置原文密钥", dialog()!));
+    expect(confirmDialog()?.textContent).toContain("重置原文口令？");
+    await click(button("取消", confirmDialog()!));
+    expect(
+      dialog()?.querySelector('[data-slot="raw-acknowledge-unavailable"]'),
+    ).not.toBeNull();
+
+    await click(button("重置原文密钥", dialog()!));
+    await click(button("重置并删除原文", confirmDialog()!));
+    await typeNewPassword("fresh passphrase");
+    await click(button("重置口令", dialog()!));
+    expect(mocks.setRawPassword).toHaveBeenCalledExactlyOnceWith(
+      "reset",
+      "fresh passphrase",
+      undefined,
+    );
+    expect(mocks.acknowledgeRawKey).not.toHaveBeenCalled();
+    expect(dialog()).toBeNull();
+  });
+
+  it("resets a replaced key behind the destructive confirmation", async () => {
+    mocks.setRawPassword.mockResolvedValue(
+      sealed({}, { deleted_parts: 2, affected_records: 1 }),
+    );
+    await renderGate(replacedKey);
+
+    await click(button("不是你设置的？重置原文密钥", dialog()!));
+    expect(confirmDialog()?.textContent).toContain("重置原文口令？");
+    await click(button("取消", confirmDialog()!));
+    expect(dialog()?.textContent).toContain("原文密钥在 AstrLink 之外被更换");
+
+    await click(button("不是你设置的？重置原文密钥", dialog()!));
+    await click(button("重置并删除原文", confirmDialog()!));
+    expect(dialog()?.textContent).toContain("设置新的原文口令");
+    await click(button("返回", dialog()!));
+    expect(dialog()?.textContent).toContain("原文密钥在 AstrLink 之外被更换");
+    expect(mocks.setRawPassword).not.toHaveBeenCalled();
+
+    await click(button("不是你设置的？重置原文密钥", dialog()!));
+    await click(button("重置并删除原文", confirmDialog()!));
+    // Nothing here opens the replaced key, so a confirmation is the proof.
+    expect(proofPasswordInput()).toBeNull();
+    await typeNewPassword("fresh passphrase");
+    await click(button("重置口令", dialog()!));
+    expect(mocks.setRawPassword).toHaveBeenCalledExactlyOnceWith(
+      "reset",
+      "fresh passphrase",
+      undefined,
+    );
+    expect(mocks.acknowledgeRawKey).not.toHaveBeenCalled();
+    expect(dialog()).toBeNull();
+    expect(confirmDialog()).toBeNull();
+  });
+
+  it("stays away once a password is set, while suspended, or unknown", async () => {
+    await renderGate(sealing());
+    expect(dialog()).toBeNull();
+
+    await renderGate(null);
+    expect(dialog()).toBeNull();
+
+    await act(async () => root.unmount());
+    root = createRoot(container);
+    await renderGate(unconfigured, true);
+    expect(dialog()).toBeNull();
+
+    await act(async () => root.unmount());
+    root = createRoot(container);
+    await renderGate(replacedKey, true);
+    expect(dialog()).toBeNull();
   });
 });

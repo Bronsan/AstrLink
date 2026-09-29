@@ -12,6 +12,7 @@ mod kek_store;
 mod macos_app;
 mod preferences;
 mod raw_access;
+mod raw_key_pin;
 mod raw_presence;
 mod recovery_path;
 mod service_proxy;
@@ -225,7 +226,15 @@ fn agent_install_context(app: &tauri::AppHandle) -> Result<agent_install::Instal
         home: control_session::user_home()?,
         mcp_source: agent_install::resolve_sidecar_binary("astrlink-mcp")?,
         data_directory: app.path().app_data_dir().ok(),
+        raw_key_pins: raw_key_pin_file(app),
     })
+}
+
+/// The raw key pin file agent guards deny, where the pins live in one.
+fn raw_key_pin_file(app: &tauri::AppHandle) -> Option<std::path::PathBuf> {
+    app.try_state::<Arc<raw_key_pin::RawKeyPins>>()?
+        .file()
+        .map(std::path::Path::to_path_buf)
 }
 
 #[tauri::command]
@@ -236,6 +245,7 @@ fn agent_debug_status(app: tauri::AppHandle) -> Result<agent_install::AgentInsta
         home,
         mcp_source,
         data_directory: app.path().app_data_dir().ok(),
+        raw_key_pins: raw_key_pin_file(&app),
     }))
 }
 
@@ -1180,7 +1190,9 @@ enum PresencePurpose {
     ApproveRawAccess,
     UnlockRaw,
     ChangeRawPassword,
+    ResetRawPassword,
     RevealAccessToken,
+    AcknowledgeRawKey,
 }
 
 impl PresencePurpose {
@@ -1189,8 +1201,20 @@ impl PresencePurpose {
             Self::ApproveRawAccess => "host.rawPresence.approveRawAccess",
             Self::UnlockRaw => "host.rawPresence.unlockRaw",
             Self::ChangeRawPassword => "host.rawPresence.changeRawPassword",
+            Self::ResetRawPassword => "host.rawPresence.resetRawPassword",
             Self::RevealAccessToken => "host.rawPresence.revealAccessToken",
+            Self::AcknowledgeRawKey => "host.rawPresence.acknowledgeRawKey",
         }
+    }
+}
+
+/// The system prompt for a reset names what it discards: the raw content
+/// captured under the old key.
+fn raw_password_purpose(action: &str) -> PresencePurpose {
+    if action == "reset" {
+        PresencePurpose::ResetRawPassword
+    } else {
+        PresencePurpose::ChangeRawPassword
     }
 }
 
@@ -1202,17 +1226,27 @@ async fn confirm_raw_proof(
     arg: raw_access::ProofArg,
     purpose: PresencePurpose,
 ) -> Result<Result<raw_access::Proof, raw_access::ProofOutcome>, String> {
+    confirm_proof_with(arg, raw_presence::system(), presence_reason(app, purpose)).await
+}
+
+async fn confirm_proof_with(
+    arg: raw_access::ProofArg,
+    presence: &'static dyn raw_presence::PresenceVerifier,
+    reason: String,
+) -> Result<Result<raw_access::Proof, raw_access::ProofOutcome>, String> {
+    tauri::async_runtime::spawn_blocking(move || raw_access::confirm_proof(arg, presence, &reason))
+        .await
+        .map_err(|error| format!("local presence check failed: {error}"))
+}
+
+/// The system prompt text for `purpose` in the host locale.
+fn presence_reason(app: &tauri::AppHandle, purpose: PresencePurpose) -> String {
     let locale = app
         .state::<Arc<PreferencesStore>>()
         .snapshot()
         .values
         .locale;
-    let reason = i18n::t(locale, purpose.reason_key(), &[]);
-    tauri::async_runtime::spawn_blocking(move || {
-        raw_access::confirm_proof(arg, raw_presence::system(), &reason)
-    })
-    .await
-    .map_err(|error| format!("local presence check failed: {error}"))
+    i18n::t(locale, purpose.reason_key(), &[])
 }
 
 fn proof_outcome_value(outcome: raw_access::ProofOutcome) -> Result<serde_json::Value, String> {
@@ -1242,19 +1276,100 @@ async fn decide_raw_access(
         .await
 }
 
-/// Raw sealing state plus whether this build can offer the presence prompt.
+/// Raw sealing state plus whether this build can offer the presence prompt,
+/// whether it is a keychain build that also wants presence to accept a
+/// replaced key, and whether the raw key was replaced outside the desktop.
 #[tauri::command]
 async fn raw_sealing_status(
     manager: State<'_, Arc<CoreManager>>,
+    pins: State<'_, Arc<raw_key_pin::RawKeyPins>>,
 ) -> Result<serde_json::Value, String> {
+    let _pinning = pins.guard().await;
     let mut status = manager.raw_sealing_status().await?;
     let presence = tauri::async_runtime::spawn_blocking(|| raw_presence::system().available())
         .await
         .unwrap_or(false);
     if let Some(object) = status.as_object_mut() {
         object.insert("presence_available".to_string(), presence.into());
+        object.insert(
+            "keychain_build".to_string(),
+            raw_presence::keychain_build().into(),
+        );
     }
+    note_raw_key(&pins, &manager, &mut status, raw_key_pin::PinAction::Check).await;
     Ok(status)
+}
+
+/// Adds `key_replaced` to a raw sealing status after applying `action` to
+/// the pin of the running data directory, and hands the verdict to the tray.
+/// Callers hold the pin guard.
+async fn note_raw_key(
+    pins: &Arc<raw_key_pin::RawKeyPins>,
+    manager: &CoreManager,
+    status: &mut serde_json::Value,
+    action: raw_key_pin::PinAction,
+) {
+    let replaced = match manager.data_directory() {
+        Some(data_directory) => {
+            let account = kek_store::keychain_account(&data_directory);
+            let pins = Arc::clone(pins);
+            let observed = status.clone();
+            tauri::async_runtime::spawn_blocking(move || pins.apply(&account, &observed, action))
+                .await
+                .unwrap_or(false)
+        }
+        None => false,
+    };
+    manager.note_raw_key_replaced(replaced);
+    if let Some(object) = status.as_object_mut() {
+        object.insert("key_replaced".to_string(), replaced.into());
+    }
+}
+
+/// Checks the raw key pin without any window, when Core becomes ready or
+/// records a raw key change, so the tray can warn about a key replaced while
+/// the app was closed. Windows read the state again when the verdict moves.
+pub(crate) async fn check_raw_key(app: tauri::AppHandle) {
+    let (Some(manager), Some(pins)) = (
+        app.try_state::<Arc<CoreManager>>(),
+        app.try_state::<Arc<raw_key_pin::RawKeyPins>>(),
+    ) else {
+        return;
+    };
+    let (manager, pins) = (Arc::clone(&manager), Arc::clone(&pins));
+    let _pinning = pins.guard().await;
+    // Errors are transient (Core restarting); the next ready checks again.
+    let Ok(mut status) = manager.raw_sealing_status().await else {
+        return;
+    };
+    let before = manager.view().raw_key_replaced;
+    note_raw_key(&pins, &manager, &mut status, raw_key_pin::PinAction::Check).await;
+    if manager.view().raw_key_replaced != before {
+        let _ = broadcast_raw_sealing_change(&app, Ok(serde_json::Value::Null));
+    }
+}
+
+/// The new raw sealing state inside a successful unlock or password outcome.
+fn sealing_outcome_status(outcome: &mut serde_json::Value) -> Option<&mut serde_json::Value> {
+    if outcome.get("outcome")?.as_str()? != "sealing" {
+        return None;
+    }
+    outcome.get_mut("status")
+}
+
+/// Applies `action` to the status of a successful proof outcome; refusals
+/// pass through unchanged.
+async fn note_raw_key_outcome(
+    pins: &Arc<raw_key_pin::RawKeyPins>,
+    manager: &CoreManager,
+    result: Result<serde_json::Value, String>,
+    action: raw_key_pin::PinAction,
+) -> Result<serde_json::Value, String> {
+    let mut outcome = result?;
+    if let Some(status) = sealing_outcome_status(&mut outcome) {
+        note_raw_key(pins, manager, status, action).await;
+    }
+    Ok(outcome)
 }
 
 /// Tells every window that the raw unlock or key may have changed, so one
@@ -1278,9 +1393,16 @@ async fn unlock_raw(
     app: tauri::AppHandle,
     proof: raw_access::ProofArg,
     manager: State<'_, Arc<CoreManager>>,
+    pins: State<'_, Arc<raw_key_pin::RawKeyPins>>,
 ) -> Result<serde_json::Value, String> {
     match confirm_raw_proof(&app, proof, PresencePurpose::UnlockRaw).await? {
-        Ok(proof) => broadcast_raw_sealing_change(&app, manager.unlock_raw(&proof).await),
+        Ok(proof) => {
+            let _pinning = pins.guard().await;
+            let result = manager.unlock_raw(&proof).await;
+            let result =
+                note_raw_key_outcome(&pins, &manager, result, raw_key_pin::PinAction::Check).await;
+            broadcast_raw_sealing_change(&app, result)
+        }
         Err(outcome) => proof_outcome_value(outcome),
     }
 }
@@ -1289,8 +1411,91 @@ async fn unlock_raw(
 async fn lock_raw(
     app: tauri::AppHandle,
     manager: State<'_, Arc<CoreManager>>,
+    pins: State<'_, Arc<raw_key_pin::RawKeyPins>>,
 ) -> Result<serde_json::Value, String> {
-    broadcast_raw_sealing_change(&app, manager.lock_raw().await)
+    let _pinning = pins.guard().await;
+    let result = match manager.lock_raw().await {
+        Ok(mut status) => {
+            note_raw_key(&pins, &manager, &mut status, raw_key_pin::PinAction::Check).await;
+            Ok(status)
+        }
+        Err(error) => Err(error),
+    };
+    broadcast_raw_sealing_change(&app, result)
+}
+
+/// Accepts a raw key replaced outside the desktop, such as by the operator's
+/// own `astrlink-core raw-password`. The key's password shows the operator
+/// chose it; presence alone only shows someone is at this Mac. A keychain
+/// build asks for both, so a script that set the password itself cannot
+/// accept the key through the WebView; where that build cannot show the
+/// prompt, only a reset is left. Nothing unlocks raw parts.
+#[tauri::command]
+async fn acknowledge_raw_key(
+    app: tauri::AppHandle,
+    password: zeroize::Zeroizing<String>,
+    manager: State<'_, Arc<CoreManager>>,
+    pins: State<'_, Arc<raw_key_pin::RawKeyPins>>,
+) -> Result<serde_json::Value, String> {
+    let presence = raw_presence::keychain_build().then(|| {
+        (
+            raw_presence::system(),
+            presence_reason(&app, PresencePurpose::AcknowledgeRawKey),
+        )
+    });
+    let result = acknowledge_replaced_key(&manager, &pins, password, presence).await;
+    broadcast_raw_sealing_change(&app, result)
+}
+
+/// The acknowledgement behind `acknowledge_raw_key`. `presence` is the
+/// verifier and prompt text where the build asks for presence too; it runs
+/// first, so nothing reaches Core unless it passed. Core's verify route then
+/// checks the password without starting an unlock session, and the key its
+/// answer names is pinned.
+async fn acknowledge_replaced_key(
+    manager: &CoreManager,
+    pins: &Arc<raw_key_pin::RawKeyPins>,
+    password: zeroize::Zeroizing<String>,
+    presence: Option<(&'static dyn raw_presence::PresenceVerifier, String)>,
+) -> Result<serde_json::Value, String> {
+    if let Some((verifier, reason)) = presence {
+        let checked =
+            confirm_proof_with(raw_access::ProofArg::LocalPresence {}, verifier, reason).await?;
+        if let Err(outcome) = checked {
+            return proof_outcome_value(outcome);
+        }
+    }
+    let _pinning = pins.guard().await;
+    let result = manager
+        .verify_raw(&raw_access::Proof::Password(password))
+        .await;
+    note_raw_key_outcome(pins, manager, result, raw_key_pin::PinAction::Pin).await
+}
+
+/// Checks the raw password for a desktop action whose proof never reaches
+/// Core otherwise, such as revealing an access token (D14). Core's verify
+/// route opens no unlock session, so nothing changes for other windows.
+#[tauri::command]
+async fn verify_raw_password(
+    password: zeroize::Zeroizing<String>,
+    manager: State<'_, Arc<CoreManager>>,
+    pins: State<'_, Arc<raw_key_pin::RawKeyPins>>,
+) -> Result<serde_json::Value, String> {
+    check_raw_password(&manager, &pins, password).await
+}
+
+/// The check behind `verify_raw_password`. A key replaced outside the
+/// desktop stays unaccepted: its password proves an action, not the key.
+async fn check_raw_password(
+    manager: &CoreManager,
+    pins: &Arc<raw_key_pin::RawKeyPins>,
+    password: zeroize::Zeroizing<String>,
+) -> Result<serde_json::Value, String> {
+    let _pinning = pins.guard().await;
+    let result = manager
+        .verify_raw(&raw_access::Proof::Password(password))
+        .await;
+    note_raw_key_outcome(pins, manager, result, raw_key_pin::PinAction::Check).await
 }
 
 /// Sets, changes, or resets the raw password. `password` is the new one;
@@ -1302,16 +1507,16 @@ async fn set_raw_password(
     password: Option<zeroize::Zeroizing<String>>,
     proof: Option<raw_access::ProofArg>,
     manager: State<'_, Arc<CoreManager>>,
+    pins: State<'_, Arc<raw_key_pin::RawKeyPins>>,
 ) -> Result<serde_json::Value, String> {
     let proof = match proof {
-        Some(arg) => {
-            match confirm_raw_proof(&app, arg, PresencePurpose::ChangeRawPassword).await? {
-                Ok(proof) => Some(proof),
-                Err(outcome) => return proof_outcome_value(outcome),
-            }
-        }
+        Some(arg) => match confirm_raw_proof(&app, arg, raw_password_purpose(&action)).await? {
+            Ok(proof) => Some(proof),
+            Err(outcome) => return proof_outcome_value(outcome),
+        },
         None => None,
     };
+    let _pinning = pins.guard().await;
     let result = manager
         .change_raw_password(
             &action,
@@ -1319,6 +1524,8 @@ async fn set_raw_password(
             proof.as_ref(),
         )
         .await;
+    let pin_action = raw_key_pin::PinAction::after_password(&action);
+    let result = note_raw_key_outcome(&pins, &manager, result, pin_action).await;
     broadcast_raw_sealing_change(&app, result)
 }
 
@@ -1670,6 +1877,8 @@ pub fn run() {
             raw_sealing_status,
             unlock_raw,
             lock_raw,
+            acknowledge_raw_key,
+            verify_raw_password,
             set_raw_password,
             verify_local_presence,
             builtin_tool_action,
@@ -1718,6 +1927,9 @@ pub fn run() {
                 .app_data_dir()
                 .map_err(|error| format!("unable to resolve AstrLink data directory: {error}"))?;
             let preferences = Arc::new(PreferencesStore::load(&config_directory, &data_directory));
+            let raw_key_pins = Arc::new(raw_key_pin::RawKeyPins::system(&config_directory));
+            let raw_key_pin_file = raw_key_pins.file().map(std::path::Path::to_path_buf);
+            app.manage(raw_key_pins);
             let values = preferences.snapshot().values;
             apply_native_theme(app.handle(), values.theme);
             if let Some(window) = app.get_webview_window("main") {
@@ -1764,9 +1976,11 @@ pub fn run() {
                 if let Err(error) = agent_install::sync_installed_skills(&home) {
                     eprintln!("failed to sync AstrLink agent skills: {error}");
                 }
-                if let Err(error) =
-                    agent_install::sync_installed_host_guards(&home, Some(&data_directory))
-                {
+                if let Err(error) = agent_install::sync_installed_host_guards(
+                    &home,
+                    Some(&data_directory),
+                    raw_key_pin_file.as_deref(),
+                ) {
                     eprintln!("failed to sync AstrLink agent host guards: {error}");
                 }
                 if let Ok(mcp_source) = agent_install::resolve_sidecar_binary("astrlink-mcp") {
@@ -1775,6 +1989,7 @@ pub fn run() {
                             home,
                             mcp_source,
                             data_directory: Some(data_directory.clone()),
+                            raw_key_pins: raw_key_pin_file.clone(),
                         })
                     {
                         eprintln!("failed to sync AstrLink MCP binary: {error}");
@@ -1879,6 +2094,377 @@ pub fn run() {
 mod tests {
     use super::*;
     use sidecar::CorePhase;
+
+    #[derive(Default)]
+    struct MemoryPins(std::sync::Mutex<std::collections::BTreeMap<String, String>>);
+
+    impl raw_key_pin::PinStore for MemoryPins {
+        fn load(&self, account: &str) -> Result<Option<String>, String> {
+            Ok(self.0.lock().unwrap().get(account).cloned())
+        }
+
+        fn save(&self, account: &str, pin: &str) -> Result<(), String> {
+            self.0
+                .lock()
+                .unwrap()
+                .insert(account.to_string(), pin.to_string());
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn raw_key_verdicts_reach_the_status_and_the_tray() {
+        use raw_key_pin::PinAction;
+
+        let pins = Arc::new(raw_key_pin::RawKeyPins::new(
+            Box::new(MemoryPins::default()),
+        ));
+        let manager = CoreManager::new();
+        let keyed = |fingerprint: String| serde_json::json!({ "password_set": true, "key_fingerprint": fingerprint });
+        let (first, second) = ("a".repeat(64), "b".repeat(64));
+        tauri::async_runtime::block_on(async {
+            // Without a data directory there is nothing to compare with.
+            let mut status = keyed(first.clone());
+            note_raw_key(&pins, &manager, &mut status, PinAction::Check).await;
+            assert_eq!(status["key_replaced"], false);
+
+            manager.ready_for_tests(std::path::PathBuf::from("/nonexistent/astrlink-data"));
+            let mut status = keyed(first.clone());
+            note_raw_key(&pins, &manager, &mut status, PinAction::Check).await;
+            assert_eq!(status["key_replaced"], false);
+            assert!(!manager.view().raw_key_replaced);
+
+            let mut status = keyed(second.clone());
+            note_raw_key(&pins, &manager, &mut status, PinAction::Check).await;
+            assert_eq!(status["key_replaced"], true);
+            assert!(manager.view().raw_key_replaced);
+
+            // A refusal leaves the verdict; accepting the key clears it.
+            let refused = serde_json::json!({ "outcome": "password_invalid" });
+            let refused = note_raw_key_outcome(&pins, &manager, Ok(refused), PinAction::Pin)
+                .await
+                .unwrap();
+            assert!(refused.get("status").is_none());
+            assert!(manager.view().raw_key_replaced);
+            let accepted =
+                serde_json::json!({ "outcome": "sealing", "status": keyed(second.clone()) });
+            let accepted = note_raw_key_outcome(&pins, &manager, Ok(accepted), PinAction::Pin)
+                .await
+                .unwrap();
+            assert_eq!(accepted["status"]["key_replaced"], false);
+            assert!(!manager.view().raw_key_replaced);
+            let mut status = keyed(second);
+            note_raw_key(&pins, &manager, &mut status, PinAction::Check).await;
+            assert_eq!(status["key_replaced"], false);
+        });
+    }
+
+    /// A control API that keeps an unlock session like Core's: raw-unlock
+    /// opens it, raw-lock ends it, raw-verify only checks the password. It
+    /// answers every status with `fingerprint` and records each request.
+    struct FakeRawCore {
+        url: String,
+        requests: Arc<std::sync::Mutex<Vec<String>>>,
+        stop: Arc<std::sync::atomic::AtomicBool>,
+        server: Option<std::thread::JoinHandle<()>>,
+    }
+
+    impl FakeRawCore {
+        const PASSWORD: &'static str = "the terminal password";
+
+        fn start(fingerprint: String) -> Self {
+            use std::io::{BufRead, Read, Write};
+            use std::sync::atomic::Ordering;
+
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            listener.set_nonblocking(true).unwrap();
+            let url = format!("http://{}", listener.local_addr().unwrap());
+            let requests = Arc::new(std::sync::Mutex::new(Vec::new()));
+            let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let (seen, stopping) = (Arc::clone(&requests), Arc::clone(&stop));
+            let server = std::thread::spawn(move || {
+                let mut unlocked = false;
+                while !stopping.load(Ordering::SeqCst) {
+                    let Ok((mut stream, _)) = listener.accept() else {
+                        std::thread::sleep(std::time::Duration::from_millis(5));
+                        continue;
+                    };
+                    stream.set_nonblocking(false).unwrap();
+                    stream
+                        .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+                        .unwrap();
+                    let mut reader = std::io::BufReader::new(&mut stream);
+                    let mut request_line = String::new();
+                    reader.read_line(&mut request_line).unwrap();
+                    let mut length = 0;
+                    loop {
+                        let mut line = String::new();
+                        if reader.read_line(&mut line).unwrap() == 0 || line == "\r\n" {
+                            break;
+                        }
+                        if let Some(value) =
+                            line.to_ascii_lowercase().strip_prefix("content-length:")
+                        {
+                            length = value.trim().parse::<usize>().unwrap();
+                        }
+                    }
+                    let mut body = vec![0; length];
+                    reader.read_exact(&mut body).unwrap();
+                    let mut words = request_line.split_whitespace();
+                    let request = format!(
+                        "{} {}",
+                        words.next().unwrap_or_default(),
+                        words.next().unwrap_or_default()
+                    );
+                    seen.lock().unwrap().push(request.clone());
+                    let body: serde_json::Value =
+                        serde_json::from_slice(&body).unwrap_or(serde_json::Value::Null);
+                    let right = body["proof"]["password"] == Self::PASSWORD;
+                    let (status, answer) = match request.as_str() {
+                        "POST /control/v1/audit/raw-unlock" if right => {
+                            unlocked = true;
+                            ("200 OK", None)
+                        }
+                        "POST /control/v1/audit/raw-verify" if right => ("200 OK", None),
+                        "POST /control/v1/audit/raw-unlock"
+                        | "POST /control/v1/audit/raw-verify" => (
+                            "403 Forbidden",
+                            Some(
+                                serde_json::json!({"error": {"code": "raw_password_invalid", "message": "wrong"}}),
+                            ),
+                        ),
+                        "POST /control/v1/audit/raw-lock" => {
+                            unlocked = false;
+                            ("200 OK", None)
+                        }
+                        "GET /control/v1/audit/raw-sealing" => ("200 OK", None),
+                        _ => (
+                            "404 Not Found",
+                            Some(
+                                serde_json::json!({"error": {"code": "not_found", "message": "no route"}}),
+                            ),
+                        ),
+                    };
+                    let answer = answer.unwrap_or_else(|| {
+                        serde_json::json!({
+                            "configured": true,
+                            "password_set": true,
+                            "unlocked": unlocked,
+                            "key_fingerprint": fingerprint,
+                        })
+                    });
+                    let answer = answer.to_string();
+                    let _ = write!(
+                        stream,
+                        "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{answer}",
+                        answer.len()
+                    );
+                }
+            });
+            Self {
+                url,
+                requests,
+                stop,
+                server: Some(server),
+            }
+        }
+
+        fn take_requests(&self) -> Vec<String> {
+            std::mem::take(&mut *self.requests.lock().unwrap())
+        }
+    }
+
+    impl Drop for FakeRawCore {
+        fn drop(&mut self) {
+            self.stop.store(true, std::sync::atomic::Ordering::SeqCst);
+            if let Some(server) = self.server.take() {
+                let _ = server.join();
+            }
+        }
+    }
+
+    /// Pins `pinned`, then lets the fake Core answer with its own key, so
+    /// the desktop sees that key as replaced.
+    async fn replace_raw_key(
+        pins: &Arc<raw_key_pin::RawKeyPins>,
+        manager: &CoreManager,
+        core: &FakeRawCore,
+        pinned: &str,
+    ) {
+        use raw_key_pin::PinAction;
+
+        let mut status = serde_json::json!({ "password_set": true, "key_fingerprint": pinned });
+        note_raw_key(pins, manager, &mut status, PinAction::Pin).await;
+        let mut status = manager.raw_sealing_status().await.unwrap();
+        note_raw_key(pins, manager, &mut status, PinAction::Check).await;
+        assert_eq!(status["key_replaced"], true);
+        core.take_requests();
+    }
+
+    #[test]
+    fn acknowledging_a_replaced_key_checks_the_password_without_unlocking() {
+        use raw_presence::{testing::FakePresence, Presence};
+
+        let (pinned, replacement) = ("a".repeat(64), "b".repeat(64));
+        let core = FakeRawCore::start(replacement.clone());
+        let pins = Arc::new(raw_key_pin::RawKeyPins::new(
+            Box::new(MemoryPins::default()),
+        ));
+        let manager = CoreManager::new();
+        manager.serve_control_for_tests(
+            std::path::PathBuf::from("/nonexistent/astrlink-data"),
+            core.url.clone(),
+        );
+        let password = || zeroize::Zeroizing::new(FakeRawCore::PASSWORD.to_string());
+        let leak =
+            |result| -> &'static FakePresence { Box::leak(Box::new(FakePresence::new(result))) };
+        tauri::async_runtime::block_on(async {
+            // A file build takes the password alone. Core only checks it:
+            // no unlock session opens, and the key it names is pinned.
+            replace_raw_key(&pins, &manager, &core, &pinned).await;
+            let outcome = acknowledge_replaced_key(&manager, &pins, password(), None)
+                .await
+                .unwrap();
+            assert_eq!(outcome["outcome"], "sealing");
+            assert_eq!(outcome["status"]["unlocked"], false);
+            assert_eq!(outcome["status"]["key_replaced"], false);
+            assert!(!manager.view().raw_key_replaced);
+            assert_eq!(core.take_requests(), ["POST /control/v1/audit/raw-verify"]);
+            let after = manager.raw_sealing_status().await.unwrap();
+            assert_eq!(
+                after["unlocked"], false,
+                "an acknowledgement left raw parts unlocked"
+            );
+
+            // A wrong password pins nothing.
+            replace_raw_key(&pins, &manager, &core, &pinned).await;
+            let refused = acknowledge_replaced_key(
+                &manager,
+                &pins,
+                zeroize::Zeroizing::new("not the password".to_string()),
+                None,
+            )
+            .await
+            .unwrap();
+            assert_eq!(refused["outcome"], "password_invalid");
+            assert!(manager.view().raw_key_replaced);
+            assert_eq!(core.take_requests(), ["POST /control/v1/audit/raw-verify"]);
+
+            // A keychain build asks for presence first; without it, nothing
+            // reaches Core and the key stays unaccepted.
+            for (result, outcome) in [
+                (Presence::Cancelled, "presence_cancelled"),
+                (Presence::Unsupported, "presence_unsupported"),
+            ] {
+                let presence = leak(result);
+                let refused = acknowledge_replaced_key(
+                    &manager,
+                    &pins,
+                    password(),
+                    Some((presence, "confirm".to_string())),
+                )
+                .await
+                .unwrap();
+                assert_eq!(refused["outcome"], outcome);
+                assert_eq!(presence.prompts(), 1);
+                assert!(manager.view().raw_key_replaced);
+                assert!(
+                    core.take_requests().is_empty(),
+                    "{outcome} still reached Core"
+                );
+            }
+            let presence = leak(Presence::Verified);
+            let accepted = acknowledge_replaced_key(
+                &manager,
+                &pins,
+                password(),
+                Some((presence, "confirm".to_string())),
+            )
+            .await
+            .unwrap();
+            assert_eq!(accepted["outcome"], "sealing");
+            assert_eq!(accepted["status"]["unlocked"], false);
+            assert_eq!(presence.prompts(), 1);
+            assert!(!manager.view().raw_key_replaced);
+            assert_eq!(core.take_requests(), ["POST /control/v1/audit/raw-verify"]);
+            assert_eq!(
+                manager.raw_sealing_status().await.unwrap()["unlocked"],
+                false
+            );
+        });
+    }
+
+    #[test]
+    fn a_password_proof_opens_no_unlock_session() {
+        let (pinned, replacement) = ("a".repeat(64), "b".repeat(64));
+        let core = FakeRawCore::start(replacement);
+        let pins = Arc::new(raw_key_pin::RawKeyPins::new(
+            Box::new(MemoryPins::default()),
+        ));
+        let manager = CoreManager::new();
+        manager.serve_control_for_tests(
+            std::path::PathBuf::from("/nonexistent/astrlink-data"),
+            core.url.clone(),
+        );
+        tauri::async_runtime::block_on(async {
+            let refused = check_raw_password(
+                &manager,
+                &pins,
+                zeroize::Zeroizing::new("not the password".to_string()),
+            )
+            .await
+            .unwrap();
+            assert_eq!(refused["outcome"], "password_invalid");
+            assert_eq!(core.take_requests(), ["POST /control/v1/audit/raw-verify"]);
+
+            // Proving an action with a replaced key's password neither
+            // unlocks raw parts nor accepts that key.
+            replace_raw_key(&pins, &manager, &core, &pinned).await;
+            let proved = check_raw_password(
+                &manager,
+                &pins,
+                zeroize::Zeroizing::new(FakeRawCore::PASSWORD.to_string()),
+            )
+            .await
+            .unwrap();
+            assert_eq!(proved["outcome"], "sealing");
+            assert_eq!(proved["status"]["unlocked"], false);
+            assert_eq!(proved["status"]["key_replaced"], true);
+            assert!(manager.view().raw_key_replaced);
+            assert_eq!(core.take_requests(), ["POST /control/v1/audit/raw-verify"]);
+            assert_eq!(
+                manager.raw_sealing_status().await.unwrap()["unlocked"],
+                false
+            );
+        });
+    }
+
+    #[test]
+    fn raw_password_prompts_name_a_reset() {
+        assert!(matches!(
+            raw_password_purpose("reset"),
+            PresencePurpose::ResetRawPassword
+        ));
+        for action in ["set", "change"] {
+            assert!(matches!(
+                raw_password_purpose(action),
+                PresencePurpose::ChangeRawPassword
+            ));
+        }
+        for purpose in [
+            PresencePurpose::ApproveRawAccess,
+            PresencePurpose::UnlockRaw,
+            PresencePurpose::ChangeRawPassword,
+            PresencePurpose::ResetRawPassword,
+            PresencePurpose::RevealAccessToken,
+            PresencePurpose::AcknowledgeRawKey,
+        ] {
+            let key = purpose.reason_key();
+            for locale in [i18n::Locale::En, i18n::Locale::ZhCN] {
+                assert_ne!(i18n::t(locale, key, &[]), key, "{key} missing");
+            }
+        }
+    }
 
     #[test]
     fn app_snapshot_serializes_as_one_flat_contract() {

@@ -63,6 +63,12 @@ interface ProofConfirmDialogProps {
   /** Facts the user decides on, shown between the description and the proof. */
   children?: ReactNode;
   description: ReactNode;
+  /**
+   * False keeps the dialog up until an action is `done`: no cancel button,
+   * and Escape or a click outside does nothing. For a step the app cannot
+   * go on without, such as setting a required raw password.
+   */
+  dismissable?: boolean;
   /** Inputs the action itself needs, such as a new password, after the proof. */
   fields?: ReactNode;
   /**
@@ -82,7 +88,8 @@ interface ProofConfirmDialogProps {
   submitDisabled?: boolean;
   /** Receives focus on open instead of the proof, e.g. a field in `children`. */
   initialFocusRef?: RefObject<HTMLElement | null>;
-  onCancel: () => void;
+  /** Required unless the dialog is not `dismissable`. */
+  onCancel?: () => void;
   onSubmit: (actionId: string, proof: ProofInput) => Promise<ProofResult>;
   open: boolean;
   title: string;
@@ -97,7 +104,13 @@ interface ProofConfirmDialogProps {
  */
 export function ProofConfirmDialog(props: ProofConfirmDialogProps) {
   const t = useT();
-  const { initialFocusRef, onCancel, onSubmit, open } = props;
+  const {
+    dismissable = true,
+    initialFocusRef,
+    onCancel,
+    onSubmit,
+    open,
+  } = props;
   // The closing frame keeps only what it shows. `fields` holds new
   // passwords and the callbacks may close over them; neither outlives the
   // dialog in the snapshot.
@@ -139,6 +152,9 @@ export function ProofConfirmDialog(props: ProofConfirmDialogProps) {
   const passwordRef = useRef<HTMLInputElement>(null);
   const defaultActionRef = useRef<HTMLButtonElement>(null);
   const pendingRef = useRef(false);
+  const cancel = () => {
+    if (dismissable && !pendingRef.current) onCancel?.();
+  };
 
   useEffect(() => {
     if (open) return;
@@ -258,12 +274,14 @@ export function ProofConfirmDialog(props: ProofConfirmDialogProps) {
     <AlertDialog
       open={open}
       onOpenChange={(nextOpen) => {
-        if (nextOpen || pendingRef.current) return;
-        onCancel();
+        if (!nextOpen) cancel();
       }}
     >
       <AlertDialogContent
         data-slot="proof-confirm-dialog"
+        onEscapeKeyDown={(event) => {
+          if (!dismissable) event.preventDefault();
+        }}
         onOpenAutoFocus={(event) => {
           event.preventDefault();
           const target =
@@ -361,16 +379,16 @@ export function ProofConfirmDialog(props: ProofConfirmDialogProps) {
           ) : null}
           {error ? <FormMessage tone="error">{error}</FormMessage> : null}
           <AlertDialogFooter>
-            <Button
-              disabled={pending}
-              onClick={() => {
-                if (!pendingRef.current) onCancel();
-              }}
-              type="button"
-              variant="outline"
-            >
-              {cancelLabel}
-            </Button>
+            {dismissable ? (
+              <Button
+                disabled={pending}
+                onClick={cancel}
+                type="button"
+                variant="outline"
+              >
+                {cancelLabel}
+              </Button>
+            ) : null}
             {otherActions.map((action) => (
               <Button
                 disabled={actionsDisabled}

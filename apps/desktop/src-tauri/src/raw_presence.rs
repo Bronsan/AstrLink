@@ -42,6 +42,13 @@ impl PresenceVerifier for SystemPresence {
     }
 }
 
+/// Whether this build keeps the local key and the raw key pins in the
+/// keychain, where presence can back a password. Actions a password alone
+/// should not settle ask for both here; other builds have no presence check.
+pub fn keychain_build() -> bool {
+    enabled()
+}
+
 /// Only builds that keep the local key in the keychain get a `local`
 /// envelope, so only they can use presence as proof.
 fn enabled() -> bool {
@@ -202,6 +209,7 @@ mod tests {
     fn debug_and_non_macos_builds_never_offer_presence() {
         // Tests are debug builds, which keep the key file.
         assert!(!system().available());
+        assert!(!keychain_build());
         assert_eq!(system().verify("unlock"), Presence::Unsupported);
     }
 }

@@ -221,18 +221,16 @@ func runAudit(ctx context.Context, args []string, stdin io.Reader, stdout, stder
 	}
 	var content contract.AuditContent
 	switch {
-	case status.Configured && password == nil:
+	case status.PasswordSet && password == nil:
 		return errors.New("captured raw content is sealed; pass the raw password with --password-stdin")
-	case status.Configured:
+	case status.PasswordSet:
 		err = vault.WithProof(ctx, controlapi.RawProof{Password: password}, func(opener controlapi.RawKeyOpener) error {
 			var readErr error
 			content, readErr = controlapi.ReadFullAudit(ctx, store, opener, id)
 			return readErr
 		})
 	default:
-		if password != nil {
-			fmt.Fprintln(stderr, "astrlink-core audit show: no raw password is set; captured content is readable without it")
-		}
+		fmt.Fprintln(stderr, "astrlink-core audit show: no raw password is set; raw content stays withheld until one is set with `astrlink-core raw-password set`")
 		content, err = controlapi.ReadFullAudit(ctx, store, nil, id)
 	}
 	if err != nil {
@@ -343,13 +341,13 @@ func runUnseal(ctx context.Context, args []string, stdin io.Reader, stdout, stde
 		return fmt.Errorf("read raw sealing state: %w", err)
 	}
 	switch {
-	case status.Configured && password != nil:
+	case status.PasswordSet && password != nil:
 		err = vault.WithProof(ctx, controlapi.RawProof{Password: password}, func(opener controlapi.RawKeyOpener) error {
 			return unseal(opener.OpenBlobKey)
 		})
 	default:
 		if password != nil {
-			fmt.Fprintln(stderr, "astrlink-core unseal: no raw password is set; captured content is carried back without it")
+			fmt.Fprintln(stderr, "astrlink-core unseal: no raw password is set; the password on stdin is not used")
 		}
 		err = unseal(nil)
 	}
@@ -358,8 +356,12 @@ func runUnseal(ctx context.Context, args []string, stdin io.Reader, stdout, stde
 		switch {
 		case errors.As(err, &unreadable):
 			hint := "pass --discard-unreadable to drop it"
-			if unreadable.Unreadable.RawParts > 0 && password == nil && status.Configured {
+			switch {
+			case unreadable.Unreadable.RawParts == 0:
+			case status.PasswordSet && password == nil:
 				hint = "pass the raw password with --password-stdin to carry raw parts back, or --discard-unreadable to drop what cannot be read"
+			case !status.PasswordSet && status.Configured:
+				hint = "raw parts are sealed to a key that has no raw password yet; set one in the AstrLink app and pass it with --password-stdin, or pass --discard-unreadable to drop what cannot be read"
 			}
 			return fmt.Errorf("%v; nothing was changed. %s", err, hint)
 		case keystoreRefused:

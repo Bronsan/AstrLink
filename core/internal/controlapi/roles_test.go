@@ -109,6 +109,7 @@ func TestControlRoleMatrix(t *testing.T) {
 		{http.MethodPost, RawPasswordPath, `{"action":"set","password":"long enough"}`, RoleOperator},
 		{http.MethodPost, RawUnlockPath, `{"proof":{"password":"long enough"}}`, RoleOperator},
 		{http.MethodPost, RawLockPath, "", RoleOperator},
+		{http.MethodPost, RawVerifyPath, `{"proof":{"password":"long enough"}}`, RoleOperator},
 		{http.MethodPost, AccessTokensPath, `{"name":"x"}`, RoleOperator},
 		{http.MethodDelete, AccessTokensPath + "/tok_missing", "", RoleOperator},
 		{http.MethodPatch, AuditSettingsPath, `{}`, RoleOperator},
@@ -200,7 +201,7 @@ func TestForbiddenObserverCallsStillCountAsObserved(t *testing.T) {
 	if recorder.Code != http.StatusForbidden {
 		t.Fatalf("status = %d, want 403", recorder.Code)
 	}
-	if snapshot := handler.observers.snapshot(); snapshot.Requests != 1 || snapshot.Client != observerUserAgentPrefix {
+	if snapshot := handler.observers.snapshot(context.Background()); snapshot.Requests != 1 || snapshot.Client != observerUserAgentPrefix {
 		t.Fatalf("observer snapshot = %+v", snapshot)
 	}
 }

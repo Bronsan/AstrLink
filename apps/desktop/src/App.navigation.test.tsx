@@ -74,6 +74,7 @@ const bridgeMocks = vi.hoisted(() => ({
   probeDraftServiceModels: vi.fn(),
   probeServiceModels: vi.fn(),
   getRawSealingStatus: vi.fn(),
+  listenRawSealingChanged: vi.fn(async () => () => {}),
   lockRaw: vi.fn(),
   setRawPassword: vi.fn(),
   unlockRaw: vi.fn(),
@@ -225,6 +226,76 @@ async function chooseOption(label: string, option: string): Promise<void> {
   });
 }
 
+/** A raw password without Touch ID unless `overrides` says otherwise. */
+function rawSealing(overrides: Record<string, unknown> = {}) {
+  return {
+    raw_available: true,
+    configured: true,
+    password_set: true,
+    password_required: false,
+    local_presence: false,
+    envelopes: ["password"],
+    key_verified: true,
+    unlocked: false,
+    unlock_expires_at: null,
+    unlock_idle_seconds: 900,
+    retry_after_seconds: 0,
+    password_min_length: 8,
+    password_max_length: 128,
+    presence_available: false,
+    keychain_build: false,
+    ...overrides,
+  };
+}
+
+/** Nothing opens the raw key yet: no password, no keychain key. */
+const noRawPassword = rawSealing({
+  raw_available: false,
+  configured: false,
+  password_set: false,
+  password_required: true,
+  envelopes: [],
+  key_verified: false,
+});
+
+function proofDialog(): HTMLElement | null {
+  return document.querySelector('[data-slot="proof-confirm-dialog"]');
+}
+
+function queryButton(label: string, scope: ParentNode): HTMLElement | null {
+  return (
+    [...scope.querySelectorAll("button")].find(
+      (candidate) => candidate.textContent?.trim() === label,
+    ) ?? null
+  );
+}
+
+async function typeNewPassword(password: string): Promise<void> {
+  const inputs = document.querySelectorAll<HTMLInputElement>(
+    'input[autocomplete="new-password"]',
+  );
+  if (inputs.length !== 2) throw new Error("Missing new password fields");
+  const valueSetter = Object.getOwnPropertyDescriptor(
+    HTMLInputElement.prototype,
+    "value",
+  )?.set;
+  if (!valueSetter) throw new Error("Missing HTMLInputElement value setter");
+  for (const input of inputs) {
+    await act(async () => {
+      valueSetter.call(input, password);
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+  }
+}
+
+async function pressEscape(): Promise<void> {
+  await act(async () => {
+    document.activeElement?.dispatchEvent(
+      new KeyboardEvent("keydown", { bubbles: true, key: "Escape" }),
+    );
+  });
+}
+
 describe("App workspace navigation", () => {
   let container: HTMLDivElement;
   let root: Root;
@@ -246,22 +317,8 @@ describe("App workspace navigation", () => {
       unreadable_access_tokens: 0,
       audit_key_missing: false,
     });
-    // No raw password and no Touch ID: token copies ask for a confirmation.
-    bridgeMocks.getRawSealingStatus.mockResolvedValue({
-      raw_available: false,
-      configured: false,
-      password_set: false,
-      local_presence: false,
-      envelopes: [],
-      key_verified: false,
-      unlocked: false,
-      unlock_expires_at: null,
-      unlock_idle_seconds: 900,
-      retry_after_seconds: 0,
-      password_min_length: 8,
-      password_max_length: 128,
-      presence_available: false,
-    });
+    // A raw password is set, so the required dialog stays away (D11).
+    bridgeMocks.getRawSealingStatus.mockResolvedValue(rawSealing());
     bridgeMocks.getRoutingSettings.mockResolvedValue({
       default_failure_policy: defaultFailurePolicy(),
       allow_unmatched_failover: false,
@@ -546,7 +603,8 @@ describe("App workspace navigation", () => {
     });
     await renderApp();
     expect(workspaceHeading().textContent).toBe("开始使用 AstrLink");
-    expect(container.textContent).toContain("已完成 0 / 3 步");
+    // The raw password is set, so the guide opens on the provider step.
+    expect(container.textContent).toContain("已完成 1 / 4 步");
     expect(container.querySelector("#usage-heading")).toBeNull();
     expect(localStorage.getItem(ONBOARDING_STORAGE_KEY)).toBe("active");
     await act(async () => button("添加 API 提供商").click());
@@ -571,6 +629,93 @@ describe("App workspace navigation", () => {
     await act(async () => vi.advanceTimersByTime(6500));
     expect(document.body.textContent).not.toContain("稍后可点击右下角");
     expect(button("上手引导")).toBeTruthy();
+  });
+
+  it("asks a first launch for the raw password before anything else", async () => {
+    bridgeMocks.listServices.mockResolvedValue({
+      items: [],
+      next_cursor: null,
+    });
+    bridgeMocks.listAccessTokens.mockResolvedValue({
+      items: [],
+      next_cursor: null,
+    });
+    bridgeMocks.getRawSealingStatus.mockResolvedValue(noRawPassword);
+    bridgeMocks.setRawPassword.mockResolvedValue({
+      outcome: "sealing",
+      status: rawSealing(),
+      reset: null,
+    });
+    await renderApp();
+
+    expect(workspaceHeading().textContent).toBe("开始使用 AstrLink");
+    expect(container.textContent).toContain("已完成 0 / 4 步");
+    expect(
+      container.querySelector('[aria-current="step"]')?.textContent,
+    ).toContain("设置原文口令");
+    // The guide asks in its own step, so the required dialog waits.
+    expect(proofDialog()).toBeNull();
+
+    await act(async () => button("设置原文口令").click());
+    expect(proofDialog()?.textContent).toContain("设置原文口令");
+    expect(proofDialog()?.textContent).not.toContain("设置原文口令后继续");
+    await act(async () => button("取消").click());
+    expect(proofDialog()).toBeNull();
+
+    // Skipping the guide does not skip the password.
+    await act(async () => button("稍后设置").click());
+    expect(workspaceHeading().textContent).toBe("运行概览");
+    expect(proofDialog()?.textContent).toContain("设置原文口令后继续");
+    expect(queryButton("取消", proofDialog()!)).toBeNull();
+
+    await typeNewPassword("correct horse");
+    await act(async () => button("设置口令").click());
+    expect(bridgeMocks.setRawPassword).toHaveBeenCalledExactlyOnceWith(
+      "set",
+      "correct horse",
+      undefined,
+    );
+    expect(proofDialog()).toBeNull();
+    await act(async () => button("上手引导").click());
+    expect(container.textContent).toContain("已完成 1 / 4 步");
+    expect(
+      container.querySelector('[aria-current="step"]')?.textContent,
+    ).toContain("接入 API 提供商");
+  });
+
+  it("keeps an upgraded workspace behind the raw password until one is set", async () => {
+    localStorage.setItem(ONBOARDING_STORAGE_KEY, "complete");
+    bridgeMocks.getRawSealingStatus.mockResolvedValue(noRawPassword);
+    bridgeMocks.setRawPassword.mockResolvedValue({
+      outcome: "sealing",
+      status: rawSealing(),
+      reset: null,
+    });
+    await renderApp();
+
+    // The workspace is there behind it; the gateway keeps serving.
+    expect(workspaceHeading().textContent).toBe("运行概览");
+    const dialog = proofDialog();
+    expect(dialog?.textContent).toContain("设置原文口令后继续");
+    expect(dialog?.textContent).toContain("设置前不会记录请求和响应的原文正文");
+    expect(dialog?.textContent).toContain("忘记后只能重置");
+    expect(queryButton("取消", dialog!)).toBeNull();
+    await pressEscape();
+    await act(async () => {
+      document
+        .querySelector('[data-slot="alert-dialog-overlay"]')
+        ?.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+    });
+    expect(proofDialog()).not.toBeNull();
+
+    await typeNewPassword("correct horse");
+    await act(async () => button("设置口令").click());
+    expect(bridgeMocks.setRawPassword).toHaveBeenCalledExactlyOnceWith(
+      "set",
+      "correct horse",
+      undefined,
+    );
+    expect(proofDialog()).toBeNull();
   });
 
   it("resumes at token creation and continues to client setup after saving", async () => {
@@ -701,11 +846,26 @@ describe("App workspace navigation", () => {
     bridgeMocks.revealAccessToken.mockResolvedValue({
       access_token: "setup-secret",
     });
+    // Touch ID proves the copy, so no password is typed.
+    bridgeMocks.getRawSealingStatus.mockResolvedValue(
+      rawSealing({
+        envelopes: ["password", "local"],
+        local_presence: true,
+        presence_available: true,
+      }),
+    );
+    bridgeMocks.verifyLocalPresence.mockResolvedValue({ outcome: "verified" });
     await renderApp();
     expect(bridgeMocks.revealAccessToken).not.toHaveBeenCalled();
     await act(async () => button("复制访问令牌").click());
     expect(bridgeMocks.revealAccessToken).not.toHaveBeenCalled();
+    expect(
+      document.querySelector('[data-slot="proof-presence"]'),
+    ).not.toBeNull();
     await act(async () => button("复制令牌").click());
+    expect(bridgeMocks.verifyLocalPresence).toHaveBeenCalledWith(
+      "reveal_access_token",
+    );
     expect(bridgeMocks.revealAccessToken).toHaveBeenCalledWith("token_01");
     expect(writeText).toHaveBeenCalledWith("setup-secret");
     expect(container.textContent).not.toContain("setup-secret");

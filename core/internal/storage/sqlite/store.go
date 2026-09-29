@@ -17,6 +17,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 	"unicode"
@@ -49,6 +50,9 @@ type Store struct {
 	rawKey            rawSealingKey
 	// resealDeferred hears of settled raw parts left under the audit key.
 	resealDeferred atomic.Pointer[func()]
+	// settleDeferred holds the in-flight requests whose part a failed settle
+	// left pending; their end asks for another reseal pass.
+	settleDeferred sync.Map
 	now            func() time.Time
 }
 

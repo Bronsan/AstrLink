@@ -13,6 +13,7 @@ const status = {
   raw_available: true,
   configured: true,
   password_set: true,
+  password_required: false,
   local_presence: false,
   envelopes: ["password"],
   key_verified: true,

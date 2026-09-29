@@ -108,6 +108,7 @@ import {
   type PrivacyRegexSource,
 } from "./privacy-policy-model";
 import { PageHeader } from "./PageHeader";
+import { RawPasswordEntry } from "./RawSealingControls";
 import {
   privacyModelOperationError,
   type PrivacyModelOperationError,
@@ -2410,6 +2411,10 @@ export function SafetyPolicy({ coreSessionKey, isReady }: SafetyPolicyProps) {
                 </Label>
               </>
             ) : null}
+            <RawPasswordEntry
+              coreSessionKey={coreSessionKey}
+              isReady={isReady}
+            />
             <Button
               disabled={
                 status === "loading" ||

@@ -31,11 +31,14 @@ const (
 )
 
 // newOfflineDataDir writes a database, its local key and one captured
-// request with a raw body and a shareable upstream body.
+// request with a shareable upstream body and a raw body kept before the
+// upgrade, still under the audit key: this release keeps no raw capture
+// before a raw password is set.
 func newOfflineDataDir(t *testing.T, directory string) string {
 	t.Helper()
 	ctx := context.Background()
-	store, err := sqlite.Open(ctx, filepath.Join(directory, "astrlink.db"))
+	path := filepath.Join(directory, "astrlink.db")
+	store, err := sqlite.Open(ctx, path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -48,28 +51,33 @@ func newOfflineDataDir(t *testing.T, directory string) string {
 	if err := store.InsertRequestRecord(ctx, contract.RequestRecord{
 		ID: offlineRequestID, StartedAt: time.Now().UTC(), Status: contract.RequestStatusSucceeded,
 		InputProtocol: contract.ProtocolOpenAIChat,
-		Audit:         contract.AuditRecordSummary{RequestBodyCaptured: true},
+		Audit:         contract.AuditRecordSummary{RequestBodyCaptured: true, UpstreamRequestBodyCaptured: true},
 	}); err != nil {
 		t.Fatal(err)
 	}
-	for _, part := range []struct {
-		direction storage.AuditDirection
-		exposure  storage.AuditExposure
-		plain     string
-	}{
-		{storage.AuditDirectionRequest, storage.AuditExposureRaw, `{"content":"mail ` + offlineSecret + `"}`},
-		{storage.AuditDirectionUpstreamRequest, storage.AuditExposureShareable, `{"content":"mail <EMAIL_1>"}`},
-	} {
-		nonce, ciphertext, err := storage.SealAuditBlob(key, []byte(part.plain))
+	seal := func(plain string) storage.AuditBlob {
+		nonce, ciphertext, err := storage.SealAuditBlob(key, []byte(plain))
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := store.InsertAuditBlob(ctx, storage.AuditBlob{
-			RequestID: offlineRequestID, Direction: part.direction, MediaType: "application/json",
-			Nonce: nonce, Ciphertext: ciphertext, CapturedBytes: len(part.plain), Exposure: part.exposure,
-		}); err != nil {
-			t.Fatal(err)
-		}
+		return storage.AuditBlob{RequestID: offlineRequestID, MediaType: "application/json",
+			Nonce: nonce, Ciphertext: ciphertext, CapturedBytes: len(plain)}
+	}
+	upstream := seal(`{"content":"mail <EMAIL_1>"}`)
+	upstream.Direction, upstream.Exposure = storage.AuditDirectionUpstreamRequest, storage.AuditExposureShareable
+	if err := store.InsertAuditBlob(ctx, upstream); err != nil {
+		t.Fatal(err)
+	}
+	history := seal(`{"content":"mail ` + offlineSecret + `"}`)
+	database, err := sql.Open("sqlite", "file:"+path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if _, err := database.Exec(`INSERT INTO audit_blobs (request_id, direction, media_type, nonce, ciphertext, truncated, captured_bytes, created_at, exposure)
+VALUES (?, 'request', 'application/json', ?, ?, 0, ?, '2026-09-20T00:00:00Z', 'raw')`,
+		offlineRequestID, history.Nonce, history.Ciphertext, history.CapturedBytes); err != nil {
+		t.Fatal(err)
 	}
 	return directory
 }
@@ -171,17 +179,27 @@ func TestOfflineCommandsNeverCreateADatabaseOrKey(t *testing.T) {
 		want(t, 1, "does not open this database")
 	// The right key still opens everything afterwards.
 	content := showRequestJSON(t, directory, "", "--kek-file", keyPath+".moved")
-	if !strings.Contains(content.RequestBody.Content, offlineSecret) {
-		t.Fatalf("request body=%#v", content.RequestBody)
+	if content.UpstreamRequestBody == nil || !strings.Contains(content.UpstreamRequestBody.Content, "<EMAIL_1>") {
+		t.Fatalf("upstream body=%#v", content.UpstreamRequestBody)
 	}
 }
 
 func TestOfflineRawPasswordSealsAndAuditShowReads(t *testing.T) {
 	directory := newOfflineDataDir(t, t.TempDir())
-	// Before a raw password exists, raw parts stay readable without one.
-	content := showRequestJSON(t, directory, "")
-	if content.RequestBody == nil || !strings.Contains(content.RequestBody.Content, offlineSecret) {
+	// Before a raw password exists, raw parts kept before the upgrade are
+	// withheld: the local key alone never reads raw content.
+	before := runOffline(t, "", "audit", "show", string(offlineRequestID), "--data-dir", directory, "--json")
+	before.want(t, 0, "astrlink-core raw-password set")
+	var content contract.AuditContent
+	if err := json.Unmarshal([]byte(before.stdout), &content); err != nil {
+		t.Fatal(err)
+	}
+	if content.RequestBody == nil || !content.RequestBody.Withheld || content.RequestBody.Reason != contract.AuditWithheldRawPasswordRequired ||
+		strings.Contains(before.stdout, offlineSecret) {
 		t.Fatalf("request body before set=%#v", content.RequestBody)
+	}
+	if content.UpstreamRequestBody == nil || content.UpstreamRequestBody.Withheld {
+		t.Fatalf("upstream body before set=%#v", content.UpstreamRequestBody)
 	}
 
 	runOffline(t, "short\n", "raw-password", "set", "--data-dir", directory, "--password-stdin").want(t, 1, "8 to 128")
@@ -214,7 +232,7 @@ func TestOfflineRawPasswordSealsAndAuditShowReads(t *testing.T) {
 	runOffline(t, "wrong password\n", "audit", "show", string(offlineRequestID), "--data-dir", directory, "--password-stdin").
 		want(t, 1, "incorrect")
 	content = showRequestJSON(t, directory, offlinePassword+"\r\n", "--password-stdin")
-	if !strings.Contains(content.RequestBody.Content, offlineSecret) || content.RequestBody.Exposure != contract.AuditPartExposureRaw {
+	if content.RequestBody == nil || !strings.Contains(content.RequestBody.Content, offlineSecret) || content.RequestBody.Exposure != contract.AuditPartExposureRaw {
 		t.Fatalf("request body=%#v", content.RequestBody)
 	}
 	if content.UpstreamRequestBody == nil || strings.Contains(content.UpstreamRequestBody.Content, offlineSecret) {

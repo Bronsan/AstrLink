@@ -310,6 +310,19 @@ fn status_line(view: &CoreView, locale: Locale) -> (String, TrayIconState) {
                     &[("count", &view.pending_raw_access.to_string())],
                 ));
             }
+            // Only the main window asks for the raw password; say so where a
+            // user who closed it still looks. No agent is involved, so the
+            // icon keeps its meaning.
+            if view.raw_password_required {
+                text.push_str(" · ");
+                text.push_str(&t("host.tray.status.rawPasswordRequired", &[]));
+            }
+            // The same holds for a raw key replaced outside the desktop: the
+            // main window's warning is the only place that resolves it.
+            if view.raw_key_replaced {
+                text.push_str(" · ");
+                text.push_str(&t("host.tray.status.rawKeyReplaced", &[]));
+            }
             if view.observer_active || view.pending_raw_access > 0 {
                 return (text, TrayIconState::Watched);
             }
@@ -1686,8 +1699,19 @@ pub fn start(app: &AppHandle) {
     let watcher = app.clone();
     tauri::async_runtime::spawn(async move {
         let mut was_ready = false;
+        let mut last_raw_key_event = None;
         while changes.changed().await.is_ok() {
-            let ready = changes.borrow_and_update().phase == CorePhase::Ready;
+            let (ready, raw_key_event) = {
+                let view = changes.borrow_and_update();
+                (view.phase == CorePhase::Ready, view.raw_key_event.clone())
+            };
+            // A key replaced while the app was closed, or through another
+            // client of this Core, is only noticed by comparing it with the
+            // pin; do so without waiting for a window to ask.
+            if ready && (!was_ready || raw_key_event != last_raw_key_event) {
+                tauri::async_runtime::spawn(crate::check_raw_key(watcher.clone()));
+            }
+            last_raw_key_event = raw_key_event;
             if ready && !was_ready {
                 // Warm the panel once so the first open is not blank.
                 request_usage_refresh(
@@ -1751,6 +1775,9 @@ mod tests {
             observer_active: false,
             observer_read_level: None,
             pending_raw_access: 0,
+            raw_password_required: false,
+            raw_key_event: None,
+            raw_key_replaced: false,
         }
     }
 
@@ -1871,6 +1898,51 @@ mod tests {
             model.tooltip,
             "AstrLink · Gateway running · 127.0.0.1:8317 · Raw access requests awaiting you: 1"
         );
+        // A missing raw password points at the main window's setup without
+        // pretending an agent is reading.
+        let mut gated = ready_view();
+        gated.raw_password_required = true;
+        let model = tray_model(
+            &gated,
+            &TrayPreferences::default(),
+            None,
+            Locale::ZhCN,
+            QuotaDisplayMode::Remaining,
+        );
+        assert_eq!(model.icon, TrayIconState::Ready);
+        assert_eq!(
+            model.tooltip,
+            "AstrLink · 网关运行中 · 127.0.0.1:8317 · 尚未设置原文口令，请打开 AstrLink 设置"
+        );
+        gated.pending_raw_access = 1;
+        let model = tray_model(
+            &gated,
+            &TrayPreferences::default(),
+            None,
+            Locale::En,
+            QuotaDisplayMode::Remaining,
+        );
+        assert_eq!(model.icon, TrayIconState::Watched);
+        assert_eq!(
+            model.tooltip,
+            "AstrLink · Gateway running · 127.0.0.1:8317 · Raw access requests awaiting you: 1 · Raw password not set; open AstrLink to set it"
+        );
+        // A raw key replaced outside the desktop points at the main window's
+        // warning; no agent is involved either.
+        let mut replaced = ready_view();
+        replaced.raw_key_replaced = true;
+        let model = tray_model(
+            &replaced,
+            &TrayPreferences::default(),
+            None,
+            Locale::ZhCN,
+            QuotaDisplayMode::Remaining,
+        );
+        assert_eq!(model.icon, TrayIconState::Ready);
+        assert_eq!(
+            model.tooltip,
+            "AstrLink · 网关运行中 · 127.0.0.1:8317 · 原文密钥在 AstrLink 之外被更换，请打开 AstrLink 查看"
+        );
         // Only a running gateway can be read; the badge drops with it.
         watched.phase = CorePhase::Error;
         let model = tray_model(
@@ -1896,6 +1968,9 @@ mod tests {
             observer_active: false,
             observer_read_level: None,
             pending_raw_access: 0,
+            raw_password_required: false,
+            raw_key_event: None,
+            raw_key_replaced: false,
         };
         let prefs = TrayPreferences {
             menubar_text: TrayMenubarText::Tokens,
@@ -2206,6 +2281,9 @@ mod tests {
             serde_json::Value::Null
         );
         assert_eq!(value["view"]["pending_raw_access"], 0);
+        assert_eq!(value["view"]["raw_password_required"], false);
+        assert_eq!(value["view"]["raw_key_event"], serde_json::Value::Null);
+        assert_eq!(value["view"]["raw_key_replaced"], false);
         assert_eq!(value["popover_below"], true);
         assert_eq!(value["view"]["inference_url"], "http://127.0.0.1:8317");
         assert_eq!(value["digest"]["today"]["requests"], 128);

@@ -95,9 +95,11 @@ pub fn resolve_for_start(data_directory: &Path) -> ResolvedKey {
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     #[cfg(target_os = "macos")]
     if keychain_enabled() {
-        return resolve(&MacKeychain, data_directory, &mut |line| {
-            eprintln!("{line}")
-        });
+        return resolve(
+            &MacKeychain(KEYCHAIN_SERVICE),
+            data_directory,
+            &mut |line| eprintln!("{line}"),
+        );
     }
     let _ = data_directory;
     ResolvedKey::core_default(LocalKeyStorage::File)
@@ -402,8 +404,9 @@ pub(crate) fn keychain_enabled() -> bool {
         .is_ok()
 }
 
+/// The login keychain entries of one service.
 #[cfg(target_os = "macos")]
-struct MacKeychain;
+pub(crate) struct MacKeychain(pub(crate) &'static str);
 
 #[cfg(target_os = "macos")]
 impl KeyVault for MacKeychain {
@@ -412,10 +415,7 @@ impl KeyVault for MacKeychain {
 
         // errSecItemNotFound
         const ITEM_NOT_FOUND: i32 = -25300;
-        match generic_password(PasswordOptions::new_generic_password(
-            KEYCHAIN_SERVICE,
-            account,
-        )) {
+        match generic_password(PasswordOptions::new_generic_password(self.0, account)) {
             Ok(value) => Ok(Some(Zeroizing::new(value))),
             Err(error) if error.code() == ITEM_NOT_FOUND => Ok(None),
             Err(error) => Err(format!("OSStatus {}", error.code())),
@@ -423,7 +423,7 @@ impl KeyVault for MacKeychain {
     }
 
     fn set(&self, account: &str, value: &[u8]) -> Result<(), String> {
-        security_framework::passwords::set_generic_password(KEYCHAIN_SERVICE, account, value)
+        security_framework::passwords::set_generic_password(self.0, account, value)
             .map_err(|error| format!("OSStatus {}", error.code()))
     }
 }

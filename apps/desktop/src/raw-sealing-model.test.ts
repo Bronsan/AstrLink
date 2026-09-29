@@ -10,8 +10,11 @@ import {
   passwordIsShort,
   passwordLength,
   presenceUsable,
+  rawAcknowledgeMode,
+  rawKeyUnreachable,
   rawPasswordState,
   rawProofMode,
+  rawResetProofMode,
   withPresence,
   type RawSealingState,
 } from "./raw-sealing-model";
@@ -21,6 +24,7 @@ function status(overrides: Record<string, unknown> = {}) {
     raw_available: true,
     configured: true,
     password_set: true,
+    password_required: false,
     local_presence: false,
     envelopes: ["password"],
     key_verified: true,
@@ -38,6 +42,7 @@ function state(overrides: Partial<RawSealingState> = {}): RawSealingState {
   return {
     ...parseRawSealingStatus(status()),
     presence_available: false,
+    keychain_build: false,
     ...overrides,
   };
 }
@@ -53,6 +58,7 @@ describe("raw sealing status", () => {
           local_presence: true,
         }),
         presence_available: true,
+        keychain_build: true,
       }),
     ).toMatchObject({
       unlocked: true,
@@ -60,7 +66,25 @@ describe("raw sealing status", () => {
       envelopes: ["password", "local"],
       local_presence: true,
       presence_available: true,
+      keychain_build: true,
     });
+  });
+
+  it("reads the desktop's replaced-key verdict, absent meaning none", () => {
+    expect(
+      parseRawSealingStatus(status({ key_replaced: true })).key_replaced,
+    ).toBe(true);
+    expect(
+      parseRawSealingStatus(status({ key_replaced: false })).key_replaced,
+    ).toBe(false);
+    expect(parseRawSealingStatus(status()).key_replaced).toBe(false);
+    const outcome = parseRawSealingOutcome({
+      outcome: "sealing",
+      status: status({ key_replaced: true }),
+    });
+    expect(outcome.outcome === "sealing" && outcome.status.key_replaced).toBe(
+      true,
+    );
   });
 
   it("rejects malformed fields with the offending path", () => {
@@ -73,6 +97,9 @@ describe("raw sealing status", () => {
     expect(() =>
       parseRawSealingStatus(status({ envelopes: ["cloud"] })),
     ).toThrow("$.envelopes[0]");
+    expect(() =>
+      parseRawSealingStatus(status({ password_required: undefined })),
+    ).toThrow("$.password_required");
     expect(() =>
       parseRawSealingStatus(status({ unlock_expires_at: "soon" })),
     ).toThrow("$.unlock_expires_at");
@@ -90,6 +117,18 @@ describe("raw sealing status", () => {
     expect(() => parseRawSealingState(status())).toThrow(
       "$.presence_available",
     );
+    expect(() =>
+      parseRawSealingState({ ...status(), presence_available: true }),
+    ).toThrow("$.keychain_build");
+    expect(() => parseRawSealingStatus(status({ key_replaced: 1 }))).toThrow(
+      "$.key_replaced",
+    );
+    expect(() =>
+      parseRawSealingOutcome({
+        outcome: "sealing",
+        status: status({ key_replaced: null }),
+      }),
+    ).toThrow("$.status.key_replaced");
     expect(() => parseRawSealingStatus([])).toThrow("（$）：应为对象");
   });
 });
@@ -161,14 +200,83 @@ describe("raw proof mode", () => {
     ).toBe(true);
   });
 
+  it("keeps asking for the proof Core wants before a reset", () => {
+    // Where the local envelope opens the key, Core refuses a reset without
+    // a proof, so an unavailable prompt is retried rather than skipped.
+    expect(
+      rawResetProofMode(
+        state({
+          local_presence: true,
+          password_set: false,
+          presence_available: false,
+        }),
+      ),
+    ).toBe("presence");
+    expect(
+      rawResetProofMode(
+        state({ local_presence: true, presence_available: false }),
+      ),
+    ).toBe("password");
+    expect(
+      rawResetProofMode(
+        state({ local_presence: true, presence_available: true }),
+      ),
+    ).toBe("presence");
+    // A key nothing here opens is replaced with a plain confirmation.
+    expect(
+      rawResetProofMode(
+        state({ local_presence: false, presence_available: true }),
+      ),
+    ).toBe("confirm");
+  });
+
   it("keeps presence support across a status that lacks it", () => {
-    const previous = state({ presence_available: true });
+    const previous = state({ presence_available: true, keychain_build: true });
     const next = parseRawSealingStatus(status({ unlocked: true }));
     expect(withPresence(next, previous)).toMatchObject({
       unlocked: true,
       presence_available: true,
+      keychain_build: true,
     });
-    expect(withPresence(next, null).presence_available).toBe(false);
+    expect(withPresence(next, null)).toMatchObject({
+      presence_available: false,
+      keychain_build: false,
+    });
+  });
+
+  it("accepts a replaced key with its password and, on a keychain build, presence too", () => {
+    // Builds without a keychain have no presence check to add.
+    expect(rawAcknowledgeMode(state({ presence_available: false }))).toBe(
+      "password",
+    );
+    expect(
+      rawAcknowledgeMode(
+        state({ keychain_build: true, presence_available: true }),
+      ),
+    ).toBe("password_and_presence");
+    // Where the keychain build cannot show the prompt, the password alone
+    // is not enough: only a reset is left.
+    expect(
+      rawAcknowledgeMode(
+        state({ keychain_build: true, presence_available: false }),
+      ),
+    ).toBe("unavailable");
+  });
+
+  it("reads raw content only once a raw password is set (D11)", () => {
+    expect(rawKeyUnreachable(state())).toBe(false);
+    // A keychain key the presence prompt opens is still not enough.
+    expect(
+      rawKeyUnreachable(
+        state({
+          password_set: false,
+          password_required: true,
+          envelopes: ["local"],
+          local_presence: true,
+          presence_available: true,
+        }),
+      ),
+    ).toBe(true);
   });
 
   it("summarizes how the raw key opens", () => {

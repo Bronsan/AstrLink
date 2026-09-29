@@ -128,6 +128,7 @@ describe("AccessTokenManager", () => {
       raw_available: false,
       configured: false,
       password_set: false,
+      password_required: true,
       local_presence: false,
       envelopes: [],
       key_verified: false,
@@ -138,6 +139,7 @@ describe("AccessTokenManager", () => {
       password_min_length: 8,
       password_max_length: 128,
       presence_available: false,
+      keychain_build: false,
     });
     container = document.createElement("div");
     document.body.append(container);

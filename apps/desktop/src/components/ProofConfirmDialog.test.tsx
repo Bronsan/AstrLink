@@ -44,6 +44,7 @@ afterEach(async () => {
 type Submit = (actionId: string, proof: ProofInput) => Promise<ProofResult>;
 
 function Harness({
+  dismissable,
   onCancel = vi.fn(),
   onSubmit,
   passwordFallback,
@@ -51,6 +52,7 @@ function Harness({
   submitDisabled,
   withField = false,
 }: {
+  dismissable?: boolean;
   onCancel?: () => void;
   onSubmit: Submit;
   passwordFallback?: boolean;
@@ -68,6 +70,7 @@ function Harness({
       ]}
       cancelLabel="拒绝"
       description={<p>申请说明</p>}
+      dismissable={dismissable}
       fields={
         withField ? (
           <input aria-label="附加字段" data-slot="extra" ref={fieldRef} />
@@ -300,6 +303,45 @@ describe("ProofConfirmDialog", () => {
 
     expect(onCancel).toHaveBeenCalledTimes(2);
     expect(onSubmit).not.toHaveBeenCalled();
+  });
+
+  it("offers no way out but the action when it is not dismissable", async () => {
+    const onCancel = vi.fn();
+    const onSubmit = vi
+      .fn<Submit>()
+      .mockResolvedValueOnce({ kind: "error", message: "失败" })
+      .mockResolvedValueOnce({ kind: "done" });
+    await act(async () =>
+      root.render(
+        <Harness
+          dismissable={false}
+          onCancel={onCancel}
+          onSubmit={onSubmit}
+          proof="confirm"
+        />,
+      ),
+    );
+
+    expect(() => button("拒绝")).toThrow();
+    await act(async () => {
+      document.activeElement?.dispatchEvent(
+        new KeyboardEvent("keydown", { bubbles: true, key: "Escape" }),
+      );
+    });
+    await act(async () => {
+      document
+        .querySelector('[data-slot="alert-dialog-overlay"]')
+        ?.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+    });
+    expect(onCancel).not.toHaveBeenCalled();
+    expect(dialog()).not.toBeNull();
+
+    // A failed attempt keeps it up too; only a done action closes it.
+    await act(async () => button("仅本次").click());
+    expect(dialog()?.textContent).toContain("失败");
+    await act(async () => button("仅本次").click());
+    expect(dialog()).toBeNull();
+    expect(onCancel).not.toHaveBeenCalled();
   });
 
   it("cannot be cancelled while a submission is in flight", async () => {

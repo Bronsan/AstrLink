@@ -103,6 +103,7 @@
     "clearSearch": "Clear search",
     "noSearchResults": "No matching results",
     "cancel": "Cancel",
+    "back": "Back",
     "confirm": "Confirm",
     "close": "Close",
     "delete": "Delete",
@@ -428,23 +429,32 @@
     "description": "Add your existing model services to AstrLink, then connect your clients through the local gateway.",
     "skip": "Set up later",
     "open": "Setup guide",
-    "progress": "{{count}} of 3 steps complete",
+    "progress": "{{count}} of 4 steps complete",
     "steps": "Setup steps",
     "step": "Step {{count}}",
     "resumeHint": "Your progress is saved. Return anytime through Setup guide at the bottom right of Overview.",
     "deferredHint": "Continue setup anytime from Setup guide at the bottom right.",
+    "passwordTitle": "Set a raw password",
+    "passwordShort": "Protect recorded raw content",
     "serviceTitle": "Add an API provider",
     "serviceShort": "Connect an existing model service",
     "tokenTitle": "Create an access token",
     "tokenShort": "Give your client a local key",
     "clientTitle": "Connect your client",
     "clientShort": "Make your first successful request",
+    "passwordBody": "AstrLink can record raw request and response content for troubleshooting. It is sealed separately with the raw password and is not recorded until one is set.",
+    "passwordHelp": "AstrLink does not keep the password. A forgotten password can only be reset, which discards sealed raw content. Keep it somewhere safe, such as a password manager.",
+    "passwordAction": "Set raw password",
+    "passwordDone": "The raw password is set.",
+    "passwordLoading": "Reading the raw password state…",
+    "passwordLoadFailed": "Could not read the raw password state: {{message}}. It is retried shortly.",
     "serviceBody": "AstrLink needs a model source. Add an API service or subscription account you already use.",
     "serviceOptions": "Have an API key? Choose your provider and enter its URL and key. Have a subscription? Choose the subscription service and authorize your account.",
     "serviceHelp": "What do I need to prepare?",
     "serviceHelpBody": "Have your provider’s API URL and API key ready, or sign in with a subscription account. Fetch or add available models before saving, and keep the provider enabled.",
     "manageServices": "Check provider setup",
     "serviceIncomplete": "The provider is not ready yet. Make sure it is enabled, has models, and any subscription authorization is complete.",
+    "finishPassword": "Set the raw password before adding an API provider.",
     "next": "Continue",
     "tokenBody": "An access token lets your client connect to the local AstrLink gateway. Create a separate token for each client to track usage.",
     "tokenHelp": "Create a token with a recognizable name, such as “My coding assistant”. Use this access token as the client’s API key. Keep your upstream API key in the provider configuration.",
@@ -1932,6 +1942,13 @@
     "observed": "An agent is reading via MCP",
     "observedRaw": "An agent is reading approved raw content",
     "rawAccessPending": "Raw access requests awaiting you: {{count}}",
+    "rawPasswordRequired": "Raw password not set. Open AstrLink to set it",
+    "rawKeyReplaced": "Raw key replaced outside AstrLink. Open AstrLink to review it",
+    "rawKeyEvent": {
+      "passwordSet": "Raw password set · {{ago}}",
+      "passwordChanged": "Raw password changed · {{ago}}",
+      "keyReset": "Raw content key reset · {{ago}}"
+    },
     "status": {
       "ready": "Gateway running",
       "stopped": "Gateway stopped",
@@ -1996,7 +2013,9 @@
         "failed": "Gateway exited unexpectedly",
         "observed": "An agent is reading via MCP",
         "observedRaw": "An agent is reading approved raw content",
-        "rawAccessPending": "Raw access requests awaiting you: {{count}}"
+        "rawAccessPending": "Raw access requests awaiting you: {{count}}",
+        "rawPasswordRequired": "Raw password not set; open AstrLink to set it",
+        "rawKeyReplaced": "Raw key replaced outside AstrLink; open AstrLink to review it"
       },
       "menubar": {
         "alert": "!"
@@ -2053,7 +2072,9 @@
       "approveRawAccess": "approve an agent's request to read captured raw content",
       "unlockRaw": "unlock captured raw content",
       "changeRawPassword": "change the raw content password",
-      "revealAccessToken": "show an access token"
+      "resetRawPassword": "reset the raw content key and discard captured raw content",
+      "revealAccessToken": "show an access token",
+      "acknowledgeRawKey": "confirm the raw key replaced outside AstrLink"
     }
   },
   "failure": {
@@ -2630,30 +2651,50 @@
     "denied": "Raw access request denied",
     "denyFailed": "Could not deny the raw access request: {{message}}",
     "notPending": "This request has expired or was already decided",
-    "proofUnavailable": "Touch ID is unavailable right now and no raw password is set, so this request cannot be approved on this device. Deny it, and let the agent ask again once Touch ID works."
+    "proofUnavailable": "No raw password is set, so this request cannot be approved. Deny it, and let the agent ask again once a raw password is set."
   },
   "rawSealing": {
     "title": "Raw password",
     "state": {
       "unset": "Not set",
       "password": "Set",
-      "keychainOnly": "Keychain only",
       "unknown": "Unknown"
     },
     "hint": {
-      "unset": "Raw content is sealed separately with the raw password. Once it is set, agent tools can ask to read raw content.",
+      "unset": "No raw password is set: raw content is not recorded, and raw content recorded before the upgrade cannot be viewed until one is set.",
       "password": "Reading raw content and approving agent requests need the raw password. A forgotten password can only be reset, and sealed raw content cannot be recovered.",
       "passwordPresence": "Reading raw content and approving agent requests can be confirmed with Touch ID or the raw password. A forgotten password can only be reset.",
-      "keychainOnly": "The raw key is kept in this Mac's keychain and opens with Touch ID. Add a raw password to unlock when Touch ID is unavailable.",
-      "keychainUnreachable": "Touch ID is unavailable right now, so the raw key in this Mac's keychain cannot be opened, not even to add a raw password. Try again once Touch ID works, or reset the raw key; captured raw content is then discarded."
+      "keychainOnly": "The raw key is in this Mac's keychain, but no raw password is set: raw content is not recorded, and raw content recorded before the upgrade cannot be viewed. Setting one is confirmed with Touch ID.",
+      "keychainUnreachable": "The raw key in this Mac's keychain can no longer be opened (its keychain entry was lost or replaced), so only resetting it with a new password is left. Raw content recorded before the upgrade is then discarded.",
+      "presenceUnavailable": "Touch ID and your Mac login password cannot be checked right now. The raw key is still in this Mac's keychain, so raw content recorded before the upgrade is kept; try again once system verification works."
     },
     "loadFailed": "Could not read the raw password state: {{message}}",
     "set": "Set",
     "change": "Change",
     "reset": "Reset",
     "setTitle": "Set raw password",
-    "setDescription": "The raw password unlocks sealed raw content. AstrLink does not keep it; a forgotten password can only be reset, and sealed raw content cannot be recovered.",
-    "setKeychainDescription": "Once set, the raw password unlocks raw content as well as Touch ID. AstrLink does not keep it.",
+    "setDescription": "Raw content is recorded only once a raw password is set, sealed separately with it; raw content recorded before the upgrade then unlocks with it too. AstrLink does not keep it; a forgotten password can only be reset, which discards sealed raw content.",
+    "setKeychainDescription": "Setting it is confirmed with Touch ID.",
+    "replaceKey": "No need for raw content from before the upgrade? Reset the raw key",
+    "replaceKeyWarning": "Resetting creates a new raw key and discards raw content recorded before the upgrade. Request records and privacy-filtered content are kept.",
+    "replaceTitle": "Reset the raw key?",
+    "replaceDescription": "Resetting creates a new raw key and permanently discards raw content recorded before the upgrade; it cannot be recovered. Request records and privacy-filtered content are kept.",
+    "replaceNeedsPresence": "The reset is still confirmed with Touch ID or your Mac login password.",
+    "replaceStart": "Reset raw key",
+    "requiredTitle": "Set a raw password to continue",
+    "requiredBody": "AstrLink now requires a raw password. Until one is set, raw request and response content is not recorded and raw content recorded before the upgrade cannot be viewed; the gateway keeps forwarding requests.",
+    "requiredForget": "AstrLink does not keep the password. A forgotten password can only be reset, which discards sealed raw content.",
+    "replaced": {
+      "title": "The raw key was replaced outside AstrLink",
+      "warning": "The raw password was set or the raw key reset, but not in the AstrLink desktop app. Whoever did it may be able to read raw content captured since.",
+      "cli": "If you ran astrlink-core raw-password yourself, enter the password you set there to confirm. Confirming does not unlock raw content.",
+      "presence": "After you submit, this Mac also asks for Touch ID or your Mac login password; the key is confirmed only when both pass.",
+      "presenceUnavailable": "This Mac cannot check Touch ID or your Mac login password right now, and the password alone cannot confirm this key here. Only resetting the raw key is left, which discards the raw content sealed to it; once system verification works, you can also reopen AstrLink and confirm it then.",
+      "passwordLabel": "Raw password set in the terminal",
+      "acknowledge": "Confirm it was me",
+      "reset": "Not you? Reset the raw key",
+      "accepted": "New raw key confirmed"
+    },
     "setAction": "Set password",
     "changeTitle": "Change raw password",
     "changeDescription": "Sealed raw content will unlock with the new password.",
@@ -2681,9 +2722,7 @@
     "agentAccess": "Let agent tools ask to read raw content",
     "agentAccessHint": "Agents can ask through the debug tools to read a request's raw content. You confirm every request.",
     "agentAccessNeedsPassword": "Set a raw password first.",
-    "upgradeHint": "Set a raw password so agents can ask to read raw content.",
-    "upgradeAction": "Set password",
-    "captureNeedsPassword": "Set a raw password before turning this on. Raw content is sealed separately with it; AstrLink does not keep it, and a forgotten password can only be reset.",
+    "captureNeedsPassword": "Set a raw password before turning this on; raw content is sealed separately with it. AstrLink does not keep it; a forgotten password can only be reset, which discards sealed raw content.",
     "errors": {
       "notConfigured": "No raw password is set yet.",
       "unavailable": "This Core does not support raw content sealing.",
@@ -2698,13 +2737,17 @@
     "locked": "Locked",
     "lockedDetail": "This raw content is sealed. Unlock to view it.",
     "withheldDetail": "This part was captured but is not shown in this view.",
+    "passwordRequired": "Password needed",
+    "passwordRequiredDetail": "This raw content was recorded before the upgrade and can be viewed once a raw password is set.",
+    "notKept": "Not recorded",
+    "notKeptDetail": "No raw password was set when this was recorded, so this raw content was not kept.",
     "unlockTitle": "Unlock raw content",
     "unlockDescription": "Unlocking shows sealed raw content on this device. It locks again after {{minutes}} minutes without activity.",
     "unlocked": "Raw content unlocked",
     "unlockedHint": "Raw content is unlocked. It locks after {{minutes}} minutes without activity.",
     "lockedNow": "Raw content locked",
     "lockFailed": "Could not lock raw content: {{message}}",
-    "unlockUnavailable": "Touch ID is unavailable right now and no raw password is set, so raw content cannot be unlocked on this device. Try again once Touch ID works."
+    "unlockUnavailable": "No raw password is set, so raw content cannot be unlocked. Set a raw password first."
   },
   "revealProof": {
     "title": "Copy access token?",

@@ -103,6 +103,7 @@
     "clearSearch": "清除搜索",
     "noSearchResults": "没有匹配的结果",
     "cancel": "取消",
+    "back": "返回",
     "confirm": "确认",
     "close": "关闭",
     "delete": "删除",
@@ -428,23 +429,32 @@
     "description": "把已有的模型服务接入 AstrLink，再让客户端通过本地网关使用它们。",
     "skip": "稍后设置",
     "open": "上手引导",
-    "progress": "已完成 {{count}} / 3 步",
+    "progress": "已完成 {{count}} / 4 步",
     "steps": "接入步骤",
     "step": "第 {{count}} 步",
     "resumeHint": "进度会自动保留。你可以随时离开，再从运行概览右下角的「上手引导」继续。",
     "deferredHint": "稍后可点击右下角的「上手引导」继续设置。",
+    "passwordTitle": "设置原文口令",
+    "passwordShort": "保护记录下的原文",
     "serviceTitle": "接入 API 提供商",
     "serviceShort": "连接你已有的模型服务",
     "tokenTitle": "创建访问令牌",
     "tokenShort": "给客户端一把本地钥匙",
     "clientTitle": "连接客户端",
     "clientShort": "发起第一条成功请求",
+    "passwordBody": "AstrLink 可以记录请求和响应的原文，便于排查问题。原文会用原文口令单独加密，设置前不会记录。",
+    "passwordHelp": "AstrLink 不保存口令，忘记后只能重置，已封存的原文会被丢弃。请用密码管理器等安全方式保存。",
+    "passwordAction": "设置原文口令",
+    "passwordDone": "原文口令已设置。",
+    "passwordLoading": "正在读取原文口令状态…",
+    "passwordLoadFailed": "无法读取原文口令状态：{{message}}。稍后会自动重试。",
     "serviceBody": "AstrLink 需要一个模型来源。先添加你已经在使用的 API 服务或订阅账号。",
     "serviceOptions": "有 API Key？选择对应提供商并填写地址和密钥。有订阅账号？选择对应订阅服务并完成授权。",
     "serviceHelp": "配置时需要准备什么？",
     "serviceHelpBody": "准备提供商给出的 API 地址和 API Key，或可登录的订阅账号。保存前读取或添加可用模型，并保持提供商启用。",
     "manageServices": "检查提供商配置",
     "serviceIncomplete": "提供商还未准备好：请确认已启用、已添加模型，并完成订阅授权。",
+    "finishPassword": "先设置原文口令，再接入 API 提供商。",
     "next": "继续下一步",
     "tokenBody": "访问令牌用于让你的客户端连接本地 AstrLink 网关。可以按客户端分别创建，便于管理用量。",
     "tokenHelp": "点击创建后，填写容易识别的名称，例如「我的编程助手」。客户端的 API Key 填这里生成的访问令牌；提供商的密钥保留在提供商配置中。",
@@ -1932,6 +1942,13 @@
     "observed": "Agent 正在通过 MCP 读取",
     "observedRaw": "Agent 正在读取已批准的原文",
     "rawAccessPending": "{{count}} 个原文申请待批准",
+    "rawPasswordRequired": "尚未设置原文口令，点此打开 AstrLink 设置",
+    "rawKeyReplaced": "原文密钥在 AstrLink 之外被更换，点此打开 AstrLink 查看",
+    "rawKeyEvent": {
+      "passwordSet": "原文口令已设置 · {{ago}}",
+      "passwordChanged": "原文口令已更改 · {{ago}}",
+      "keyReset": "原文密钥已重置 · {{ago}}"
+    },
     "status": {
       "ready": "网关运行中",
       "stopped": "网关已停止",
@@ -1996,7 +2013,9 @@
         "failed": "网关异常退出",
         "observed": "Agent 正在通过 MCP 读取",
         "observedRaw": "Agent 正在读取已批准的原文",
-        "rawAccessPending": "{{count}} 个原文申请待批准"
+        "rawAccessPending": "{{count}} 个原文申请待批准",
+        "rawPasswordRequired": "尚未设置原文口令，请打开 AstrLink 设置",
+        "rawKeyReplaced": "原文密钥在 AstrLink 之外被更换，请打开 AstrLink 查看"
       },
       "menubar": {
         "alert": "!"
@@ -2053,7 +2072,9 @@
       "approveRawAccess": "批准智能体读取已捕获原文的请求",
       "unlockRaw": "解锁已捕获的原文",
       "changeRawPassword": "修改原文口令",
-      "revealAccessToken": "显示访问令牌"
+      "resetRawPassword": "重置原文密钥并丢弃已捕获的原文",
+      "revealAccessToken": "显示访问令牌",
+      "acknowledgeRawKey": "确认在 AstrLink 之外更换的原文密钥"
     }
   },
   "failure": {
@@ -2630,30 +2651,50 @@
     "denied": "已拒绝原文申请",
     "denyFailed": "拒绝原文申请失败：{{message}}",
     "notPending": "该申请已过期或已被处理",
-    "proofUnavailable": "暂时无法使用 Touch ID，且未设置原文口令，此设备现在无法批准该申请。请先拒绝，待 Touch ID 可用时再让智能体重新申请。"
+    "proofUnavailable": "尚未设置原文口令，此设备无法批准该申请。请先拒绝，设置原文口令后再让智能体重新申请。"
   },
   "rawSealing": {
     "title": "原文口令",
     "state": {
       "unset": "未设置",
       "password": "已设置",
-      "keychainOnly": "仅钥匙串",
       "unknown": "未知"
     },
     "hint": {
-      "unset": "原文正文会用原文口令单独加密。设置后，Agent 工具才能申请查看原文。",
+      "unset": "未设置原文口令：原文正文不会被记录，升级前记录的原文在设置前也无法查看。",
       "password": "查看原文、批准 Agent 申请时需要输入原文口令。忘记口令只能重置，已封存的原文无法恢复。",
       "passwordPresence": "查看原文、批准 Agent 申请时可用 Touch ID 或原文口令确认。忘记口令只能重置。",
-      "keychainOnly": "原文密钥保存在本机钥匙串，用 Touch ID 确认。另设原文口令后，无法使用 Touch ID 时也能解锁。",
-      "keychainUnreachable": "暂时无法使用 Touch ID，本机钥匙串中的原文密钥无法打开，也无法添加原文口令。请在 Touch ID 可用时重试，或重置原文密钥；已采集的原文会被丢弃。"
+      "keychainOnly": "本机钥匙串中已有原文密钥，但尚未设置原文口令：原文正文不会被记录，升级前记录的原文也无法查看。设置时用 Touch ID 确认。",
+      "keychainUnreachable": "本机钥匙串中的原文密钥已无法打开（钥匙串条目丢失或已更换），只能重置原文密钥并设置新口令。升级前记录的原文会被丢弃。",
+      "presenceUnavailable": "暂时无法用 Touch ID 或 Mac 登录密码验证。原文密钥仍在本机钥匙串中，升级前记录的原文不会丢失；系统验证恢复后请重试。"
     },
     "loadFailed": "无法读取原文口令状态：{{message}}",
     "set": "设置",
     "change": "修改",
     "reset": "重置",
     "setTitle": "设置原文口令",
-    "setDescription": "原文口令用于解锁已封存的原文。AstrLink 不保存口令，忘记后只能重置，已封存的原文将无法恢复。",
-    "setKeychainDescription": "设置后，除 Touch ID 外也能用原文口令解锁原文。AstrLink 不保存口令。",
+    "setDescription": "设置后才会记录原文正文，并用原文口令单独加密；升级前记录的原文也改用它解锁。AstrLink 不保存口令，忘记后只能重置，已封存的原文会被丢弃。",
+    "setKeychainDescription": "设置时需用 Touch ID 确认。",
+    "replaceKey": "不保留升级前的原文？重置原文密钥",
+    "replaceKeyWarning": "重置会生成新的原文密钥，升级前记录的原文会被丢弃。请求记录和隐私过滤后的内容会保留。",
+    "replaceTitle": "重置原文密钥？",
+    "replaceDescription": "重置会生成新的原文密钥，升级前记录的原文会被永久丢弃，无法恢复。请求记录和隐私过滤后的内容会保留。",
+    "replaceNeedsPresence": "重置时仍需用 Touch ID 或 Mac 登录密码确认。",
+    "replaceStart": "重置原文密钥",
+    "requiredTitle": "设置原文口令后继续",
+    "requiredBody": "AstrLink 现在要求设置原文口令。设置前不会记录请求和响应的原文正文，升级前记录的原文也无法查看；网关会照常转发请求。",
+    "requiredForget": "AstrLink 不保存口令。忘记后只能重置，已封存的原文会被丢弃。",
+    "replaced": {
+      "title": "原文密钥在 AstrLink 之外被更换",
+      "warning": "原文口令被设置，或原文密钥被重置，但不是在 AstrLink 桌面端完成的。此后捕获的原文，设置它的人可能读得到。",
+      "cli": "如果是你自己在终端运行了 astrlink-core raw-password，请输入当时设置的口令确认。确认不会解锁原文。",
+      "presence": "提交后，这台 Mac 还会要求 Touch ID 或 Mac 登录密码验证，两项都通过才算确认。",
+      "presenceUnavailable": "这台 Mac 现在无法用 Touch ID 或 Mac 登录密码验证，只凭口令不能在这里确认这把密钥。只能重置原文密钥，用它封存的原文会被丢弃；系统验证恢复后也可以重新打开 AstrLink 再确认。",
+      "passwordLabel": "在终端设置的原文口令",
+      "acknowledge": "确认是我设置的",
+      "reset": "不是你设置的？重置原文密钥",
+      "accepted": "已确认新的原文密钥"
+    },
     "setAction": "设置口令",
     "changeTitle": "修改原文口令",
     "changeDescription": "修改后，已封存的原文改用新口令解锁。",
@@ -2681,9 +2722,7 @@
     "agentAccess": "允许 Agent 工具申请查看原文",
     "agentAccessHint": "Agent 可通过调试工具申请查看某条请求的原文，每次都需要你确认。",
     "agentAccessNeedsPassword": "请先设置原文口令。",
-    "upgradeHint": "设置原文口令后 Agent 才能申请原文。",
-    "upgradeAction": "设置口令",
-    "captureNeedsPassword": "开启前需要设置原文口令。原文正文会用它单独加密；AstrLink 不保存口令，忘记后只能重置。",
+    "captureNeedsPassword": "开启前需要设置原文口令，原文正文会用它单独加密。AstrLink 不保存口令，忘记后只能重置，已封存的原文会被丢弃。",
     "errors": {
       "notConfigured": "尚未设置原文口令。",
       "unavailable": "当前 Core 不支持原文封存。",
@@ -2698,13 +2737,17 @@
     "locked": "已锁定",
     "lockedDetail": "原文已封存，解锁后才能查看。",
     "withheldDetail": "此部分已捕获，当前视图不显示。",
+    "passwordRequired": "需设置口令",
+    "passwordRequiredDetail": "此部分是升级前记录的原文，设置原文口令后才能查看。",
+    "notKept": "未记录",
+    "notKeptDetail": "记录时未设置原文口令，此部分原文没有保存。",
     "unlockTitle": "解锁原文",
     "unlockDescription": "解锁后可在本机查看已封存的原文，{{minutes}} 分钟无操作会自动锁定。",
     "unlocked": "原文已解锁",
     "unlockedHint": "原文已解锁，{{minutes}} 分钟无操作后自动锁定。",
     "lockedNow": "原文已锁定",
     "lockFailed": "锁定原文失败：{{message}}",
-    "unlockUnavailable": "暂时无法使用 Touch ID，且未设置原文口令，此设备现在无法解锁原文。请在 Touch ID 可用时重试。"
+    "unlockUnavailable": "尚未设置原文口令，无法解锁原文。请先设置原文口令。"
   },
   "revealProof": {
     "title": "确认复制访问令牌",

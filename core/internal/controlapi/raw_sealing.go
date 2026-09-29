@@ -1,6 +1,7 @@
 package controlapi
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
@@ -20,6 +21,9 @@ const (
 	// session. Agent approvals never use that session.
 	RawUnlockPath = "/control/v1/audit/raw-unlock"
 	RawLockPath   = "/control/v1/audit/raw-lock"
+	// RawVerifyPath checks a proof without starting or touching the unlock
+	// session, for desktop actions that only need to know it holds.
+	RawVerifyPath = "/control/v1/audit/raw-verify"
 )
 
 // RawSealingSummary is the observer view of raw sealing.
@@ -33,13 +37,16 @@ type RawSealingStatus struct {
 	RawAvailable bool `json:"raw_available"`
 	Configured   bool `json:"configured"`
 	PasswordSet  bool `json:"password_set"`
+	// PasswordRequired is true until a raw password is set: no raw content
+	// is kept or read before then, on any platform.
+	PasswordRequired bool `json:"password_required"`
 	// LocalPresence is true when a desktop LocalAuthentication success is
 	// accepted as proof.
 	LocalPresence bool `json:"local_presence"`
 	// Envelopes lists the stored private key envelopes.
 	Envelopes []string `json:"envelopes"`
-	// KeyVerified is false while raw captures stay under the audit key
-	// until a proof confirms the stored public key.
+	// KeyVerified is false while raw captures are not kept until a proof
+	// confirms the stored public key.
 	KeyVerified       bool       `json:"key_verified"`
 	Unlocked          bool       `json:"unlocked"`
 	UnlockExpiresAt   *time.Time `json:"unlock_expires_at"`
@@ -47,6 +54,9 @@ type RawSealingStatus struct {
 	RetryAfterSeconds int        `json:"retry_after_seconds"`
 	PasswordMinRunes  int        `json:"password_min_length"`
 	PasswordMaxRunes  int        `json:"password_max_length"`
+	// KeyFingerprint identifies the public key so the desktop can notice a
+	// key replaced while it was not looking. It is not key material.
+	KeyFingerprint string `json:"key_fingerprint"`
 }
 
 // RawPasswordResponse answers a raw password action.
@@ -67,6 +77,7 @@ func (handler *Handler) registerRawSealingRoutes() {
 	handler.mux.HandleFunc(RawPasswordPath, handler.authenticated(handler.postRawPassword, RoleOperator))
 	handler.mux.HandleFunc(RawUnlockPath, handler.authenticated(handler.postRawUnlock, RoleOperator))
 	handler.mux.HandleFunc(RawLockPath, handler.authenticated(handler.postRawLock, RoleOperator))
+	handler.mux.HandleFunc(RawVerifyPath, handler.authenticated(handler.postRawVerify, RoleOperator))
 }
 
 func (handler *Handler) rawVaultController() RawVaultController {
@@ -86,6 +97,7 @@ func (handler *Handler) rawSealingStatus(request *http.Request, status RawVaultS
 	view := RawSealingStatus{
 		Configured:        status.Configured,
 		PasswordSet:       status.PasswordSet,
+		PasswordRequired:  !status.PasswordSet,
 		LocalPresence:     status.LocalPresence,
 		Envelopes:         []string{},
 		KeyVerified:       status.KeyVerified,
@@ -95,6 +107,7 @@ func (handler *Handler) rawSealingStatus(request *http.Request, status RawVaultS
 		RetryAfterSeconds: retryAfterSeconds(status.RetryAfter),
 		PasswordMinRunes:  rawseal.MinPasswordRunes,
 		PasswordMaxRunes:  rawseal.MaxPasswordRunes,
+		KeyFingerprint:    status.KeyFingerprint,
 	}
 	if status.PasswordSet {
 		view.Envelopes = append(view.Envelopes, rawseal.KindPassword)
@@ -102,7 +115,7 @@ func (handler *Handler) rawSealingStatus(request *http.Request, status RawVaultS
 	if status.LocalEnvelope {
 		view.Envelopes = append(view.Envelopes, rawseal.KindLocal)
 	}
-	if status.Configured {
+	if status.PasswordSet {
 		enabled, err := handler.agentRawAccessEnabled(request.Context())
 		if err != nil {
 			return RawSealingStatus{}, err
@@ -210,6 +223,7 @@ func (handler *Handler) postRawPassword(writer http.ResponseWriter, request *htt
 		handler.writeRawPasswordError(writer, err)
 		return
 	}
+	handler.observers.noteRawEvent(rawPasswordEvents[action], RawAccessGrant{ClientName: classifyObserver(request)})
 	view, err := handler.rawSealingStatus(request, outcome.Status)
 	if err != nil {
 		handler.writeAuditSettingsStoreError(writer, err)
@@ -222,6 +236,13 @@ func (handler *Handler) postRawPassword(writer http.ResponseWriter, request *htt
 		}
 	}
 	writeJSON(writer, http.StatusOK, response)
+}
+
+// rawPasswordEvents names the observer event each raw password action leaves.
+var rawPasswordEvents = map[RawPasswordAction]RawAccessEventKind{
+	RawPasswordSet:    RawAccessEventPasswordSet,
+	RawPasswordChange: RawAccessEventPasswordChanged,
+	RawPasswordReset:  RawAccessEventKeyReset,
 }
 
 func (handler *Handler) writeRawPasswordError(writer http.ResponseWriter, err error) {
@@ -243,12 +264,28 @@ func (handler *Handler) writeRawPasswordError(writer http.ResponseWriter, err er
 }
 
 func (handler *Handler) postRawUnlock(writer http.ResponseWriter, request *http.Request) {
+	handler.postRawProof(writer, request, "unlocking", RawVaultController.Unlock)
+}
+
+func (handler *Handler) postRawVerify(writer http.ResponseWriter, request *http.Request) {
+	handler.postRawProof(writer, request, "verifying", RawVaultController.Verify)
+}
+
+// postRawProof hands the request's proof to use and answers with the raw
+// sealing state; verb names the action in a missing-proof error.
+func (handler *Handler) postRawProof(
+	writer http.ResponseWriter,
+	request *http.Request,
+	verb string,
+	use func(RawVaultController, context.Context, RawProof) (RawVaultStatus, error),
+) {
 	controller, ok := handler.requireRawController(writer, request)
 	if !ok {
 		return
 	}
+	proofRequired := verb + " requires the raw password or local presence"
 	if request.ContentLength == 0 {
-		writeError(writer, http.StatusUnprocessableEntity, "raw_proof_required", "unlocking requires the raw password or local presence")
+		writeError(writer, http.StatusUnprocessableEntity, "raw_proof_required", proofRequired)
 		return
 	}
 	members, release, ok := decodeSecretJSON(writer, request, "proof")
@@ -265,10 +302,10 @@ func (handler *Handler) postRawUnlock(writer http.ResponseWriter, request *http.
 	}
 	defer proof.clear()
 	if proof.Empty() {
-		writeError(writer, http.StatusUnprocessableEntity, "raw_proof_required", "unlocking requires the raw password or local presence")
+		writeError(writer, http.StatusUnprocessableEntity, "raw_proof_required", proofRequired)
 		return
 	}
-	status, err := controller.Unlock(request.Context(), proof.RawProof)
+	status, err := use(controller, request.Context(), proof.RawProof)
 	if err != nil {
 		if errors.Is(err, ErrRawPasswordInvalid) {
 			handler.observers.noteRawEvent(RawAccessEventPasswordInvalid, RawAccessGrant{})

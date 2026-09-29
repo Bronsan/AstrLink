@@ -55,6 +55,7 @@ function sealing(overrides: Partial<RawSealingState> = {}): RawSealingState {
     raw_available: true,
     configured: true,
     password_set: true,
+    password_required: overrides.password_set === false,
     local_presence: false,
     envelopes: ["password"],
     key_verified: true,
@@ -64,7 +65,9 @@ function sealing(overrides: Partial<RawSealingState> = {}): RawSealingState {
     retry_after_seconds: 0,
     password_min_length: 8,
     password_max_length: 128,
+    key_replaced: false,
     presence_available: false,
+    keychain_build: false,
     ...overrides,
   };
 }
@@ -311,8 +314,7 @@ describe("RawAccessApprovals", () => {
     mocks.listRawAccess.mockResolvedValue([grant()]);
     mocks.getRawSealingStatus.mockResolvedValue(
       sealing({
-        password_set: false,
-        envelopes: ["local"],
+        envelopes: ["password", "local"],
         local_presence: true,
         presence_available: true,
       }),
@@ -326,7 +328,6 @@ describe("RawAccessApprovals", () => {
     expect(document.querySelector('input[type="password"]')).toBeNull();
     expect(dialog()?.textContent).toContain("Touch ID");
     expect(document.activeElement).toBe(button("仅本次"));
-    expect(dialog()?.textContent).not.toContain("改用原文口令");
 
     await act(async () => button("仅本次").click());
     await act(async () => {});
@@ -422,7 +423,8 @@ describe("RawAccessApprovals", () => {
     );
   });
 
-  it("keeps approval open while Touch ID works for a keychain-only key", async () => {
+  it("offers only denial for a keychain-only key even with Touch ID", async () => {
+    // Presence opens no raw key without a password envelope (D11).
     mocks.listRawAccess.mockResolvedValue([grant()]);
     mocks.getRawSealingStatus.mockResolvedValue(
       sealing({
@@ -435,9 +437,13 @@ describe("RawAccessApprovals", () => {
     await render();
 
     expect(
-      document.querySelector('[data-testid="raw-access-unreachable"]'),
-    ).toBeNull();
-    expect(button("仅本次").disabled).toBe(false);
+      document.querySelector('[data-testid="raw-access-unreachable"]')
+        ?.textContent,
+    ).toContain("尚未设置原文口令，此设备无法批准该申请");
+    expect(dialog()?.querySelector('[data-slot="proof-presence"]')).toBeNull();
+    expect(button("仅本次").disabled).toBe(true);
+    expect(button("本请求 15 分钟内").disabled).toBe(true);
+    expect(button("拒绝").disabled).toBe(false);
   });
 
   it("explains a refusal from the core in plain words", async () => {

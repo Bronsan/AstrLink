@@ -136,7 +136,7 @@ func requestRawAudit(ctx context.Context, client *Client, arguments map[string]a
 	case "raw_access_disabled":
 		return nil, errRawAccessDisabled
 	case "raw_access_unavailable":
-		return nil, fmt.Errorf("raw_access_unavailable: raw content is not sealed for approval in AstrLink (no raw password or Touch ID is set up), so it cannot be approved; do not ask again")
+		return nil, fmt.Errorf("raw_access_unavailable: no raw password is set in AstrLink, so raw content is not kept and cannot be approved; do not ask again")
 	case "raw_access_limited":
 		return nil, fmt.Errorf("raw_access_limited: too many raw access requests are awaiting the user's decision; wait for the user to decide")
 	default:

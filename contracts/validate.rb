@@ -161,11 +161,23 @@ if policy_summary.key?("allowlist_rules") || policy_summary.dig("custom_regex_ru
   raise "PolicySummary is the observer view and must report allowlist and custom regex rules as counts only"
 end
 raw_sealing_fields = openapi.dig("components", "schemas", "RawSealingStatusFields", "properties").keys
-leaked_key_fields = raw_sealing_fields.grep(/key(?!_verified)|secret|salt|nonce|envelope_/)
+# The raw password is mandatory on every platform; clients read this to ask for it.
+unless openapi.dig("components", "schemas", "RawSealingStatusFields", "required").include?("password_required")
+  raise "RawSealingStatus must require password_required"
+end
+# A public key fingerprint identifies the key without being key material.
+leaked_key_fields = raw_sealing_fields.grep(/key(?!_verified|_fingerprint)|secret|salt|nonce|envelope_/)
 raise "RawSealingStatus must not carry key material: #{leaked_key_fields.join(", ")}" unless leaked_key_fields.empty?
 # A wrong password on the desktop's own unlock names no grant or request.
 raw_event_required = openapi.dig("components", "schemas", "RawAccessEvent", "required")
 raise "RawAccessEvent must not require grant_id or request_id" unless (raw_event_required & %w[grant_id request_id]).empty?
+# Raw password and key changes are visible to the operator, whoever made them.
+raw_event_kinds = openapi.dig("components", "schemas", "RawAccessEvent", "properties", "kind", "enum")
+missing_key_events = %w[raw_password_set raw_password_changed raw_key_reset] - raw_event_kinds
+raise "RawAccessEvent must record #{missing_key_events.join(", ")}" unless missing_key_events.empty?
+unless openapi.dig("components", "schemas", "ObserversResponse", "required").include?("raw_password_required")
+  raise "ObserversResponse must require raw_password_required so the tray can point at the setup"
+end
 http_meta_choices = audit_content.dig("properties", "http_meta", "oneOf")
 unless http_meta_choices.is_a?(Array) && http_meta_choices.include?({ "type" => "null" })
   raise "AuditContent http_meta must be nullable for records predating capture"

@@ -12,7 +12,9 @@ const bridgeMocks = vi.hoisted(() => ({
   getPrivacyModelInstallation: vi.fn(),
   getPrivacyPolicy: vi.fn(),
   getPrivacyRegexBuiltinRules: vi.fn(),
+  getRawSealingStatus: vi.fn(),
   installPrivacyModel: vi.fn(),
+  listenRawSealingChanged: vi.fn(async () => () => {}),
   listPrivacyModelInstallations: vi.fn(),
   pausePrivacyModelInstallation: vi.fn(),
   resumePrivacyModelInstallation: vi.fn(),
@@ -39,6 +41,29 @@ import type {
   PrivacyModelProbe,
   PrivacyPolicyRecord,
 } from "./privacy-policy-model";
+import type { RawSealingState } from "./raw-sealing-model";
+
+function rawSealing(overrides: Partial<RawSealingState> = {}): RawSealingState {
+  return {
+    raw_available: false,
+    configured: true,
+    password_set: true,
+    password_required: overrides.password_set === false,
+    local_presence: false,
+    envelopes: ["password"],
+    key_verified: true,
+    unlocked: false,
+    unlock_expires_at: null,
+    unlock_idle_seconds: 900,
+    retry_after_seconds: 0,
+    password_min_length: 8,
+    password_max_length: 128,
+    key_replaced: false,
+    presence_available: false,
+    keychain_build: false,
+    ...overrides,
+  };
+}
 
 const etag = `"sha256:${"a".repeat(64)}"`;
 const revision = "53d55aa8dbb28efaa4e9cf6b4b6015d00e43c088";
@@ -279,6 +304,7 @@ describe("SafetyPolicy", () => {
       items: [catalogModel],
     });
     bridgeMocks.listPrivacyModelInstallations.mockResolvedValue({ items: [] });
+    bridgeMocks.getRawSealingStatus.mockResolvedValue(rawSealing());
     container = document.createElement("div");
     document.body.append(container);
     root = createRoot(container);
@@ -298,6 +324,44 @@ describe("SafetyPolicy", () => {
     });
     await flush();
   }
+
+  it("keeps the raw password one click away in the page header", async () => {
+    bridgeMocks.getRawSealingStatus.mockResolvedValue(
+      rawSealing({ configured: false, password_set: false, envelopes: [] }),
+    );
+    await renderPolicy();
+
+    const header = container.querySelector('[data-slot="page-header"]');
+    const entry = container.querySelector<HTMLButtonElement>(
+      '[data-slot="raw-password-entry"]',
+    );
+    expect(entry?.textContent).toContain("原文口令");
+    expect(entry?.querySelector(".sr-only")?.textContent).toBe("未设置");
+    expect(header?.contains(entry ?? null)).toBe(true);
+    await act(async () => {
+      entry?.click();
+      await Promise.resolve();
+    });
+    const missing = document.querySelector(
+      '[data-slot="raw-password-missing"]',
+    );
+    expect(missing?.textContent).toContain("原文正文不会被记录");
+    const set = [...(missing?.querySelectorAll("button") ?? [])].find(
+      (button) => button.textContent === "设置口令",
+    );
+    await act(async () => {
+      set?.click();
+      await Promise.resolve();
+    });
+    const dialog = document.querySelector('[data-slot="proof-confirm-dialog"]');
+    expect(dialog?.textContent).toContain("设置原文口令");
+    // Opened from the page, the dialog can be cancelled.
+    expect(
+      [...(dialog?.querySelectorAll("button") ?? [])].some(
+        (button) => button.textContent === "取消",
+      ),
+    ).toBe(true);
+  });
 
   it("uses backend values and rolls an optimistic ETag patch back on failure", async () => {
     const pending = deferred<PrivacyPolicyRecord>();

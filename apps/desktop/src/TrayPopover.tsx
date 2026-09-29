@@ -36,6 +36,7 @@ import {
   parseTrayState,
   percentChange,
   type TrayAction,
+  type TrayRawKeyEventKind,
   type TrayState,
 } from "./tray-model";
 import { TRAY_POPOVER_WIDTH, TRAY_STATE_EVENT } from "./tray-popover-window";
@@ -85,6 +86,17 @@ export function formatAgo(from: Date, now: Date): string {
   const hours = Math.floor(minutes / 60);
   if (hours < 24) return i18n.t("tray.hoursAgo", { count: hours });
   return i18n.t("tray.daysAgo", { count: Math.floor(hours / 24) });
+}
+
+function rawKeyEventKey(kind: TrayRawKeyEventKind): string {
+  switch (kind) {
+    case "raw_password_set":
+      return "tray.rawKeyEvent.passwordSet";
+    case "raw_password_changed":
+      return "tray.rawKeyEvent.passwordChanged";
+    case "raw_key_reset":
+      return "tray.rawKeyEvent.keyReset";
+  }
 }
 
 function formatLatency(ms: number): string {
@@ -391,6 +403,41 @@ export function TrayPopoverPanel({
               data-slot="tray-raw-pending"
             >
               {t("tray.rawAccessPending", { count: view.pending_raw_access })}
+            </p>
+          ) : null}
+          {view?.raw_password_required ? (
+            // Only the main window asks for the raw password; take the user
+            // there instead of leaving the tray silent about it.
+            <Button
+              className="mt-0.5 h-auto p-0 text-micro text-warning-foreground"
+              data-slot="tray-raw-password-required"
+              onClick={() => onAction({ kind: "open" })}
+              type="button"
+              variant="link"
+            >
+              {t("tray.rawPasswordRequired")}
+            </Button>
+          ) : null}
+          {view?.raw_key_replaced ? (
+            // The warning and its resolution live in the main window, too.
+            <Button
+              className="mt-0.5 h-auto p-0 text-micro text-warning-foreground"
+              data-slot="tray-raw-key-replaced"
+              onClick={() => onAction({ kind: "open" })}
+              type="button"
+              variant="link"
+            >
+              {t("tray.rawKeyReplaced")}
+            </Button>
+          ) : null}
+          {view?.raw_key_event ? (
+            <p
+              className="mt-0.5 text-micro text-text-secondary"
+              data-slot="tray-raw-key-event"
+            >
+              {t(rawKeyEventKey(view.raw_key_event.kind), {
+                ago: formatAgo(new Date(view.raw_key_event.at), now),
+              })}
             </p>
           ) : null}
           {view?.inference_port_fallback ? (

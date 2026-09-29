@@ -24,8 +24,8 @@ type RawSealingState struct {
 	PublicKey []byte
 	CreatedAt time.Time
 	// MACValid is false when pk_mac does not verify under the current
-	// audit key. Raw captures are then sealed under the audit key until a
-	// proof shows the pair is intact.
+	// audit key. Raw captures are then not kept until a proof shows the
+	// pair is intact.
 	MACValid bool
 	Password *RawKeyEnvelope
 	Local    *RawKeyEnvelope
@@ -41,6 +41,9 @@ type NewRawSealingKey struct {
 // RawResealResult counts one reseal pass.
 type RawResealResult struct {
 	Resealed int
+	// Dropped counts parts whose content was discarded instead: they
+	// settled as raw, or never settled, while no raw password was set.
+	Dropped int
 	// Done is true when the pass reached the end; parts that do not decrypt
 	// under the audit key are skipped and stay where they are.
 	Done bool
@@ -69,6 +72,8 @@ type RawSealingStore interface {
 	ReplaceRawSealingKey(context.Context, NewRawSealingKey) (RawResetResult, error)
 	// ResealRawParts moves every raw part still sealed under the audit key
 	// onto the raw sealing key, committing at most limit parts at a time.
+	// Without a raw password it first drops the content of pending parts
+	// whose request ended, since nothing will settle them any more.
 	ResealRawParts(context.Context, int) (RawResealResult, error)
 	// OnResealDeferred registers retry, which the store calls when a part
 	// that settled as raw could not be moved onto the raw sealing key at

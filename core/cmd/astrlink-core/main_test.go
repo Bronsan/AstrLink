@@ -2,12 +2,15 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"strings"
 	"testing"
 
+	"github.com/QuantumNous/astrlink/core/internal/controlapi"
 	"github.com/QuantumNous/astrlink/core/internal/localkey"
 )
 
@@ -235,5 +238,44 @@ func TestLocalKeyFlagsNeverCarryTheKey(t *testing.T) {
 		if strings.Contains(text, forbidden) {
 			t.Fatalf("main.go accepts key material through %s", forbidden)
 		}
+	}
+}
+
+type fixedRawStatus struct {
+	status controlapi.RawVaultStatus
+	err    error
+}
+
+func (reader fixedRawStatus) Status(context.Context) (controlapi.RawVaultStatus, error) {
+	return reader.status, reader.err
+}
+
+func TestStartWarnsOnceWithoutARawPassword(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		reader fixedRawStatus
+		want   string
+	}{
+		{name: "no raw key", reader: fixedRawStatus{}, want: "astrlink-core raw-password set --data-dir /data --password-stdin"},
+		{name: "local envelope only", reader: fixedRawStatus{status: controlapi.RawVaultStatus{Configured: true, LocalEnvelope: true}},
+			want: "raw request and response content is not recorded"},
+		{name: "raw password set", reader: fixedRawStatus{status: controlapi.RawVaultStatus{Configured: true, PasswordSet: true}}},
+		{name: "unreadable state", reader: fixedRawStatus{err: errors.New("database is locked")}, want: "read raw sealing state"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var lines []string
+			warnWithoutRawPassword(context.Background(), test.reader, "/data", func(format string, args ...any) {
+				lines = append(lines, fmt.Sprintf(format, args...))
+			})
+			if test.want == "" {
+				if len(lines) != 0 {
+					t.Fatalf("logged %q", lines)
+				}
+				return
+			}
+			if len(lines) != 1 || !strings.Contains(lines[0], test.want) {
+				t.Fatalf("logged %q, want one line with %q", lines, test.want)
+			}
+		})
 	}
 }

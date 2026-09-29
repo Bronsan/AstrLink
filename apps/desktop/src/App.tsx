@@ -52,6 +52,8 @@ import { RouteManager } from "./RouteManager";
 import { SafetyPolicy } from "./SafetyPolicy";
 import { AgentDebugSettings } from "./AgentDebugSettings";
 import { RawAccessApprovals } from "./RawAccessApprovals";
+import { RawPasswordGate } from "./RawSealingControls";
+import { useRawSealingStatus } from "./use-raw-sealing-status";
 import { LocalDataNotice } from "./LocalDataNotice";
 import { SettingsCenter } from "./SettingsCenter";
 import { About } from "./About";
@@ -293,11 +295,19 @@ export default function App() {
 
   const isReady = snapshot?.phase === "ready";
   const isNativeApp = snapshot !== null && snapshot.phase !== "unavailable";
-  const onboarding = useOnboarding({ isReady, catalog, tokenCatalog, usage });
   const coreSessionKey =
     isReady && snapshot?.ready
       ? `${snapshot.pid ?? "none"}|${snapshot.ready.control_url}|${snapshot.ready.inference_url}`
       : null;
+  const rawSealing = useRawSealingStatus(coreSessionKey, isReady);
+  const onboarding = useOnboarding({
+    isReady,
+    catalog,
+    tokenCatalog,
+    usage,
+    passwordReady:
+      rawSealing.status !== null && !rawSealing.status.password_required,
+  });
 
   const refreshServices = useCallback(async () => {
     const generation = catalogGeneration.current + 1;
@@ -760,6 +770,7 @@ export default function App() {
                   {t("onboarding.inProgress")} ·{" "}
                   {t(
                     [
+                      "onboarding.passwordTitle",
                       "onboarding.serviceTitle",
                       "onboarding.tokenTitle",
                       "onboarding.clientTitle",
@@ -794,6 +805,8 @@ export default function App() {
                   void refreshUsage();
                 }}
                 onRestart={() => void handleRestart()}
+                onRawSealingStatus={rawSealing.setStatus}
+                rawSealing={rawSealing}
               />
             ) : page.kind === "overview" ? (
               <Overview
@@ -904,6 +917,14 @@ export default function App() {
         title={t("common.discardUnsaved")}
       />
       <RawAccessApprovals coreSessionKey={coreSessionKey} isReady={isReady} />
+      <RawPasswordGate
+        onStatus={rawSealing.setStatus}
+        status={rawSealing.status}
+        // The guide asks for the password in its own first step.
+        suspended={
+          !onboarding.settled || (onboarding.active && page.kind === "overview")
+        }
+      />
     </AppShell>
   );
 }

@@ -18,6 +18,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/QuantumNous/astrlink/core/contract"
 )
 
 // previousCoreEnv names the Core binary of the release before local data
@@ -153,7 +155,11 @@ func (core *smokeCore) call(method, url, token string, body any) (int, []byte) {
 		core.t.Fatal(err)
 	}
 	request.Header.Set("Authorization", "Bearer "+token)
-	request.Header.Set("Content-Type", "application/json")
+	if method == http.MethodPatch {
+		request.Header.Set("Content-Type", "application/merge-patch+json")
+	} else {
+		request.Header.Set("Content-Type", "application/json")
+	}
 	response, err := (&http.Client{Timeout: 10 * time.Second}).Do(request)
 	if err != nil {
 		return 0, nil
@@ -198,6 +204,31 @@ func (core *smokeCore) chat(upstream *smokeUpstream, accessToken string) {
 	}); status != http.StatusUnauthorized || len(upstream.takeAuthorization()) != 0 {
 		core.t.Fatalf("chat with a wrong access token = HTTP %d", status)
 	}
+}
+
+// capturedRequests lists the requests whose client body was captured.
+func (core *smokeCore) capturedRequests() []contract.RequestID {
+	core.t.Helper()
+	var page contract.RequestRecordPage
+	core.mustControl(http.MethodGet, "/control/v1/requests", http.StatusOK, nil, &page)
+	var captured []contract.RequestID
+	for _, record := range page.Items {
+		if record.Audit.RequestBodyCaptured {
+			captured = append(captured, record.ID)
+		}
+	}
+	return captured
+}
+
+// requestBody reads a request's captured client body as the operator.
+func (core *smokeCore) requestBody(id contract.RequestID) *contract.AuditContentPart {
+	core.t.Helper()
+	var content contract.AuditContent
+	core.mustControl(http.MethodGet, "/control/v1/requests/"+string(id)+"/audit", http.StatusOK, nil, &content)
+	if content.RequestBody == nil {
+		core.t.Fatalf("%s has no request body part\n%s", id, core.log())
+	}
+	return content.RequestBody
 }
 
 func (core *smokeCore) stop() {
@@ -267,7 +298,15 @@ func TestDowngradeSmoke(t *testing.T) {
 	if created.Token.ID == "" || created.AccessToken == "" {
 		t.Fatal("the previous release returned no access token")
 	}
+	// With body capture on, the previous release keeps the client body under
+	// the audit key.
+	core.mustControl(http.MethodPatch, "/control/v1/audit-settings", http.StatusOK,
+		map[string]bool{"request_body_enabled": true, "audit_risk_acknowledged": true}, nil)
 	core.chat(upstream, created.AccessToken)
+	history := core.capturedRequests()
+	if len(history) != 1 || !strings.Contains(core.requestBody(history[0]).Content, "hello") {
+		t.Fatalf("the previous release captured %v", history)
+	}
 	core.stop()
 	if version := offlineSchemaVersion(t, directory); version != previousSchemaVersion {
 		t.Fatalf("%s is at migration %d; unseal targets %d", previousCoreEnv, version, previousSchemaVersion)
@@ -284,6 +323,18 @@ func TestDowngradeSmoke(t *testing.T) {
 	core.mustControl(http.MethodGet, "/control/v1/local-data", http.StatusOK, nil, &status)
 	if status.UnreadableCredentials != 0 || status.UnreadableAccessTokens != 0 || status.AuditKeyMissing {
 		t.Fatalf("local data after the upgrade = %+v", status)
+	}
+	// No raw password is set, so the captured history waits for one: the
+	// audit key alone no longer opens it, and Core says how to set one.
+	if part := core.requestBody(history[0]); !part.Withheld || part.Reason != contract.AuditWithheldRawPasswordRequired || part.Content != "" {
+		t.Fatalf("history after the upgrade = %+v", part)
+	}
+	var sealing struct {
+		PasswordRequired bool `json:"password_required"`
+	}
+	core.mustControl(http.MethodGet, "/control/v1/audit/raw-sealing", http.StatusOK, nil, &sealing)
+	if !sealing.PasswordRequired || !strings.Contains(core.log(), "astrlink-core raw-password set") {
+		t.Fatalf("raw sealing after the upgrade = %+v\n%s", sealing, core.log())
 	}
 	core.stop()
 	if version := offlineSchemaVersion(t, directory); version <= previousSchemaVersion {
@@ -309,6 +360,10 @@ func TestDowngradeSmoke(t *testing.T) {
 	core.mustControl(http.MethodGet, "/control/v1/access-tokens/"+created.Token.ID+"/secret", http.StatusOK, nil, &revealed)
 	if revealed.AccessToken != created.AccessToken {
 		t.Fatal("the previous release reveals a different access token")
+	}
+	// Unseal leaves the history the previous release kept readable again.
+	if part := core.requestBody(history[0]); part.Withheld || !strings.Contains(part.Content, "hello") {
+		t.Fatalf("history after unseal = %+v", part)
 	}
 	core.stop()
 }

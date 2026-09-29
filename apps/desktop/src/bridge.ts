@@ -641,6 +641,34 @@ export async function unlockRaw(proof: RawProof): Promise<RawSealingOutcome> {
   return parseRawSealingOutcome(await invoke<unknown>("unlock_raw", { proof }));
 }
 
+/**
+ * Accepts a raw key replaced outside the desktop, such as by the operator's
+ * own `astrlink-core raw-password`. That key's password is required; a
+ * keychain build's host also runs its presence check first. Core only
+ * checks the password, so raw content stays locked.
+ */
+export async function acknowledgeRawKey(
+  password: string,
+): Promise<RawSealingOutcome> {
+  requireNativeBridge();
+  return parseRawSealingOutcome(
+    await invoke<unknown>("acknowledge_raw_key", { password }),
+  );
+}
+
+/**
+ * Checks the raw password for a desktop action whose proof stays in the app,
+ * such as revealing an access token (D14). No unlock session starts.
+ */
+export async function verifyRawPassword(
+  password: string,
+): Promise<RawSealingOutcome> {
+  requireNativeBridge();
+  return parseRawSealingOutcome(
+    await invoke<unknown>("verify_raw_password", { password }),
+  );
+}
+
 export async function lockRaw(): Promise<RawSealingStatus> {
   requireNativeBridge();
   return parseRawSealingStatus(await invoke<unknown>("lock_raw"));

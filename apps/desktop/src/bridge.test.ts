@@ -13,6 +13,7 @@ vi.mock("@tauri-apps/api/core", () => ({
 vi.mock("./download-text-file", () => downloadMocks);
 
 import {
+  acknowledgeRawKey,
   decideRawAccess,
   getLocalDataStatus,
   getRawSealingStatus,
@@ -21,6 +22,7 @@ import {
   setRawPassword,
   unlockRaw,
   verifyLocalPresence,
+  verifyRawPassword,
   cancelPrivacyModelInstallation,
   pausePrivacyModelInstallation,
   resumePrivacyModelInstallation,
@@ -187,6 +189,7 @@ describe("desktop bridge contract", () => {
       raw_available: true,
       configured: true,
       password_set: true,
+      password_required: false,
       local_presence: true,
       envelopes: ["password", "local"],
       key_verified: true,
@@ -196,11 +199,17 @@ describe("desktop bridge contract", () => {
       retry_after_seconds: 0,
       password_min_length: 8,
       password_max_length: 128,
+      key_replaced: false,
     };
-    invokeMock.mockResolvedValueOnce({ ...status, presence_available: true });
+    invokeMock.mockResolvedValueOnce({
+      ...status,
+      presence_available: true,
+      keychain_build: true,
+    });
     await expect(getRawSealingStatus()).resolves.toEqual({
       ...status,
       presence_available: true,
+      keychain_build: true,
     });
     expect(invokeMock).toHaveBeenLastCalledWith("raw_sealing_status");
 
@@ -222,6 +231,38 @@ describe("desktop bridge contract", () => {
     invokeMock.mockResolvedValueOnce(status);
     await expect(lockRaw()).resolves.toEqual(status);
     expect(invokeMock).toHaveBeenLastCalledWith("lock_raw");
+
+    invokeMock.mockResolvedValueOnce({ outcome: "sealing", status });
+    await expect(acknowledgeRawKey("terminal passphrase")).resolves.toEqual({
+      outcome: "sealing",
+      status,
+      reset: null,
+    });
+    expect(invokeMock).toHaveBeenLastCalledWith("acknowledge_raw_key", {
+      password: "terminal passphrase",
+    });
+
+    invokeMock.mockResolvedValueOnce({ outcome: "password_invalid" });
+    await expect(verifyRawPassword("correct horse")).resolves.toEqual({
+      outcome: "password_invalid",
+    });
+    expect(invokeMock).toHaveBeenLastCalledWith("verify_raw_password", {
+      password: "correct horse",
+    });
+
+    invokeMock.mockResolvedValueOnce({
+      ...status,
+      presence_available: false,
+      keychain_build: false,
+    });
+    await expect(getRawSealingStatus()).resolves.toMatchObject({
+      key_replaced: false,
+    });
+    const { key_replaced: _verdict, ...withoutVerdict } = status;
+    invokeMock.mockResolvedValueOnce(withoutVerdict);
+    await expect(lockRaw()).resolves.toEqual(status);
+    invokeMock.mockResolvedValueOnce({ ...status, key_replaced: "yes" });
+    await expect(lockRaw()).rejects.toThrow("$.key_replaced");
 
     invokeMock.mockResolvedValueOnce({ outcome: "password_invalid" });
     await expect(
@@ -261,6 +302,8 @@ describe("desktop bridge contract", () => {
 
     invokeMock.mockResolvedValueOnce(status);
     await expect(getRawSealingStatus()).rejects.toThrow("presence_available");
+    invokeMock.mockResolvedValueOnce({ ...status, presence_available: true });
+    await expect(getRawSealingStatus()).rejects.toThrow("keychain_build");
     invokeMock.mockResolvedValueOnce({ outcome: "decided" });
     await expect(unlockRaw({ kind: "local_presence" })).rejects.toThrow(
       "$.outcome",

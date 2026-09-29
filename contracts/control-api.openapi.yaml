@@ -115,6 +115,7 @@ x-astrlink-implementation:
     - POST /control/v1/audit/raw-password
     - POST /control/v1/audit/raw-unlock
     - POST /control/v1/audit/raw-lock
+    - POST /control/v1/audit/raw-verify
     - GET /control/v1/local-data
     - GET /control/v1/observers
     - GET /control/v1/audit-settings
@@ -2442,9 +2443,12 @@ paths:
         `view=shareable` is open to the observer role and returns only parts that
         passed a privacy decision; raw parts come back withheld. The default
         `view=full` needs the operator role, or an approved raw access grant in
-        `X-AstrLink-Raw-Grant`; an observer without a grant receives 403. When
-        raw sealing is configured and not unlocked, the operator's raw parts are
-        withheld with reason `raw_locked`. The grant header is control-plane
+        `X-AstrLink-Raw-Grant`; an observer without a grant receives 403. Until
+        a raw password is set, raw parts are not kept: they come back withheld
+        as `raw_not_kept`, and raw parts kept before an upgrade as
+        `raw_password_required`. Once one is set and raw reading is not
+        unlocked, the operator's raw parts are withheld with reason
+        `raw_locked`. The grant header is control-plane
         local and is never forwarded upstream. While `agent_raw_access_enabled`
         is off, a read with a grant receives 409 `raw_access_disabled`.
       parameters:
@@ -2644,12 +2648,15 @@ paths:
       description: |
         `set` adds the first password; when a desktop keychain key already seals
         the raw key, `proof` must be local presence. `change` needs the current
-        password or local presence as `proof`. `reset` needs no proof, replaces
-        the key pair, and discards every captured raw part sealed to the old key;
-        its new password may be omitted only when the desktop keychain holds the
-        local key. Passwords contain 8 to 128 characters. Captured raw parts are
-        moved onto the new key in the background. Wrong passwords back off like
-        raw access decisions.
+        password or local presence as `proof`. `reset` replaces the key pair and
+        discards every captured raw part sealed to the old key; it always needs a
+        new password. While the desktop keychain key still opens the old key,
+        `reset` needs local presence or the current password as `proof`; only a
+        key nothing on this machine opens any more is reset without one.
+        Passwords contain 8 to 128 characters.
+        Raw parts are kept only once a password is set; the first one moves raw
+        parts kept before an upgrade onto the raw key in the background. Wrong
+        passwords back off like raw access decisions.
       requestBody:
         required: true
         content:
@@ -2690,8 +2697,9 @@ paths:
       description: |
         Opens the raw key with a proof and keeps it in Core memory until 15
         minutes pass without a raw read, `raw-lock` is called, or Core exits.
-        Agent raw access grants never use this session. Repeated wrong
-        passwords return 429 with `Retry-After`.
+        Agent raw access grants never use this session. Without a raw password
+        it returns 409 `raw_access_unavailable`, even for local presence.
+        Repeated wrong passwords return 429 with `Retry-After`.
       requestBody:
         required: true
         content:
@@ -2701,6 +2709,49 @@ paths:
       responses:
         "200":
           description: The unlocked raw sealing state.
+          headers:
+            Cache-Control:
+              $ref: "#/components/headers/NoStore"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RawSealingStatus"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+  /control/v1/audit/raw-verify:
+    x-astrlink-implementation-status: implemented
+    post:
+      x-astrlink-role: operator
+      tags: [Requests]
+      operationId: verifyRawSealing
+      summary: Check a raw proof without unlocking.
+      description: |
+        Checks a proof like `raw-unlock` and zeroes the raw key at once. It
+        neither starts nor extends the unlock session, and it leaves an open
+        session as it was. Wrong passwords count toward the same backoff as
+        every other proof, and a backoff returns 429 with `Retry-After`.
+        Without a raw password it returns 409 `raw_access_unavailable`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RawUnlockRequest"
+      responses:
+        "200":
+          description: The raw sealing state, including the key fingerprint the proof opened.
           headers:
             Cache-Control:
               $ref: "#/components/headers/NoStore"
@@ -6332,10 +6383,15 @@ components:
         - privacy_pending
         - privacy_unknown
         - raw_locked
+        - raw_password_required
+        - raw_not_kept
       description: |
         Why a part was withheld. `privacy_unknown` covers parts captured before
         decisions were recorded; `raw_locked` is returned to the operator until
-        raw reading is unlocked.
+        raw reading is unlocked. `raw_password_required` marks raw parts kept
+        before an upgrade, readable only once a raw password is set;
+        `raw_not_kept` marks raw parts captured while no raw password was set,
+        whose content was never stored.
     RawAccessRequest:
       type: object
       required: [reason]
@@ -6445,16 +6501,28 @@ components:
       type: object
       required: [at, kind, client_name]
       description: |
-        One step of an agent raw access request. Identifiers only; never content
-        or proof. A `password_invalid` event from the desktop's own unlock or
-        password change carries no `grant_id` or `request_id`.
+        One step of an agent raw access request, or a change to the raw password
+        or key. Identifiers only; never content or proof. A `password_invalid`
+        event from the desktop's own unlock or password change, and the
+        `raw_password_set`, `raw_password_changed` and `raw_key_reset` events,
+        carry no `grant_id` or `request_id`.
       properties:
         at:
           type: string
           format: date-time
         kind:
           type: string
-          enum: [requested, approved, denied, password_invalid, raw_read]
+          enum:
+            [
+              requested,
+              approved,
+              denied,
+              password_invalid,
+              raw_read,
+              raw_password_set,
+              raw_password_changed,
+              raw_key_reset,
+            ]
         grant_id:
           type: string
           pattern: "^rawgrant_[0-9a-f]{16}$"
@@ -6502,6 +6570,7 @@ components:
         - raw_available
         - configured
         - password_set
+        - password_required
         - local_presence
         - envelopes
         - key_verified
@@ -6511,18 +6580,27 @@ components:
         - retry_after_seconds
         - password_min_length
         - password_max_length
+        - key_fingerprint
       description: The operator view of raw sealing. It never carries key material.
       properties:
         raw_available:
           type: boolean
         configured:
           type: boolean
-          description: A raw key pair exists; new raw parts are sealed to it.
+          description: A raw key pair exists.
         password_set:
           type: boolean
+        password_required:
+          type: boolean
+          description: |
+            True until a raw password is set. Until then raw parts are not kept
+            and nothing raw is readable, on every platform; shareable parts and
+            forwarding are unaffected.
         local_presence:
           type: boolean
-          description: A desktop LocalAuthentication success is accepted as proof.
+          description: |
+            A desktop LocalAuthentication success is accepted as proof once a
+            raw password is set.
         envelopes:
           type: array
           maxItems: 2
@@ -6534,7 +6612,7 @@ components:
           type: boolean
           description: |
             False while a proof has yet to confirm the stored public key; raw
-            parts captured meanwhile stay under the audit key.
+            parts captured meanwhile are not kept.
         unlocked:
           type: boolean
         unlock_expires_at:
@@ -6554,6 +6632,13 @@ components:
         password_max_length:
           type: integer
           minimum: 1
+        key_fingerprint:
+          type: string
+          pattern: "^([0-9a-f]{64})?$"
+          description: |
+            Lowercase hex SHA-256 of the raw public key, or empty before a key
+            exists. A change keeps it and a reset replaces it, so the desktop
+            can notice a key replaced outside it. It is not key material.
     RawPasswordAction:
       type: string
       enum: [set, change, reset]
@@ -6573,7 +6658,7 @@ components:
           oneOf:
             - $ref: "#/components/schemas/RawProof"
             - type: "null"
-          description: Opens the existing key for `change`, and for `set` when a keychain key already seals it.
+          description: Opens the existing key for `change`, and for `set` or `reset` while a keychain key seals it.
       additionalProperties: false
     RawPasswordResponse:
       allOf:
@@ -6610,6 +6695,7 @@ components:
         - last_raw_read_at
         - pending_raw_access
         - raw_access_events
+        - raw_password_required
       properties:
         last_seen_at:
           type: [string, "null"]
@@ -6636,6 +6722,11 @@ components:
           items:
             $ref: "#/components/schemas/RawAccessEvent"
           description: Recent raw access steps, oldest first.
+        raw_password_required:
+          type: boolean
+          description: |
+            True while no raw password is set, so the desktop can point at the
+            setup from the tray as well as the main window.
       additionalProperties: false
     PurgeRequest:
       type: object

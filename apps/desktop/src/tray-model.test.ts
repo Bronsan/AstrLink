@@ -23,6 +23,9 @@ export const readyTrayState = {
     observer_active: false,
     observer_read_level: null,
     pending_raw_access: 0,
+    raw_password_required: false,
+    raw_key_event: null,
+    raw_key_replaced: false,
   },
   digest: {
     today: {
@@ -84,7 +87,28 @@ describe("tray state IPC contract", () => {
     expect(parsed.view.observer_active).toBe(false);
     expect(parsed.view.observer_read_level).toBeNull();
     expect(parsed.view.pending_raw_access).toBe(0);
+    expect(parsed.view.raw_password_required).toBe(false);
+    expect(parsed.view.raw_key_event).toBeNull();
+    expect(parsed.view.raw_key_replaced).toBe(false);
     expect(parsed.popover_below).toBe(true);
+  });
+
+  it("reads the raw password gate and the latest raw key change", () => {
+    const parsed = parseTrayState({
+      ...readyTrayState,
+      view: {
+        ...readyTrayState.view,
+        raw_password_required: true,
+        raw_key_event: { kind: "raw_key_reset", at: "2026-09-28T09:30:00Z" },
+        raw_key_replaced: true,
+      },
+    });
+    expect(parsed.view.raw_password_required).toBe(true);
+    expect(parsed.view.raw_key_replaced).toBe(true);
+    expect(parsed.view.raw_key_event).toEqual({
+      kind: "raw_key_reset",
+      at: "2026-09-28T09:30:00Z",
+    });
   });
 
   it("accepts a stopped gateway without a digest", () => {
@@ -130,6 +154,36 @@ describe("tray state IPC contract", () => {
         view: { ...readyTrayState.view, pending_raw_access: -1 },
       }),
     ).toThrow("$.view.pending_raw_access");
+    expect(() =>
+      parseTrayState({
+        ...readyTrayState,
+        view: { ...readyTrayState.view, raw_password_required: "yes" },
+      }),
+    ).toThrow("$.view.raw_password_required");
+    expect(() =>
+      parseTrayState({
+        ...readyTrayState,
+        view: { ...readyTrayState.view, raw_key_replaced: null },
+      }),
+    ).toThrow("$.view.raw_key_replaced");
+    expect(() =>
+      parseTrayState({
+        ...readyTrayState,
+        view: {
+          ...readyTrayState.view,
+          raw_key_event: { kind: "raw_read", at: "2026-09-28T09:30:00Z" },
+        },
+      }),
+    ).toThrow("$.view.raw_key_event.kind");
+    expect(() =>
+      parseTrayState({
+        ...readyTrayState,
+        view: {
+          ...readyTrayState.view,
+          raw_key_event: { kind: "raw_key_reset", at: "yesterday" },
+        },
+      }),
+    ).toThrow("$.view.raw_key_event.at");
     expect(() => withDigest({ hourly_tokens: [1, 2, 3] })).toThrow(
       "$.digest.hourly_tokens",
     );

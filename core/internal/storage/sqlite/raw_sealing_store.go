@@ -24,11 +24,13 @@ const (
 )
 
 // rawSealingKey caches the verified public key, so a raw capture seals to
-// it without reading the database.
+// it without reading the database. password records whether a raw password
+// envelope protects the key: only then are new raw captures kept.
 type rawSealingKey struct {
-	mu     sync.RWMutex
-	id     int64
-	public []byte
+	mu       sync.RWMutex
+	id       int64
+	public   []byte
+	password bool
 }
 
 func (cache *rawSealingKey) get() (int64, []byte) {
@@ -40,18 +42,56 @@ func (cache *rawSealingKey) get() (int64, []byte) {
 	return cache.id, append([]byte(nil), cache.public...)
 }
 
-func (cache *rawSealingKey) set(id int64, public []byte) {
+// captureKey returns the key new raw captures seal to: none until a raw
+// password protects it, so a key only the local envelope opens never takes
+// a capture.
+func (cache *rawSealingKey) captureKey() (int64, []byte) {
+	cache.mu.RLock()
+	defer cache.mu.RUnlock()
+	if cache.id == 0 || !cache.password {
+		return 0, nil
+	}
+	return cache.id, append([]byte(nil), cache.public...)
+}
+
+func (cache *rawSealingKey) set(id int64, public []byte, password bool) {
 	cache.mu.Lock()
 	defer cache.mu.Unlock()
 	cache.id = id
 	cache.public = append([]byte(nil), public...)
+	cache.password = password
 }
 
-// HasRawSealingKey reports whether raw captures are sealed to the raw
-// sealing key.
+// notePassword records that key id gained a raw password envelope.
+func (cache *rawSealingKey) notePassword(id int64) {
+	cache.mu.Lock()
+	defer cache.mu.Unlock()
+	if cache.id == id {
+		cache.password = true
+	}
+}
+
+// HasRawSealingKey reports whether a verified raw sealing key is loaded,
+// with or without a raw password.
 func (store *Store) HasRawSealingKey() bool {
 	id, _ := store.rawKey.get()
 	return id != 0
+}
+
+// keepsRawCaptures reports whether new raw captures are kept: a verified
+// raw sealing key is loaded and a raw password protects it.
+func (store *Store) keepsRawCaptures() bool {
+	id, _ := store.rawKey.captureKey()
+	return id != 0
+}
+
+func hasPasswordEnvelope(envelopes []storagecontract.RawKeyEnvelope) bool {
+	for _, envelope := range envelopes {
+		if envelope.Kind == rawseal.KindPassword {
+			return true
+		}
+	}
+	return false
 }
 
 // loadRawPublicKey caches the stored public key when its MAC verifies under
@@ -65,10 +105,10 @@ func (store *Store) loadRawPublicKey(ctx context.Context, logf func(string, ...a
 		return err
 	}
 	if !state.MACValid {
-		logf("astrlink storage: the raw sealing key does not match this device's audit key; raw captures stay under the audit key until the raw password is entered")
+		logf("astrlink storage: the raw sealing key does not match this device's audit key; raw captures are not kept until the raw password is entered")
 		return nil
 	}
-	store.rawKey.set(state.KeyID, state.PublicKey)
+	store.rawKey.set(state.KeyID, state.PublicKey, state.Password != nil)
 	return nil
 }
 
@@ -261,7 +301,7 @@ func (store *Store) CreateRawSealingKey(ctx context.Context, key storagecontract
 	if err = transaction.Commit(); err != nil {
 		return fmt.Errorf("commit raw sealing key: %w", err)
 	}
-	store.rawKey.set(key.KeyID, key.PublicKey)
+	store.rawKey.set(key.KeyID, key.PublicKey, hasPasswordEnvelope(key.Envelopes))
 	return nil
 }
 
@@ -280,13 +320,21 @@ func (store *Store) PutRawKeyEnvelope(ctx context.Context, keyID int64, envelope
 		if written == 0 {
 			return fmt.Errorf("%w: raw sealing key", storagecontract.ErrNotFound)
 		}
+		if envelope.Kind == rawseal.KindPassword {
+			store.rawKey.notePassword(keyID)
+		}
 		return nil
 	})
 }
 
 func (store *Store) RefreshRawSealingMAC(ctx context.Context, keyID int64) error {
-	var public []byte
-	err := store.db.QueryRowContext(ctx, `SELECT public_key FROM raw_sealing_keys WHERE id = ?`, keyID).Scan(&public)
+	var (
+		public   []byte
+		password bool
+	)
+	err := store.db.QueryRowContext(ctx, `SELECT public_key,
+    EXISTS (SELECT 1 FROM raw_key_envelopes WHERE key_id = raw_sealing_keys.id AND kind = 'password')
+FROM raw_sealing_keys WHERE id = ?`, keyID).Scan(&public, &password)
 	if errors.Is(err, sql.ErrNoRows) {
 		return fmt.Errorf("%w: raw sealing key", storagecontract.ErrNotFound)
 	}
@@ -304,7 +352,7 @@ func (store *Store) RefreshRawSealingMAC(ctx context.Context, keyID int64) error
 	if changed, err := result.RowsAffected(); err != nil || changed == 0 {
 		return fmt.Errorf("%w: raw sealing key changed", storagecontract.ErrPrecondition)
 	}
-	store.rawKey.set(keyID, public)
+	store.rawKey.set(keyID, public, password)
 	return nil
 }
 
@@ -370,7 +418,7 @@ WHERE payload_id IN (SELECT id FROM audit_payloads WHERE sealing = 'raw_v1')`); 
 	if err != nil {
 		return storagecontract.RawResetResult{}, err
 	}
-	store.rawKey.set(key.KeyID, key.PublicKey)
+	store.rawKey.set(key.KeyID, key.PublicKey, hasPasswordEnvelope(key.Envelopes))
 	return result, nil
 }
 
@@ -484,6 +532,14 @@ func (store *Store) writeRawAuditBlob(ctx context.Context, blob storagecontract.
 	return transaction.Commit()
 }
 
+// dropRawContent is the SET clause that keeps a part only as a withheld
+// marker: labelled raw, with no inline copy and no reference to content the
+// raw sealing key does not seal. The payload update trigger then deletes an
+// audit payload nothing references any more. Run it on a secure-delete
+// connection so the dropped bytes are zeroed.
+const dropRawContent = `exposure = 'raw', nonce = x'', ciphertext = x'',
+    payload_id = CASE WHEN payload_id IN (SELECT id FROM audit_payloads WHERE sealing = 'raw_v1') THEN payload_id END`
+
 // resealCandidate is one stored part still sealed under dek_audit that
 // readers withhold, with what it looked like when read.
 type resealCandidate struct {
@@ -496,10 +552,11 @@ type resealCandidate struct {
 
 // loadResealCandidate reads one part if it still needs resealing. In-flight
 // requests are skipped: their pending body is settled, and resealed if it
-// becomes raw, by UpdateAuditExposure.
+// becomes raw, by UpdateAuditExposure. Pending parts qualify only with
+// includePending; markers never do, having nothing to seal.
 func (store *Store) loadResealCandidate(ctx context.Context, query interface {
 	QueryRowContext(context.Context, string, ...any) *sql.Row
-}, rowID int64) (resealCandidate, bool, error) {
+}, rowID int64, includePending bool) (resealCandidate, bool, error) {
 	var (
 		candidate                                            resealCandidate
 		requestID, direction, mediaType, createdAt, exposure string
@@ -512,9 +569,9 @@ func (store *Store) loadResealCandidate(ctx context.Context, query interface {
 FROM audit_blobs b
 LEFT JOIN audit_payloads p ON p.id = b.payload_id
 LEFT JOIN request_records r ON r.id = b.request_id
-WHERE b.rowid = ?
-  AND (b.exposure = 'raw' OR (b.exposure = 'pending' AND COALESCE(r.status, '') <> 'pending'))
-  AND (b.payload_id IS NULL OR p.sealing = 'audit')`, rowID).Scan(
+WHERE b.rowid = ?1
+  AND (b.exposure = 'raw' OR (?2 AND b.exposure = 'pending' AND COALESCE(r.status, '') <> 'pending'))
+  AND (p.sealing = 'audit' OR (b.payload_id IS NULL AND length(b.ciphertext) > 0))`, rowID, includePending).Scan(
 		&candidate.rowID, &candidate.payloadID, &requestID, &direction, &mediaType,
 		&nonce, &ciphertext, &inlineCiphertext, &truncated, &capturedBytes, &createdAt, &exposure,
 	)
@@ -585,13 +642,24 @@ WHERE rowid = ?2 AND payload_id IS ?3 AND nonce = ?4 AND ciphertext = ?5 AND exp
 	return true, nil
 }
 
-// ResealRawParts moves every raw part still sealed under dek_audit — and
-// every pending one whose request is no longer in flight — onto the raw
-// sealing key (§5.11.9.4). It is idempotent: resealed parts no longer
-// qualify, and parts that do not decrypt are skipped, not retried in a loop.
-// limit caps the parts per transaction; zero uses the default.
+// ResealRawParts moves every raw part still sealed under dek_audit — and,
+// once a raw password is set, every pending one whose request is no longer
+// in flight — onto the raw sealing key (§5.11.9.4). Before a raw password
+// is set, those pending parts are dropped instead: they settled as raw, or
+// never settled, while no raw capture could be kept. It is idempotent:
+// resealed parts no longer qualify, and parts that do not decrypt are
+// skipped, not retried in a loop. limit caps the parts per transaction;
+// zero uses the default.
 func (store *Store) ResealRawParts(ctx context.Context, limit int) (storagecontract.RawResealResult, error) {
 	var result storagecontract.RawResealResult
+	keepsCaptures := store.keepsRawCaptures()
+	if !keepsCaptures {
+		dropped, err := store.dropSettledPendingParts(ctx)
+		if err != nil {
+			return result, err
+		}
+		result.Dropped = dropped
+	}
 	keyID, public := store.rawKey.get()
 	if keyID == 0 {
 		result.Done = true
@@ -611,7 +679,7 @@ func (store *Store) ResealRawParts(ctx context.Context, limit int) (storagecontr
 			if err := ctx.Err(); err != nil {
 				return err
 			}
-			rowIDs, err := resealRowIDs(ctx, conn, cursor, limit)
+			rowIDs, err := resealRowIDs(ctx, conn, cursor, limit, keepsCaptures)
 			if err != nil {
 				return err
 			}
@@ -623,7 +691,7 @@ func (store *Store) ResealRawParts(ctx context.Context, limit int) (storagecontr
 			var batchBytes int
 			for _, rowID := range rowIDs {
 				cursor = rowID
-				candidate, ok, err := store.loadResealCandidate(ctx, conn, rowID)
+				candidate, ok, err := store.loadResealCandidate(ctx, conn, rowID, keepsCaptures)
 				if err != nil {
 					return err
 				}
@@ -651,11 +719,31 @@ func (store *Store) ResealRawParts(ctx context.Context, limit int) (storagecontr
 	return result, err
 }
 
-func resealRowIDs(ctx context.Context, conn *sql.Conn, cursor int64, limit int) ([]int64, error) {
+// dropSettledPendingParts drops the content of pending parts whose request
+// is no longer in flight, for a store that keeps no raw captures. Nothing
+// will settle them any more, and one that settled while the request ended
+// may have settled as raw.
+func (store *Store) dropSettledPendingParts(ctx context.Context) (int, error) {
+	var dropped int64
+	err := store.withSecureDelete(ctx, true, func(conn *sql.Conn) error {
+		result, err := conn.ExecContext(ctx, `UPDATE audit_blobs SET `+dropRawContent+`
+WHERE exposure = 'pending' AND NOT EXISTS (
+    SELECT 1 FROM request_records r WHERE r.id = audit_blobs.request_id AND r.status = 'pending')`)
+		if err != nil {
+			return fmt.Errorf("drop settled pending audit parts: %w", err)
+		}
+		dropped, err = result.RowsAffected()
+		return err
+	})
+	return int(dropped), err
+}
+
+func resealRowIDs(ctx context.Context, conn *sql.Conn, cursor int64, limit int, includePending bool) ([]int64, error) {
 	rows, err := conn.QueryContext(ctx, `SELECT b.rowid FROM audit_blobs b
 LEFT JOIN audit_payloads p ON p.id = b.payload_id
-WHERE b.rowid > ? AND b.exposure IN ('raw', 'pending') AND (b.payload_id IS NULL OR p.sealing = 'audit')
-ORDER BY b.rowid LIMIT ?`, cursor, limit)
+WHERE b.rowid > ?1 AND (b.exposure = 'raw' OR (?2 AND b.exposure = 'pending'))
+  AND (p.sealing = 'audit' OR (b.payload_id IS NULL AND length(b.ciphertext) > 0))
+ORDER BY b.rowid LIMIT ?3`, cursor, includePending, limit)
 	if err != nil {
 		return nil, fmt.Errorf("list raw parts to reseal: %w", err)
 	}
@@ -698,18 +786,19 @@ func commitReseals(ctx context.Context, conn *sql.Conn, batch []resealedPart) (r
 
 // resealSettledPart reseals one part that just settled to raw. The request
 // path pays one HPKE wrap and no KDF; the old copy is zeroed on its page,
-// and older WAL frames go with the next checkpoint.
+// and older WAL frames go with the next checkpoint. A part it cannot seal
+// is dropped: a raw capture is never left under dek_audit alone.
 func (store *Store) resealSettledPart(ctx context.Context, id contract.RequestID, direction storagecontract.AuditDirection) error {
-	keyID, public := store.rawKey.get()
+	keyID, public := store.rawKey.captureKey()
 	if keyID == 0 {
-		return nil
+		return store.dropRawPart(ctx, id, direction)
 	}
 	auditKey := store.keys.audit()
 	if auditKey == nil {
-		return nil
+		return store.dropRawPart(ctx, id, direction)
 	}
 	defer clear(auditKey)
-	return store.withSecureDelete(ctx, false, func(conn *sql.Conn) error {
+	sealErr := store.withSecureDelete(ctx, false, func(conn *sql.Conn) error {
 		var rowID int64
 		err := conn.QueryRowContext(ctx, `SELECT rowid FROM audit_blobs WHERE request_id = ? AND direction = ?`, id, string(direction)).Scan(&rowID)
 		if errors.Is(err, sql.ErrNoRows) {
@@ -718,16 +807,36 @@ func (store *Store) resealSettledPart(ctx context.Context, id contract.RequestID
 		if err != nil {
 			return fmt.Errorf("find settled audit part: %w", err)
 		}
-		candidate, ok, err := store.loadResealCandidate(ctx, conn, rowID)
+		candidate, ok, err := store.loadResealCandidate(ctx, conn, rowID, true)
 		if err != nil || !ok {
 			return err
 		}
 		sealed, contentKey, err := sealRawPart(auditKey, candidate.blob, keyID, public)
 		if err != nil {
-			return nil
+			return errRawPartUnsealable
 		}
+		defer clear(contentKey)
 		_, err = commitReseals(ctx, conn, []resealedPart{{candidate: candidate, sealed: sealed, contentKey: contentKey}})
 		return err
+	})
+	if errors.Is(sealErr, errRawPartUnsealable) {
+		return store.dropRawPart(ctx, id, direction)
+	}
+	return sealErr
+}
+
+// errRawPartUnsealable reports a settled raw part that would not seal, such
+// as one that does not open under dek_audit.
+var errRawPartUnsealable = errors.New("raw audit part cannot be sealed")
+
+// dropRawPart keeps a raw part only as a withheld marker.
+func (store *Store) dropRawPart(ctx context.Context, id contract.RequestID, direction storagecontract.AuditDirection) error {
+	return store.withSecureDelete(ctx, false, func(conn *sql.Conn) error {
+		if _, err := conn.ExecContext(ctx, `UPDATE audit_blobs SET `+dropRawContent+`
+WHERE request_id = ? AND direction = ? AND exposure = 'raw'`, id, string(direction)); err != nil {
+			return fmt.Errorf("drop raw audit part: %w", err)
+		}
+		return nil
 	})
 }
 
@@ -743,6 +852,31 @@ func (store *Store) OnResealDeferred(retry func()) {
 func (store *Store) deferReseal() {
 	if retry := store.resealDeferred.Load(); retry != nil {
 		(*retry)()
+	}
+}
+
+// deferSettle hands a part a failed settle left pending to the reseal pass.
+// The pass leaves a pending part alone while its request is in flight, so
+// such a request is remembered until requestEnded asks for another pass.
+func (store *Store) deferSettle(ctx context.Context, id contract.RequestID) {
+	store.settleDeferred.Store(id, struct{}{})
+	// A request that has already ended does not end again; the pass asked
+	// for here covers its part. Remembering it first means an end that
+	// lands meanwhile is not missed.
+	var status string
+	err := store.db.QueryRowContext(context.WithoutCancel(ctx),
+		`SELECT status FROM request_records WHERE id = ?`, id).Scan(&status)
+	if err == nil && status != string(contract.RequestStatusPending) {
+		store.settleDeferred.Delete(id)
+	}
+	store.deferReseal()
+}
+
+// requestEnded asks for another reseal pass once a request whose part a
+// failed settle left pending is no longer in flight.
+func (store *Store) requestEnded(id contract.RequestID) {
+	if _, waiting := store.settleDeferred.LoadAndDelete(id); waiting {
+		store.deferReseal()
 	}
 }
 

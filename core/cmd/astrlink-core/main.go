@@ -165,14 +165,15 @@ func main() {
 			logger.Printf("recovered %d interrupted request record(s)", recovered)
 		}
 		rawVault := controlapi.NewRawVault(store, controlapi.RawVaultOptions{
-			// Only a key the desktop keeps in the keychain may stand in for
-			// the raw password (§5.11.9).
+			// Only a key the desktop keeps in the keychain may carry the
+			// local envelope for Touch ID (§5.11.9).
 			LocalEnvelope: keySource == localkey.SourceStdin,
 			Logf:          logger.Printf,
 		})
 		if err := rawVault.EnsureRawSealing(ctx); err != nil {
 			logger.Printf("prepare raw content sealing: %v", err)
 		}
+		warnWithoutRawPassword(ctx, rawVault, dataDirectory, logger.Printf)
 		accessTokenManager, err := accesstoken.NewManager(store)
 		if err != nil {
 			_ = store.Close()
@@ -376,6 +377,28 @@ const (
 
 // maxStdinLineBytes bounds one line including its newline.
 const maxStdinLineBytes = 129
+
+// rawStatusReader is the part of the raw vault the start-up warning reads.
+type rawStatusReader interface {
+	Status(context.Context) (controlapi.RawVaultStatus, error)
+}
+
+// warnWithoutRawPassword says once at start that raw content is not kept:
+// a headless Core has no dialog to ask for the password.
+func warnWithoutRawPassword(ctx context.Context, vault rawStatusReader, dataDirectory string, logf func(string, ...any)) {
+	status, err := vault.Status(ctx)
+	if err != nil {
+		logf("read raw sealing state: %v", err)
+		return
+	}
+	if status.PasswordSet {
+		return
+	}
+	logf("WARNING: no raw password is set, so raw request and response content is not recorded "+
+		"(shareable content and forwarding are unaffected). Set one while Core is stopped with "+
+		"`astrlink-core raw-password set --data-dir %s --password-stdin`, or through POST %s",
+		dataDirectory, controlapi.RawPasswordPath)
+}
 
 type stdinTokens struct {
 	control  string

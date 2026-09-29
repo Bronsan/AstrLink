@@ -10,6 +10,11 @@ export interface RawSealingStatus {
   /** A raw key pair exists; new raw parts are sealed to it. */
   configured: boolean;
   password_set: boolean;
+  /**
+   * No raw password is set, so raw parts are not kept and the ones kept
+   * before an upgrade stay unreadable until one is (D11).
+   */
+  password_required: boolean;
   /** Core accepts a desktop presence check as proof. */
   local_presence: boolean;
   envelopes: RawEnvelope[];
@@ -22,11 +27,23 @@ export interface RawSealingStatus {
   retry_after_seconds: number;
   password_min_length: number;
   password_max_length: number;
+  /**
+   * The desktop's verdict, not Core's: the raw key differs from the one this
+   * desktop pinned, so its password was set or the key reset outside the
+   * desktop, and whoever did it may read raw content captured since.
+   */
+  key_replaced: boolean;
 }
 
 /** The sealing state plus whether this build can show the presence prompt. */
 export interface RawSealingState extends RawSealingStatus {
   presence_available: boolean;
+  /**
+   * A signed macOS build, which keeps the local key and the raw key pins in
+   * the keychain. It accepts a replaced raw key only with its password and a
+   * presence check together.
+   */
+  keychain_build: boolean;
 }
 
 /** What a raw password reset discarded. */
@@ -114,6 +131,11 @@ function integerAt(
   return value;
 }
 
+/** The host adds `key_replaced`; a status that lacks it carries no verdict. */
+function verdictAt(value: unknown, path: string): boolean {
+  return value === undefined ? false : boolAt(value, path);
+}
+
 function timestampOrNullAt(value: unknown, path: string): string | null {
   if (value === null) return null;
   if (typeof value !== "string" || value.length > 64) {
@@ -159,6 +181,10 @@ function parseStatus(value: unknown, path: string): RawSealingStatus {
     raw_available: boolAt(status.raw_available, `${path}.raw_available`),
     configured: boolAt(status.configured, `${path}.configured`),
     password_set: boolAt(status.password_set, `${path}.password_set`),
+    password_required: boolAt(
+      status.password_required,
+      `${path}.password_required`,
+    ),
     local_presence: boolAt(status.local_presence, `${path}.local_presence`),
     envelopes: envelopesAt(status.envelopes, `${path}.envelopes`),
     key_verified: boolAt(status.key_verified, `${path}.key_verified`),
@@ -179,6 +205,7 @@ function parseStatus(value: unknown, path: string): RawSealingStatus {
     ),
     password_min_length: minLength,
     password_max_length: maxLength,
+    key_replaced: verdictAt(status.key_replaced, `${path}.key_replaced`),
   };
 }
 
@@ -202,12 +229,11 @@ function backoffSeconds(value: unknown): number {
 /** Parses `raw_sealing_status`, which adds the host's presence support. */
 export function parseRawSealingState(value: unknown): RawSealingState {
   const status = parseStatus(value, "$");
+  const host = objectAt(value, "$");
   return {
     ...status,
-    presence_available: boolAt(
-      objectAt(value, "$").presence_available,
-      "$.presence_available",
-    ),
+    presence_available: boolAt(host.presence_available, "$.presence_available"),
+    keychain_build: boolAt(host.keychain_build, "$.keychain_build"),
   };
 }
 
@@ -261,6 +287,7 @@ export function withPresence(
   return {
     ...status,
     presence_available: previous?.presence_available ?? false,
+    keychain_build: previous?.keychain_build ?? false,
   };
 }
 
@@ -280,12 +307,42 @@ export function rawProofMode(state: RawSealingState): RawProofMode {
 }
 
 /**
- * A keychain-only raw key opens only behind the presence prompt; while the
- * host cannot show it, nothing on this device can open the key (Core turns
- * down a bare confirmation).
+ * Picks the proof a reset takes. Where the local envelope still opens the
+ * key, Core wants the proof that opens it, so UI automation alone cannot
+ * discard raw content; the presence prompt stays even where it looks
+ * unavailable, and asking again is the retry. Only a key nothing here opens
+ * any more resets with a plain confirmation.
+ */
+export function rawResetProofMode(state: RawSealingState): RawProofMode {
+  if (!state.local_presence) return "confirm";
+  if (!state.presence_available && state.password_set) return "password";
+  return "presence";
+}
+
+/**
+ * How the operator accepts a raw key replaced outside the desktop. Its
+ * password shows they chose it, and presence alone only shows someone is at
+ * this Mac, so a keychain build asks for both; where that build cannot show
+ * the prompt, the key cannot be accepted and only a reset is left. Other
+ * builds have no presence check and take the password alone.
+ */
+export type RawAcknowledgeMode =
+  | "password"
+  | "password_and_presence"
+  | "unavailable";
+
+export function rawAcknowledgeMode(state: RawSealingState): RawAcknowledgeMode {
+  if (!state.keychain_build) return "password";
+  return state.presence_available ? "password_and_presence" : "unavailable";
+}
+
+/**
+ * Core opens the raw key to read raw content only once a raw password is set
+ * (D11): until then no proof this device can give, not even a presence
+ * check on a keychain key, unlocks it or approves an agent's request.
  */
 export function rawKeyUnreachable(state: RawSealingState): boolean {
-  return state.configured && !state.password_set && !presenceUsable(state);
+  return !state.password_set;
 }
 
 /**

@@ -391,11 +391,12 @@ func TestRawCapturesSealToTheRawKey(t *testing.T) {
 	if err := store.db.QueryRow(`SELECT COUNT(*) FROM audit_payloads WHERE sealing = 'raw_v1'`).Scan(&rawPayloads); err != nil || rawPayloads != 2 {
 		t.Fatalf("raw payloads = %d, %v", rawPayloads, err)
 	}
-	// A part that does not decrypt keeps the historical path.
+	// A raw part that does not decrypt cannot be sealed, so it is not kept:
+	// it might open under some other audit key.
 	garbage := sealedPayload(t, auditKey, id, storage.AuditDirectionUpstreamResponse, "x")
 	garbage.Ciphertext = bytes.Repeat([]byte{0xAB}, 40)
 	insertRawTestBlob(t, store, garbage, storage.AuditExposureRaw)
-	if blob := blobsByDirection(t, store, id)[storage.AuditDirectionUpstreamResponse]; blob.Sealing != storage.AuditSealingAudit || !bytes.Equal(blob.Ciphertext, garbage.Ciphertext) {
+	if blob := blobsByDirection(t, store, id)[storage.AuditDirectionUpstreamResponse]; blob.Sealing != storage.AuditSealingNone || len(blob.Ciphertext) != 0 {
 		t.Fatalf("undecryptable part = %+v", blob)
 	}
 }
@@ -412,23 +413,28 @@ func TestResealMovesWithheldPartsOntoTheRawKeyAndScrubsTheOldCopies(t *testing.T
 	auditKey := auditPayloadFixture(t, store, done)
 	insertRecord(t, store, inFlight, contract.RequestStatusPending)
 
+	// Raw parts an earlier release kept under the audit key: one inline and
+	// one in a shared payload.
 	legacyBody := "LEGACY-" + strings.Repeat("inline raw body ", 64)
 	legacy := sealedPayload(t, auditKey, done, storage.AuditDirectionRequest, legacyBody)
 	insertInlineBlob(t, store.db, legacy, storage.AuditExposureRaw)
 	shared := sealedPayload(t, auditKey, done, storage.AuditDirectionResponse, "shared raw answer")
-	insertRawTestBlob(t, store, shared, storage.AuditExposureRaw)
-	insertRawTestBlob(t, store, sealedPayload(t, auditKey, done, storage.AuditDirectionUpstreamRequest, "settled pending"), storage.AuditExposurePending)
+	insertRawTestBlob(t, store, shared, storage.AuditExposurePending)
+	if _, err := store.db.Exec(`UPDATE audit_blobs SET exposure = 'raw' WHERE request_id = ? AND direction = 'response'`, done); err != nil {
+		t.Fatal(err)
+	}
 	insertRawTestBlob(t, store, sealedPayload(t, auditKey, done, storage.AuditDirectionUpstreamResponse, "shareable answer"), storage.AuditExposureShareable)
 	insertRawTestBlob(t, store, sealedPayload(t, auditKey, inFlight, storage.AuditDirectionRequest, "in-flight prompt"), storage.AuditExposurePending)
 	garbage := sealedPayload(t, auditKey, inFlight, storage.AuditDirectionResponse, "x")
 	garbage.Ciphertext = bytes.Repeat([]byte{0xCD}, 40)
-	insertRawTestBlob(t, store, garbage, storage.AuditExposureRaw)
+	insertInlineBlob(t, store.db, garbage, storage.AuditExposureRaw)
 
-	// Without a key nothing moves.
-	if result, err := store.ResealRawParts(ctx, 0); err != nil || result.Resealed != 0 || !result.Done {
+	// Without a key nothing moves, and nothing kept earlier is dropped.
+	if result, err := store.ResealRawParts(ctx, 0); err != nil || result.Resealed != 0 || result.Dropped != 0 || !result.Done {
 		t.Fatalf("reseal without a key = %+v, %v", result, err)
 	}
 	key := createRawTestKey(t, store, 31)
+	insertRawTestBlob(t, store, sealedPayload(t, auditKey, done, storage.AuditDirectionUpstreamRequest, "settled pending"), storage.AuditExposurePending)
 	result, err := store.ResealRawParts(ctx, 1)
 	if err != nil || result.Resealed != 3 || !result.Done {
 		t.Fatalf("ResealRawParts = %+v, %v", result, err)
@@ -583,9 +589,9 @@ func TestRawPublicKeyThatFailsItsMACIsNotUsed(t *testing.T) {
 	}
 	const id = contract.RequestID("request_mac")
 	auditKey := auditPayloadFixture(t, store, id)
-	insertRawTestBlob(t, store, sealedPayload(t, auditKey, id, storage.AuditDirectionRequest, "stays under audit"), storage.AuditExposureRaw)
-	if blob := blobsByDirection(t, store, id)[storage.AuditDirectionRequest]; blob.Sealing != storage.AuditSealingAudit {
-		t.Fatal("a raw part was sealed to an unverified public key")
+	insertRawTestBlob(t, store, sealedPayload(t, auditKey, id, storage.AuditDirectionRequest, "not kept"), storage.AuditExposureRaw)
+	if blob := blobsByDirection(t, store, id)[storage.AuditDirectionRequest]; blob.Sealing != storage.AuditSealingNone || len(blob.Ciphertext) != 0 {
+		t.Fatalf("a raw part was kept without a verified public key: %+v", blob)
 	}
 	// The vault restores the real public key after a proof, then refreshes.
 	if _, err := store.db.Exec(`UPDATE raw_sealing_keys SET public_key = ?`, key.public); err != nil {

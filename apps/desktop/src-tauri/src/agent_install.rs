@@ -104,6 +104,10 @@ pub struct InstallContext {
     pub mcp_source: PathBuf,
     /// Core's data directory, denied to hosts that support deny rules.
     pub data_directory: Option<PathBuf>,
+    /// The desktop's raw key pin file, denied like the data directory. It
+    /// lives in the config directory, apart from the data on Linux, and is
+    /// `None` where the pins live in the keychain.
+    pub raw_key_pins: Option<PathBuf>,
 }
 
 /// What AstrLink wrote into host configuration outside its own files, so
@@ -911,9 +915,12 @@ fn guard_present(context: &InstallContext, id: AgentToolId) -> bool {
             else {
                 return false;
             };
-            claude_deny_rules(context.data_directory.as_deref())
-                .iter()
-                .all(|rule| deny.iter().any(|item| item.as_str() == Some(rule)))
+            claude_deny_rules(
+                context.data_directory.as_deref(),
+                context.raw_key_pins.as_deref(),
+            )
+            .iter()
+            .all(|rule| deny.iter().any(|item| item.as_str() == Some(rule)))
         }
         _ => codex_guard_range(&raw).is_some(),
     }
@@ -923,13 +930,20 @@ fn guard_present(context: &InstallContext, id: AgentToolId) -> bool {
 /// Claude Code recognises (`cat`, `head`, `tail`, `sed`, `tee`) and
 /// redirections; the two `sqlite3` forms cover `sqlite3 <file>` and
 /// `sqlite3<anything>` binaries such as `sqlite3_analyzer`.
-pub fn claude_deny_rules(data_directory: Option<&Path>) -> Vec<String> {
+pub fn claude_deny_rules(
+    data_directory: Option<&Path>,
+    raw_key_pins: Option<&Path>,
+) -> Vec<String> {
+    let pattern = |path: &Path| {
+        path.to_str()
+            .and_then(|path| claude_absolute_pattern(path, cfg!(windows)))
+    };
     let mut rules = Vec::new();
-    if let Some(pattern) = data_directory
-        .and_then(|path| path.to_str())
-        .and_then(|path| claude_absolute_pattern(path, cfg!(windows)))
-    {
+    if let Some(pattern) = data_directory.and_then(pattern) {
         rules.push(format!("Read({pattern}/**)"));
+    }
+    if let Some(pattern) = raw_key_pins.and_then(pattern) {
+        rules.push(format!("Read({pattern})"));
     }
     rules.push("Read(~/.astrlink/control-session.json)".to_string());
     rules.push("Bash(sqlite3 *)".to_string());
@@ -1066,10 +1080,13 @@ fn remove_one_rule(deny: &mut Vec<Value>, rule: &str) {
     }
 }
 
-fn codex_guard_block(data_directory: Option<&Path>) -> String {
-    let data = data_directory
+fn codex_guard_block(data_directory: Option<&Path>, raw_key_pins: Option<&Path>) -> String {
+    let mut data = data_directory
         .map(|path| format!("AstrLink's data directory (`{}`)", path.display()))
         .unwrap_or_else(|| "AstrLink's data directory".to_string());
+    if let Some(path) = raw_key_pins {
+        data.push_str(&format!(", its raw key pin file (`{}`)", path.display()));
+    }
     format!(
         "{CODEX_GUARD_BEGIN}\n\
          ## AstrLink local data\n\
@@ -1200,7 +1217,10 @@ fn install_host_guards(
     let mut files = Vec::new();
     if tool_ids.contains(&AgentToolId::Claude) {
         let path = claude_settings_path(home);
-        let rules = claude_deny_rules(context.data_directory.as_deref());
+        let rules = claude_deny_rules(
+            context.data_directory.as_deref(),
+            context.raw_key_pins.as_deref(),
+        );
         let existing = read_optional(&path)?;
         let (next, applied) =
             merge_claude_settings_deny(existing.as_deref(), &rules, record.claude.as_ref())?;
@@ -1219,7 +1239,10 @@ fn install_host_guards(
             || existing.is_none();
         record.codex = Some(CodexInstructionsRecord { created_file });
         write_host_guards(home, &mut record)?;
-        let block = codex_guard_block(context.data_directory.as_deref());
+        let block = codex_guard_block(
+            context.data_directory.as_deref(),
+            context.raw_key_pins.as_deref(),
+        );
         write_text(
             &path,
             &merge_codex_agents_guard(existing.as_deref(), &block),
@@ -1262,21 +1285,22 @@ fn uninstall_host_guards(home: &Path) -> Result<(), String> {
     remove_path(&host_guards_path(home))
 }
 
-/// Keeps installed guards current when the data directory or rule set
-/// changes. A settings file or `AGENTS.md` section the user removed by hand is
+/// Keeps installed guards current when the data directory, pin file, or rule
+/// set changes. A settings file or `AGENTS.md` section the user removed by hand is
 /// not re-created; reinstalling from Settings restores it. When the rules do
 /// change, every current rule missing from a kept settings file is added,
 /// including one the user deleted from it.
 pub fn sync_installed_host_guards(
     home: &Path,
     data_directory: Option<&Path>,
+    raw_key_pins: Option<&Path>,
 ) -> Result<(), String> {
     if !receipt_path(home).is_file() || !host_guards_path(home).is_file() {
         return Ok(());
     }
     let mut record = read_host_guards(home)?;
     if let Some(previous) = record.claude.clone() {
-        let rules = claude_deny_rules(data_directory);
+        let rules = claude_deny_rules(data_directory, raw_key_pins);
         let path = claude_settings_path(home);
         if previous.rules != rules {
             if let Some(existing) = read_optional(&path)? {
@@ -1292,7 +1316,7 @@ pub fn sync_installed_host_guards(
         let path = codex_agents_path(home);
         if let Some(existing) = read_optional(&path)? {
             if let Some((start, end)) = codex_guard_range(&existing) {
-                let block = codex_guard_block(data_directory);
+                let block = codex_guard_block(data_directory, raw_key_pins);
                 if existing[start..end] != block {
                     write_text(&path, &merge_codex_agents_guard(Some(&existing), &block))?;
                 }
@@ -1457,6 +1481,7 @@ mod tests {
             home: home.clone(),
             mcp_source,
             data_directory: None,
+            raw_key_pins: None,
         };
         let before = status(&context);
         assert!(before
@@ -1729,6 +1754,7 @@ mod tests {
             home,
             mcp_source,
             data_directory: None,
+            raw_key_pins: None,
         };
         install(&context, &[AgentToolId::Codex]).unwrap();
         context
@@ -1802,6 +1828,7 @@ mod tests {
                 home: home.clone(),
                 mcp_source,
                 data_directory: None,
+                raw_key_pins: None,
             },
             &[AgentToolId::Cursor],
         )
@@ -1835,6 +1862,7 @@ mod tests {
                 home: home.clone(),
                 mcp_source,
                 data_directory: None,
+                raw_key_pins: None,
             },
             &[AgentToolId::Cursor],
         )
@@ -1889,6 +1917,7 @@ mod tests {
             home: home.clone(),
             mcp_source: next.clone(),
             data_directory: None,
+            raw_key_pins: None,
         })
         .unwrap();
         assert!(!dest.exists());
@@ -1910,6 +1939,7 @@ mod tests {
             home: home.clone(),
             mcp_source: next,
             data_directory: None,
+            raw_key_pins: None,
         })
         .unwrap();
         assert_eq!(fs::read(&dest).unwrap(), b"next");
@@ -1925,6 +1955,7 @@ mod tests {
             home: home.clone(),
             mcp_source,
             data_directory: None,
+            raw_key_pins: None,
         };
         fs::create_dir_all(home.join(".grok")).unwrap();
         assert!(install(&context, &[])
@@ -1959,6 +1990,7 @@ mod tests {
                 home,
                 mcp_source,
                 data_directory: None,
+                raw_key_pins: None,
             };
             let before = status(&context);
             let mut expected_paths = before.shared_paths;
@@ -2054,7 +2086,7 @@ mod tests {
         assert_eq!(claude_absolute_pattern("relative/path", false), None);
         assert_eq!(claude_absolute_pattern("/", false), None);
 
-        let rules = claude_deny_rules(Some(Path::new("/data/astrlink")));
+        let rules = claude_deny_rules(Some(Path::new("/data/astrlink")), None);
         if cfg!(windows) {
             assert_eq!(rules.len(), 3);
         } else {
@@ -2063,7 +2095,23 @@ mod tests {
         assert!(rules.contains(&"Read(~/.astrlink/control-session.json)".to_string()));
         assert!(rules.contains(&"Bash(sqlite3 *)".to_string()));
         assert!(rules.contains(&"Bash(sqlite3*)".to_string()));
-        assert_eq!(claude_deny_rules(None).len(), 3);
+        assert_eq!(claude_deny_rules(None, None).len(), 3);
+
+        // The pin file sits apart from the data on Linux and gets the same
+        // kind of rule as the data directory, and only that kind.
+        let pins = Path::new("/config/astrlink/raw-key-pins.json");
+        let with_pins = claude_deny_rules(Some(Path::new("/data/astrlink")), Some(pins));
+        let pin_rules = with_pins
+            .iter()
+            .filter(|rule| rule.contains("raw-key-pins.json"))
+            .collect::<Vec<_>>();
+        if cfg!(windows) {
+            assert!(pin_rules.is_empty());
+        } else {
+            assert_eq!(pin_rules, ["Read(//config/astrlink/raw-key-pins.json)"]);
+            assert_eq!(with_pins.len(), rules.len() + 1);
+        }
+        assert_eq!(claude_deny_rules(None, Some(pins))[1..], rules[1..]);
     }
 
     #[test]
@@ -2145,14 +2193,23 @@ mod tests {
     #[test]
     fn codex_guard_block_round_trips_and_replaces_itself() {
         let user = "# My rules\n\nBe terse.\n";
-        let block = codex_guard_block(Some(Path::new("/data/astrlink")));
+        let block = codex_guard_block(Some(Path::new("/data/astrlink")), None);
         assert!(block.contains("/data/astrlink"));
         assert!(block.contains("observer access"));
+        assert!(!block.contains("raw key pin file"));
+        let pinned = codex_guard_block(
+            Some(Path::new("/data/astrlink")),
+            Some(Path::new("/config/astrlink/raw-key-pins.json")),
+        );
+        assert!(pinned.contains(
+            "Do not read, copy, search, or open AstrLink's data directory (`/data/astrlink`), \
+             its raw key pin file (`/config/astrlink/raw-key-pins.json`), any `astrlink.db*` file"
+        ));
         let merged = merge_codex_agents_guard(Some(user), &block);
         assert!(merged.starts_with(user));
         assert_eq!(remove_codex_agents_guard(&merged), user);
 
-        let other = codex_guard_block(Some(Path::new("/elsewhere")));
+        let other = codex_guard_block(Some(Path::new("/elsewhere")), None);
         let replaced = merge_codex_agents_guard(Some(&merged), &other);
         assert_eq!(replaced.matches(CODEX_GUARD_BEGIN).count(), 1);
         assert!(replaced.contains("/elsewhere") && !replaced.contains("/data/astrlink"));
@@ -2176,12 +2233,14 @@ mod tests {
         let user_agents = "Always run tests.\n";
         fs::write(&agents, user_agents).unwrap();
         let data = home.join("data");
+        let pins = home.join("config").join("raw-key-pins.json");
         let mcp_source = home.join("src-astrlink-mcp");
         fs::write(&mcp_source, b"mcp").unwrap();
         let context = InstallContext {
             home: home.clone(),
             mcp_source,
             data_directory: Some(data.clone()),
+            raw_key_pins: Some(pins.clone()),
         };
 
         let before = status(&context);
@@ -2210,15 +2269,17 @@ mod tests {
         let merged: Value = serde_json::from_str(&fs::read_to_string(&settings).unwrap()).unwrap();
         let deny = merged["permissions"]["deny"].as_array().unwrap();
         assert_eq!(deny[0], "Read(~/.ssh/**)");
-        for rule in claude_deny_rules(Some(&data)) {
+        let rules = claude_deny_rules(Some(&data), Some(&pins));
+        assert!(rules.iter().any(|rule| rule.contains("raw-key-pins.json")));
+        for rule in rules {
             assert!(
                 deny.iter().any(|item| item.as_str() == Some(&rule)),
                 "{rule}"
             );
         }
-        assert!(fs::read_to_string(&agents)
-            .unwrap()
-            .contains(CODEX_GUARD_BEGIN));
+        let guarded = fs::read_to_string(&agents).unwrap();
+        assert!(guarded.contains(CODEX_GUARD_BEGIN));
+        assert!(guarded.contains(&format!("(`{}`)", pins.display())));
         // No token or secret is ever written into host configuration.
         for path in [&settings, &agents] {
             let raw = fs::read_to_string(path).unwrap();
@@ -2227,13 +2288,14 @@ mod tests {
 
         // Moving the data directory updates only the managed rule.
         let moved = home.join("moved-data");
-        sync_installed_host_guards(&home, Some(&moved)).unwrap();
+        sync_installed_host_guards(&home, Some(&moved), Some(&pins)).unwrap();
         let synced = fs::read_to_string(&settings).unwrap();
         let synced: Value = serde_json::from_str(&synced).unwrap();
         let synced_deny = synced["permissions"]["deny"].as_array().unwrap();
         let has = |rule: &str| synced_deny.iter().any(|item| item.as_str() == Some(rule));
-        assert!(!has(&claude_deny_rules(Some(&data))[0]));
-        assert!(has(&claude_deny_rules(Some(&moved))[0]));
+        assert!(!has(&claude_deny_rules(Some(&data), None)[0]));
+        assert!(has(&claude_deny_rules(Some(&moved), None)[0]));
+        assert!(has(&claude_deny_rules(None, Some(&pins))[0]));
         assert!(has("Read(~/.ssh/**)"));
         assert!(fs::read_to_string(&agents).unwrap().contains("moved-data"));
 
@@ -2258,6 +2320,7 @@ mod tests {
             home: home.clone(),
             mcp_source,
             data_directory: Some(home.join("data")),
+            raw_key_pins: None,
         };
         install(&context, &[AgentToolId::Claude, AgentToolId::Codex]).unwrap();
         assert!(claude_settings_path(&home).is_file());
@@ -2265,7 +2328,7 @@ mod tests {
 
         // A guard the user deleted by hand stays deleted across restarts.
         fs::write(codex_agents_path(&home), "mine\n").unwrap();
-        sync_installed_host_guards(&home, Some(&home.join("other"))).unwrap();
+        sync_installed_host_guards(&home, Some(&home.join("other")), None).unwrap();
         assert_eq!(
             fs::read_to_string(codex_agents_path(&home)).unwrap(),
             "mine\n"
@@ -2275,6 +2338,73 @@ mod tests {
         uninstall(&context).unwrap();
         assert!(!claude_settings_path(&home).exists());
         assert!(!codex_agents_path(&home).exists());
+        let _ = fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn sync_adds_the_raw_key_pin_file_to_guards_installed_before_it() {
+        let home = unique_temp("agent-guards-pins");
+        fs::create_dir_all(home.join(".claude")).unwrap();
+        fs::create_dir_all(home.join(".codex")).unwrap();
+        let settings = claude_settings_path(&home);
+        fs::write(&settings, r#"{"permissions":{"deny":["Read(~/.ssh/**)"]}}"#).unwrap();
+        let data = home.join("data");
+        let pins = home.join("config").join("raw-key-pins.json");
+        let mcp_source = home.join("src-astrlink-mcp");
+        fs::write(&mcp_source, b"mcp").unwrap();
+        let earlier = InstallContext {
+            home: home.clone(),
+            mcp_source: mcp_source.clone(),
+            data_directory: Some(data.clone()),
+            raw_key_pins: None,
+        };
+        install(&earlier, &[AgentToolId::Claude, AgentToolId::Codex]).unwrap();
+        let current = InstallContext {
+            raw_key_pins: Some(pins.clone()),
+            ..earlier
+        };
+        let pin_rule = claude_deny_rules(None, Some(&pins))[0].clone();
+        assert!(pin_rule.starts_with("Read(") && pin_rule.contains("raw-key-pins.json"));
+        let claude_guarded = |context: &InstallContext| {
+            status(context)
+                .tools
+                .into_iter()
+                .find(|tool| tool.id == AgentToolId::Claude)
+                .unwrap()
+                .guard_installed
+        };
+        // The earlier rules no longer count as the whole guard.
+        assert!(!claude_guarded(&current));
+
+        sync_installed_host_guards(&home, Some(&data), Some(&pins)).unwrap();
+        let synced: Value = serde_json::from_str(&fs::read_to_string(&settings).unwrap()).unwrap();
+        let deny = synced["permissions"]["deny"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(Value::as_str)
+            .collect::<Vec<_>>();
+        assert!(deny.contains(&pin_rule.as_str()));
+        assert!(deny.contains(&"Read(~/.ssh/**)"));
+        assert!(read_host_guards(&home)
+            .unwrap()
+            .claude
+            .unwrap()
+            .managed
+            .contains(&pin_rule));
+        assert!(claude_guarded(&current));
+        assert!(fs::read_to_string(codex_agents_path(&home))
+            .unwrap()
+            .contains(&format!("its raw key pin file (`{}`)", pins.display())));
+
+        // Uninstall removes the pin rule with the rest of AstrLink's rules.
+        uninstall(&current).unwrap();
+        let restored: Value =
+            serde_json::from_str(&fs::read_to_string(&settings).unwrap()).unwrap();
+        assert_eq!(
+            restored,
+            json!({"permissions":{"deny":["Read(~/.ssh/**)"]}})
+        );
         let _ = fs::remove_dir_all(&home);
     }
 
@@ -2289,6 +2419,7 @@ mod tests {
             home: home.clone(),
             mcp_source,
             data_directory: None,
+            raw_key_pins: None,
         };
         let error = install(&context, &[AgentToolId::Claude]).unwrap_err();
         assert!(error.contains("will not overwrite"), "{error}");

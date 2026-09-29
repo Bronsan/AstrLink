@@ -9,9 +9,8 @@ import {
 
 import {
   getRawSealingStatus,
-  lockRaw,
-  unlockRaw,
   verifyLocalPresence,
+  verifyRawPassword,
 } from "./bridge";
 import { useT } from "./i18n";
 import { notify } from "./notify";
@@ -113,33 +112,9 @@ export function useRevealProof(active: boolean): {
         const outcome = await verifyLocalPresence("reveal_access_token");
         if (outcome.outcome !== "verified") return refusalResult(outcome);
       } else if (input.kind === "password") {
-        // The session may have ended or begun since the dialog opened, so
-        // read it now. Unknown counts as locked: the proof never leaves a
-        // session open that the operator did not start.
-        const wasUnlocked = await getRawSealingStatus().then(
-          (state) => state.unlocked,
-          () => false,
-        );
-        // The host has no separate password check; an unlock verifies it.
-        const outcome = await unlockRaw({
-          kind: "password",
-          password: input.password,
-        });
+        // Core checks the password without starting an unlock session.
+        const outcome = await verifyRawPassword(input.password);
         if (outcome.outcome !== "sealing") return refusalResult(outcome);
-        if (!wasUnlocked && outcome.status.unlocked) {
-          // Leave the unlock session as it was; the proof was the point.
-          try {
-            await lockRaw();
-          } catch (error) {
-            // The proof still holds, but raw content stays readable until
-            // the idle lock; say so.
-            notify.error(
-              t("rawSealing.lockFailed", {
-                message: rawSealingErrorMessage(error),
-              }),
-            );
-          }
-        }
       }
     } catch (error) {
       return { kind: "error", message: rawSealingErrorMessage(error) };

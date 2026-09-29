@@ -399,8 +399,9 @@ func writeRawGrantError(writer http.ResponseWriter, err error) bool {
 
 // auditReader opens the parts one audit read may see. Shareable parts open
 // with the audit key; the rest open only in the full view, through an
-// approved grant, the operator's unlock session, or — while raw sealing is
-// not set up — the audit key as before.
+// approved grant or the operator's unlock session. Until a raw password is
+// set, nobody reads them: parts kept from before it was required wait for
+// it, and parts captured since were never kept.
 type auditReader struct {
 	handler *Handler
 	request *http.Request
@@ -453,10 +454,21 @@ func (reader *auditReader) key() ([]byte, error) {
 // open returns a part's plaintext, or the reason it is withheld.
 func (reader *auditReader) open(blob storage.AuditBlob) ([]byte, contract.AuditWithheldReason, error) {
 	if blob.Exposure != storage.AuditExposureShareable {
+		if blob.Sealing == storage.AuditSealingNone {
+			return nil, contract.AuditWithheldRawNotKept, nil
+		}
 		if reader.view == contract.AuditContentViewShareable {
 			return nil, privacyWithheldReason(reader.record, blob), nil
 		}
-		if reader.lease == nil && reader.sealing.Configured && !reader.sessionChecked {
+		if reader.lease == nil && !reader.sealing.PasswordSet {
+			// No audit-key fallback: the local key alone must not read raw
+			// content, even content kept from before the password.
+			if blob.Exposure == storage.AuditExposurePending {
+				return nil, contract.AuditWithheldPrivacyPending, nil
+			}
+			return nil, contract.AuditWithheldRawPasswordRequired, nil
+		}
+		if reader.lease == nil && !reader.sessionChecked {
 			// Looked up once per read: a raw read is what keeps the
 			// unlock session from idling out.
 			reader.sessionChecked = true
@@ -529,7 +541,8 @@ func (reader *auditReader) part(blob storage.AuditBlob) (*contract.AuditContentP
 		CapturedBytes: blob.CapturedBytes,
 	}
 	if withheld != "" {
-		available := reader.agentRawAvailable()
+		// A part that was never kept cannot be asked for.
+		available := withheld != contract.AuditWithheldRawNotKept && reader.agentRawAvailable()
 		part.Withheld, part.Reason, part.RawAvailable = true, withheld, &available
 		return part, nil
 	}
@@ -548,13 +561,13 @@ func (reader *auditReader) part(blob storage.AuditBlob) (*contract.AuditContentP
 }
 
 // agentRawAvailable reports whether asking for the raw part can succeed:
-// raw sealing is set up and the settings switch allows agent requests. It
+// a raw password is set and the settings switch allows agent requests. It
 // is advisory, so a state it cannot read reports false.
 func (reader *auditReader) agentRawAvailable() bool {
 	if reader.rawAvailable == nil {
 		ctx := reader.request.Context()
 		status, err := reader.handler.rawVaultStatus(ctx)
-		available := err == nil && status.Configured
+		available := err == nil && status.PasswordSet
 		if available {
 			enabled, err := reader.handler.agentRawAccessEnabled(ctx)
 			available = err == nil && enabled

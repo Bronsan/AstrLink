@@ -231,12 +231,15 @@ export function RawAccessApprovals({
   // The dialog waits for the proof mode rather than switching under the user.
   const currentSealing = sealing?.grantId === grantId ? sealing : null;
   const sealingState = currentSealing?.state ?? null;
-  const proofMode: ProofMode = sealingState
-    ? rawProofMode(sealingState)
-    : "password";
-  // Core wants a proof for every approval; a keychain-only key with no
-  // usable presence prompt has none to give, so only denying is left.
+  // Core wants a proof for every approval and reads raw content only once a
+  // raw password is set; until then only denying is left, and no Touch ID
+  // prompt is offered for an approval it could not complete.
   const unreachable = sealingState !== null && rawKeyUnreachable(sealingState);
+  const proofMode: ProofMode = !sealingState
+    ? "password"
+    : unreachable
+      ? "confirm"
+      : rawProofMode(sealingState);
   return (
     <ProofConfirmDialog
       actions={[

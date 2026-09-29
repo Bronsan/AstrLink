@@ -88,8 +88,9 @@ type AuditBlob struct {
 	Exposure AuditExposure
 	// Sealing is how the stored ciphertext is keyed. Writers leave it empty
 	// and seal under the audit key; the store seals raw parts to the raw
-	// sealing key when one exists. Readers get it with RawKeyID and
-	// WrappedKey set for raw_v1.
+	// sealing key once a raw password protects it, and keeps no content for
+	// them before that. Readers get it with RawKeyID and WrappedKey set for
+	// raw_v1.
 	Sealing    AuditSealing
 	RawKeyID   int64
 	WrappedKey []byte
@@ -104,6 +105,9 @@ const (
 	// AuditSealingRawV1 parts open with their own part key, which is
 	// wrapped to the raw sealing public key (plan §5.11.9).
 	AuditSealingRawV1 AuditSealing = "raw_v1"
+	// AuditSealingNone parts kept no content: they were raw while no raw
+	// password was set. Readers get no nonce or ciphertext for them.
+	AuditSealingNone AuditSealing = "none"
 )
 
 type AuditSettingsStore interface {

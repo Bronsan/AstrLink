@@ -178,6 +178,9 @@ func (store *Store) unsealTx(ctx context.Context, transaction *sql.Tx, auditKey 
 	}
 	result.RawParts = resealed
 	unreadable.RawParts = len(rawFailed)
+	if err = dropContentlessPartsTx(ctx, transaction); err != nil {
+		return result, err
+	}
 	if err = transaction.QueryRowContext(ctx, `SELECT COUNT(*) FROM key_envelopes WHERE kind LIKE '%.%'`).Scan(&unreadable.SetAsideKeys); err != nil {
 		return result, fmt.Errorf("count set-aside data keys: %w", err)
 	}
@@ -358,6 +361,26 @@ SET nonce = ?, ciphertext = ?, sealing = 'audit', key_id = NULL, wrapped_key = N
 		return false, fmt.Errorf("reseal raw part: %w", err)
 	}
 	return true, nil
+}
+
+// dropContentlessPartsTx deletes the markers of raw parts captured while no
+// raw password was set. They hold no content to carry back, and the older
+// release would fail to open their empty ciphertext; their records no
+// longer claim a capture.
+func dropContentlessPartsTx(ctx context.Context, transaction *sql.Tx) error {
+	const markers = `SELECT request_id FROM audit_blobs
+WHERE payload_id IS NULL AND length(ciphertext) = 0 AND direction = ?3`
+	for direction, paths := range capturedFlagPaths {
+		if _, err := transaction.ExecContext(ctx, `UPDATE request_records
+SET audit_json = json_set(audit_json, ?1, json('false'), ?2, json('false'))
+WHERE json_valid(audit_json) AND id IN (`+markers+`)`, paths[0], paths[1], string(direction)); err != nil {
+			return fmt.Errorf("clear captured flags: %w", err)
+		}
+	}
+	if _, err := transaction.ExecContext(ctx, `DELETE FROM audit_blobs WHERE payload_id IS NULL AND length(ciphertext) = 0`); err != nil {
+		return fmt.Errorf("drop raw part markers: %w", err)
+	}
+	return nil
 }
 
 // discardUnsealTx drops unreadable secrets and raw parts. The older release

@@ -149,9 +149,8 @@ func (store *Store) InsertAuditBlob(ctx context.Context, blob storagecontract.Au
 		return err
 	}
 	defer clear(key)
-	if sealed, contentKey, ok := store.sealRawCapture(ctx, key, blob); ok {
-		defer clear(contentKey)
-		return store.writeRawAuditBlob(ctx, sealed, contentKey)
+	if blob.Exposure == storagecontract.AuditExposureRaw {
+		return store.writeRawCapture(ctx, key, blob)
 	}
 	contentKey := auditContentKey(key, blob)
 	if contentKey == nil {
@@ -159,30 +158,35 @@ func (store *Store) InsertAuditBlob(ctx context.Context, blob storagecontract.Au
 		// remain available for the reader to report the decryption failure.
 		return upsertAuditBlob(ctx, store.db, blob, nil)
 	}
-	return store.writeSharedAuditBlob(ctx, blob, contentKey, false)
+	err = store.writeSharedAuditBlob(ctx, blob, contentKey, false)
+	if errors.Is(err, errStoredRaw) {
+		// Raw is sticky: a recapture of a part already raw is raw too.
+		blob.Exposure = storagecontract.AuditExposureRaw
+		return store.writeRawCapture(ctx, key, blob)
+	}
+	return err
 }
 
-// sealRawCapture seals a raw part — or a recapture of a part already raw,
-// since raw is sticky — to the raw sealing key when one is loaded. Parts
-// that do not decrypt keep the historical path so the reader reports them.
-func (store *Store) sealRawCapture(ctx context.Context, auditKey []byte, blob storagecontract.AuditBlob) (storagecontract.AuditBlob, []byte, bool) {
-	keyID, public := store.rawKey.get()
-	if keyID == 0 || auditKey == nil {
-		return storagecontract.AuditBlob{}, nil, false
-	}
-	if blob.Exposure != storagecontract.AuditExposureRaw {
-		var stored string
-		err := store.db.QueryRowContext(ctx, `SELECT exposure FROM audit_blobs WHERE request_id = ? AND direction = ?`,
-			blob.RequestID, string(blob.Direction)).Scan(&stored)
-		if err != nil || stored != string(storagecontract.AuditExposureRaw) {
-			return storagecontract.AuditBlob{}, nil, false
+// errStoredRaw stops a shared write whose part is already stored as raw.
+var errStoredRaw = errors.New("audit part is stored as raw")
+
+// writeRawCapture seals a raw part to the raw sealing key once a raw
+// password protects it. Before that, or when it will not seal, the part is
+// kept only as a withheld marker: raw content never lands under dek_audit
+// alone, where anyone holding the local key could read it.
+func (store *Store) writeRawCapture(ctx context.Context, auditKey []byte, blob storagecontract.AuditBlob) error {
+	keyID, public := store.rawKey.captureKey()
+	if keyID != 0 && auditKey != nil {
+		sealed, contentKey, err := sealRawPart(auditKey, blob, keyID, public)
+		if err == nil {
+			defer clear(contentKey)
+			return store.writeRawAuditBlob(ctx, sealed, contentKey)
 		}
 	}
-	sealed, contentKey, err := sealRawPart(auditKey, blob, keyID, public)
-	if err != nil {
-		return storagecontract.AuditBlob{}, nil, false
-	}
-	return sealed, contentKey, true
+	blob.Nonce, blob.Ciphertext = []byte{}, []byte{}
+	return store.withSecureDelete(ctx, false, func(conn *sql.Conn) error {
+		return upsertAuditBlob(ctx, conn, blob, nil)
+	})
 }
 
 func auditContentKey(key []byte, blob storagecontract.AuditBlob) []byte {
@@ -231,6 +235,19 @@ WHERE request_id = ? AND direction = ? AND payload_id IS NULL
 	if _, err = transaction.ExecContext(ctx, `INSERT INTO audit_payloads (request_id, content_key, nonce, ciphertext)
 VALUES (?, ?, ?, ?) ON CONFLICT(request_id, content_key) DO NOTHING`, blob.RequestID, contentKey, blob.Nonce, blob.Ciphertext); err != nil {
 		return fmt.Errorf("insert shared audit payload: %w", err)
+	}
+	if !legacy {
+		// Under the writer lock, so no settle can slip in between: a part
+		// already raw would stay raw through the upsert below.
+		var stored string
+		err = transaction.QueryRowContext(ctx, `SELECT exposure FROM audit_blobs WHERE request_id = ? AND direction = ?`,
+			blob.RequestID, string(blob.Direction)).Scan(&stored)
+		if err == nil && stored == string(storagecontract.AuditExposureRaw) {
+			return errStoredRaw
+		}
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("read stored audit exposure: %w", err)
+		}
 	}
 	var payloadID int64
 	if err = transaction.QueryRowContext(ctx, `SELECT id FROM audit_payloads WHERE request_id = ? AND content_key = ?`, blob.RequestID, contentKey).Scan(&payloadID); err != nil {
@@ -303,7 +320,7 @@ func (store *Store) listAuditBlobs(
     CASE WHEN ?2 AND b.exposure <> 'shareable' THEN x'' ELSE COALESCE(p.nonce, b.nonce) END,
     CASE WHEN ?2 AND b.exposure <> 'shareable' THEN x'' ELSE COALESCE(p.ciphertext, b.ciphertext) END,
     b.truncated, b.captured_bytes, b.created_at, b.exposure,
-    COALESCE(p.sealing, 'audit'), p.key_id,
+    CASE WHEN b.payload_id IS NULL AND length(b.ciphertext) = 0 THEN 'none' ELSE COALESCE(p.sealing, 'audit') END, p.key_id,
     CASE WHEN ?2 AND b.exposure <> 'shareable' THEN NULL ELSE p.wrapped_key END
 FROM audit_blobs b LEFT JOIN audit_payloads p ON p.id = b.payload_id
 WHERE b.request_id = ?1 ORDER BY b.direction ASC`, id, shareableOnly)
@@ -337,12 +354,18 @@ func (store *Store) UpdateAuditExposure(
 	if !direction.Valid() || !exposure.Valid() {
 		return fmt.Errorf("%w: audit exposure", storagecontract.ErrInvalidArgument)
 	}
+	if exposure == storagecontract.AuditExposureRaw && !store.keepsRawCaptures() {
+		return store.settleRawWithoutPassword(ctx, id, direction)
+	}
 	// Only the label changes; the ciphertext and payload reference stay as
 	// captured. The WHERE clause mirrors AuditExposure.CanBecome.
 	result, err := store.db.ExecContext(ctx, `UPDATE audit_blobs SET exposure = ?1
 WHERE request_id = ?2 AND direction = ?3
   AND (exposure = 'pending' OR exposure = ?1 OR ?1 = 'raw')`, string(exposure), id, string(direction))
 	if err != nil {
+		if exposure == storagecontract.AuditExposureRaw {
+			store.deferSettle(ctx, id)
+		}
 		return fmt.Errorf("update audit exposure: %w", err)
 	}
 	changed, err := result.RowsAffected()
@@ -370,6 +393,31 @@ WHERE request_id = ?2 AND direction = ?3
 		return fmt.Errorf("read audit exposure: %w", err)
 	}
 	return fmt.Errorf("%w: audit exposure %s cannot become %s", storagecontract.ErrPrecondition, current, exposure)
+}
+
+// settleRawWithoutPassword settles a part to raw while no raw capture is
+// kept. The label and the drop are one statement, so the part is never raw
+// with its content still under dek_audit; if it fails, the part stays
+// pending and is dropped by the reseal pass its request's end asks for.
+func (store *Store) settleRawWithoutPassword(ctx context.Context, id contract.RequestID, direction storagecontract.AuditDirection) error {
+	var changed int64
+	err := store.withSecureDelete(ctx, false, func(conn *sql.Conn) error {
+		result, err := conn.ExecContext(ctx, `UPDATE audit_blobs SET `+dropRawContent+`
+WHERE request_id = ? AND direction = ?`, id, string(direction))
+		if err != nil {
+			return fmt.Errorf("update audit exposure: %w", err)
+		}
+		changed, err = result.RowsAffected()
+		return err
+	})
+	if err != nil {
+		store.deferSettle(ctx, id)
+		return err
+	}
+	if changed == 0 {
+		return storagecontract.ErrNotFound
+	}
+	return nil
 }
 
 func (store *Store) DeleteAuditBlobsByRequest(ctx context.Context, id contract.RequestID) (int, error) {
@@ -491,7 +539,7 @@ func (store *Store) compactLegacyAuditBlobs(ctx context.Context) error {
 		// which moves them straight onto that key.
 		var rowID int64
 		err := store.db.QueryRowContext(ctx, `SELECT rowid FROM audit_blobs
-WHERE payload_id IS NULL AND rowid > ? AND (NOT ? OR exposure = 'shareable')
+WHERE payload_id IS NULL AND length(ciphertext) > 0 AND rowid > ? AND (NOT ? OR exposure = 'shareable')
 ORDER BY rowid LIMIT 1`, cursor, rawKeyLoaded).Scan(&rowID)
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil
@@ -560,7 +608,11 @@ func scanAuditBlob(row scannable) (storagecontract.AuditBlob, error) {
 	if err := blob.RequestID.Validate(); err != nil || !blob.Direction.Valid() || !blob.Exposure.Valid() {
 		return storagecontract.AuditBlob{}, fmt.Errorf("%w: audit blob identity", storagecontract.ErrInvalidRecord)
 	}
-	if blob.Sealing != storagecontract.AuditSealingAudit && blob.Sealing != storagecontract.AuditSealingRawV1 {
+	switch blob.Sealing {
+	case storagecontract.AuditSealingAudit, storagecontract.AuditSealingRawV1:
+	case storagecontract.AuditSealingNone:
+		blob.Nonce, blob.Ciphertext = nil, nil
+	default:
 		return storagecontract.AuditBlob{}, fmt.Errorf("%w: audit blob sealing", storagecontract.ErrInvalidRecord)
 	}
 	return blob, nil

@@ -246,13 +246,15 @@ var auditBodyParts = []string{"request_body", "response_content", "upstream_requ
 
 // withheldReasonDetails explains each withheld reason to the agent.
 var withheldReasonDetails = map[string]string{
-	"privacy_redacted":  "The privacy policy redacted this before it went upstream; the upstream parts show what the model saw, with placeholders.",
-	"privacy_blocked":   "The privacy policy blocked this request.",
-	"privacy_restored":  "Placeholders in this response were restored to the original values.",
-	"privacy_fail_open": "Privacy inspection failed and the request went upstream uninspected.",
-	"privacy_pending":   "Privacy inspection had not finished when this was read.",
-	"privacy_unknown":   "Captured before AstrLink recorded privacy decisions, or its inspection never finished.",
-	"raw_locked":        "Raw reading is locked in the desktop.",
+	"privacy_redacted":      "The privacy policy redacted this before it went upstream; the upstream parts show what the model saw, with placeholders.",
+	"privacy_blocked":       "The privacy policy blocked this request.",
+	"privacy_restored":      "Placeholders in this response were restored to the original values.",
+	"privacy_fail_open":     "Privacy inspection failed and the request went upstream uninspected.",
+	"privacy_pending":       "Privacy inspection had not finished when this was read.",
+	"privacy_unknown":       "Captured before AstrLink recorded privacy decisions, or its inspection never finished.",
+	"raw_locked":            "Raw reading is locked in the desktop.",
+	"raw_password_required": "Kept before an upgrade; readable only after the user sets a raw password in AstrLink.",
+	"raw_not_kept":          "Captured while no raw password was set, so the raw content was not kept.",
 }
 
 // annotateAudit wraps a shareable audit read for the agent.
@@ -310,7 +312,7 @@ func annotateAuditPayload(raw json.RawMessage, view string) (map[string]any, err
 		wrapped["hint"] = "Some parts are withheld. Work from the shareable parts and privacy_findings first. If you still need the raw parts, tell the user why, then call request_raw_audit; the user must approve it in the AstrLink desktop."
 	case len(withheld) > 0:
 		wrapped["withheld_parts"] = withheld
-		wrapped["hint"] = "Some parts are withheld and raw access is not available: the user has not set up raw sealing or has turned off agent raw access requests. Do not call request_raw_audit; work from the shareable parts and privacy_findings."
+		wrapped["hint"] = "Some parts are withheld and raw access is not available: the user has not set a raw password or has turned off agent raw access requests. Do not call request_raw_audit; work from the shareable parts and privacy_findings."
 	}
 	return wrapped, nil
 }

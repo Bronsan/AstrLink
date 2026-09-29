@@ -10,7 +10,7 @@ import { StatusBadge } from "@/components/StatusBadge";
 import type { StatusTone } from "@/components/StatusDot";
 import { cn } from "@/lib/utils";
 
-import { AuditPartSection } from "./AuditReviewer";
+import { AuditPartSection, withheldHint } from "./AuditReviewer";
 import type { CopyFeedback } from "./copy-feedback";
 import { i18n, useT } from "./i18n";
 import type {
@@ -46,7 +46,6 @@ import {
   EndpointLine,
   ResultInspector,
   UpstreamInspector,
-  withheldHint,
 } from "./TrajectoryResponse";
 
 /** The parts backed by a captured body, as opposed to record metadata. */

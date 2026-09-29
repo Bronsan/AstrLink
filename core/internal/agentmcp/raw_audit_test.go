@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -17,6 +17,7 @@ import (
 	"github.com/QuantumNous/astrlink/core/contract"
 	"github.com/QuantumNous/astrlink/core/internal/controlapi"
 	storage "github.com/QuantumNous/astrlink/core/internal/storage"
+	"github.com/QuantumNous/astrlink/core/internal/storage/rawseal"
 	"github.com/QuantumNous/astrlink/core/internal/storage/sqlite"
 )
 
@@ -28,17 +29,18 @@ const (
 	mcpRawMarker        = "privacy-MARKER@example.com"
 )
 
-// mcpRawVault accepts one fixed password and seals nothing, so raw parts
-// stay readable with the audit key once a grant is approved.
+// mcpRawVault accepts one fixed password and opens raw parts with the
+// private half of the store's raw sealing key.
 type mcpRawVault struct {
-	mu     sync.Mutex
-	status controlapi.RawVaultStatus
+	mu      sync.Mutex
+	status  controlapi.RawVaultStatus
+	private []byte
 }
 
-type mcpRawOpener struct{}
+type mcpRawOpener struct{ private []byte }
 
-func (mcpRawOpener) OpenBlobKey(storage.AuditBlob) ([]byte, error) {
-	return nil, errors.New("mcp test vault seals nothing")
+func (opener mcpRawOpener) OpenBlobKey(blob storage.AuditBlob) ([]byte, error) {
+	return rawseal.OpenBlobKey(opener.private, rawseal.BlobKeyInfo(string(blob.RequestID), string(blob.Direction)), blob.WrappedKey)
 }
 
 func (vault *mcpRawVault) Status(context.Context) (controlapi.RawVaultStatus, error) {
@@ -53,7 +55,7 @@ func (vault *mcpRawVault) WithProof(_ context.Context, proof controlapi.RawProof
 	if string(proof.Password) != mcpRawPassword {
 		return controlapi.ErrRawPasswordInvalid
 	}
-	return use(mcpRawOpener{})
+	return use(mcpRawOpener{private: vault.private})
 }
 
 type mcpRawFixture struct {
@@ -67,6 +69,12 @@ type mcpRawFixture struct {
 // the client's request body is raw, the upstream body carries a placeholder.
 func newMCPRawFixture(t *testing.T) mcpRawFixture {
 	t.Helper()
+	return newMCPRawFixtureWith(t, true)
+}
+
+// newMCPRawFixtureWith captures the request with or without a raw password.
+func newMCPRawFixtureWith(t *testing.T, rawPassword bool) mcpRawFixture {
+	t.Helper()
 	ctx := context.Background()
 	store, err := sqlite.Open(ctx, filepath.Join(t.TempDir(), "astrlink.db"))
 	if err != nil {
@@ -76,6 +84,13 @@ func newMCPRawFixture(t *testing.T) mcpRawFixture {
 	key, err := store.GetOrCreateAuditKey(ctx)
 	if err != nil {
 		t.Fatal(err)
+	}
+	// Raw captures are kept only once a raw password protects the raw key.
+	var private []byte
+	status := controlapi.RawVaultStatus{}
+	if rawPassword {
+		private = newMCPRawKey(t, store)
+		status = controlapi.RawVaultStatus{Configured: true, PasswordSet: true, KeyVerified: true}
 	}
 	decision := contract.PrivacyDecisionRedact
 	if err := store.InsertRequestRecord(ctx, contract.RequestRecord{
@@ -106,7 +121,7 @@ func newMCPRawFixture(t *testing.T) mcpRawFixture {
 			t.Fatal(err)
 		}
 	}
-	vault := &mcpRawVault{status: controlapi.RawVaultStatus{Configured: true, PasswordSet: true}}
+	vault := &mcpRawVault{status: status, private: private}
 	handler, err := controlapi.NewWithDependencies(contract.DefaultVersionResponse("0.1.0-test", "abc1234"), controlapi.Dependencies{
 		ServiceStore:   store,
 		RequestRecords: store,
@@ -127,6 +142,35 @@ func newMCPRawFixture(t *testing.T) mcpRawFixture {
 		t.Fatal(err)
 	}
 	return mcpRawFixture{store: store, vault: vault, server: server, client: client}
+}
+
+// newMCPRawKey stores a raw sealing key under a password envelope and
+// returns its private half.
+func newMCPRawKey(t *testing.T, store *sqlite.Store) []byte {
+	t.Helper()
+	private, public, err := rawseal.GenerateKeyPair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	const keyID = 11
+	kdf := rawseal.KDFParams{Algorithm: "argon2id", Version: 19, Time: 1, MemoryKiB: 64, Threads: 1}
+	wrapped, err := rawseal.WrapPassword(private, []byte(mcpRawPassword), kdf, keyID, public)
+	if err != nil {
+		t.Fatal(err)
+	}
+	kdfJSON, err := wrapped.KDFJSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.CreateRawSealingKey(context.Background(), storage.NewRawSealingKey{
+		KeyID: keyID, PublicKey: public,
+		Envelopes: []storage.RawKeyEnvelope{{
+			Kind: rawseal.KindPassword, KDFJSON: kdfJSON, Salt: wrapped.Salt, Nonce: wrapped.Nonce, Wrapped: wrapped.Wrapped,
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return private
 }
 
 // operator calls the Control API as the desktop.
@@ -236,6 +280,33 @@ func TestGetRequestAuditReturnsShareableParts(t *testing.T) {
 	if _, _, err := rawAuditCall(t, fixture.client, map[string]any{"request_id": mcpRawRequestID, "reason": "debug"}); err == nil ||
 		!strings.HasPrefix(err.Error(), "raw_access_unavailable") {
 		t.Fatalf("unavailable err=%v", err)
+	}
+}
+
+func TestGetRequestAuditExplainsRawPartsThatWereNotKept(t *testing.T) {
+	fixture := newMCPRawFixtureWith(t, false)
+	raw, err := callTool(context.Background(), fixture.client, "get_request_audit", map[string]any{"id": mcpRawRequestID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(raw, []byte(mcpRawMarker)) {
+		t.Fatal("audit leaked the marked value")
+	}
+	var wrapped map[string]any
+	if err := json.Unmarshal(raw, &wrapped); err != nil {
+		t.Fatal(err)
+	}
+	request := auditPart(t, wrapped, "request_body")
+	if request["reason"] != "raw_not_kept" || request["raw_available"] != false ||
+		!strings.Contains(fmt.Sprint(request["reason_detail"]), "no raw password") {
+		t.Fatalf("request_body=%v", request)
+	}
+	if upstream := auditPart(t, wrapped, "upstream_request_body"); upstream["content_view"] != "shareable" {
+		t.Fatalf("upstream_request_body=%v", upstream)
+	}
+	if _, _, err := rawAuditCall(t, fixture.client, map[string]any{"request_id": mcpRawRequestID, "reason": "debug"}); err == nil ||
+		!strings.Contains(err.Error(), "no raw password is set") {
+		t.Fatalf("raw request err=%v", err)
 	}
 }
 

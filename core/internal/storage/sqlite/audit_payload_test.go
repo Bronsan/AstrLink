@@ -35,8 +35,11 @@ func sealedPayload(t *testing.T, key []byte, id contract.RequestID, direction st
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Only parts a privacy decision cleared share payloads; raw parts are
+	// sealed one by one to the raw key.
 	return storage.AuditBlob{RequestID: id, Direction: direction, MediaType: "text/event-stream", Nonce: nonce,
-		Ciphertext: ciphertext, CapturedBytes: len(body), CreatedAt: time.Now().UTC()}
+		Ciphertext: ciphertext, CapturedBytes: len(body), CreatedAt: time.Now().UTC(),
+		Exposure: storage.AuditExposureShareable}
 }
 
 func assertPayloadCount(t *testing.T, store *Store, want int) {

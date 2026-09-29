@@ -16,6 +16,8 @@ pub const RAW_SEALING_PATH: &str = "/control/v1/audit/raw-sealing";
 pub const RAW_PASSWORD_PATH: &str = "/control/v1/audit/raw-password";
 pub const RAW_UNLOCK_PATH: &str = "/control/v1/audit/raw-unlock";
 pub const RAW_LOCK_PATH: &str = "/control/v1/audit/raw-lock";
+/// Checks a proof without starting or touching Core's unlock session.
+pub const RAW_VERIFY_PATH: &str = "/control/v1/audit/raw-verify";
 /// Proof checks run a memory-hard KDF in Core; a slow machine needs longer
 /// than an ordinary control call.
 pub const PROOF_TIMEOUT: Duration = Duration::from_secs(20);
@@ -105,6 +107,7 @@ pub fn is_proof_request(method: &Method, path: &str) -> bool {
     *method == Method::POST
         && (path == RAW_PASSWORD_PATH
             || path == RAW_UNLOCK_PATH
+            || path == RAW_VERIFY_PATH
             || path
                 .strip_prefix(RAW_ACCESS_PATH)
                 .and_then(|rest| rest.strip_prefix('/'))
@@ -562,6 +565,7 @@ mod tests {
     fn only_proof_calls_are_single_attempt_requests() {
         assert!(is_proof_request(&Method::POST, &decision_path(GRANT)));
         assert!(is_proof_request(&Method::POST, RAW_UNLOCK_PATH));
+        assert!(is_proof_request(&Method::POST, RAW_VERIFY_PATH));
         assert!(is_proof_request(&Method::POST, RAW_PASSWORD_PATH));
         assert!(!is_proof_request(&Method::POST, RAW_LOCK_PATH));
         assert!(!is_proof_request(&Method::GET, RAW_SEALING_PATH));

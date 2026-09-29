@@ -1,6 +1,7 @@
 package controlapi
 
 import (
+	"context"
 	"net/http"
 	"strings"
 	"sync"
@@ -35,6 +36,11 @@ const (
 	RawAccessEventDenied          RawAccessEventKind = "denied"
 	RawAccessEventPasswordInvalid RawAccessEventKind = "password_invalid"
 	RawAccessEventRawRead         RawAccessEventKind = "raw_read"
+	// The raw password and key events record who changed what guards raw
+	// content, so a change the operator did not make is visible.
+	RawAccessEventPasswordSet     RawAccessEventKind = "raw_password_set"
+	RawAccessEventPasswordChanged RawAccessEventKind = "raw_password_changed"
+	RawAccessEventKeyReset        RawAccessEventKind = "raw_key_reset"
 )
 
 // maxRawAccessEvents bounds the in-memory raw access log.
@@ -65,6 +71,8 @@ type observerTracker struct {
 	now         func() time.Time
 	// pending counts raw access requests awaiting a decision.
 	pending func() int
+	// passwordRequired reports whether raw capture waits for a raw password.
+	passwordRequired func(context.Context) bool
 }
 
 func newObserverTracker() *observerTracker {
@@ -157,9 +165,12 @@ type ObserversResponse struct {
 	PendingRawAccess int `json:"pending_raw_access"`
 	// RawAccessEvents is the recent raw access log, oldest first.
 	RawAccessEvents []RawAccessEvent `json:"raw_access_events"`
+	// RawPasswordRequired is true while no raw password is set, so the
+	// desktop can point at the setup from outside the main window.
+	RawPasswordRequired bool `json:"raw_password_required"`
 }
 
-func (tracker *observerTracker) snapshot() ObserversResponse {
+func (tracker *observerTracker) snapshot(ctx context.Context) ObserversResponse {
 	if tracker == nil {
 		return ObserversResponse{RawAccessEvents: []RawAccessEvent{}}
 	}
@@ -167,12 +178,14 @@ func (tracker *observerTracker) snapshot() ObserversResponse {
 	if tracker.pending != nil {
 		pending = tracker.pending()
 	}
+	passwordRequired := tracker.passwordRequired != nil && tracker.passwordRequired(ctx)
 	tracker.mu.Lock()
 	defer tracker.mu.Unlock()
 	response := ObserversResponse{
 		Client: tracker.client, Requests: tracker.requests, ReadLevel: tracker.readLevel,
-		PendingRawAccess: pending,
-		RawAccessEvents:  append([]RawAccessEvent{}, tracker.events...),
+		PendingRawAccess:    pending,
+		RawAccessEvents:     append([]RawAccessEvent{}, tracker.events...),
+		RawPasswordRequired: passwordRequired,
 	}
 	if !tracker.lastSeen.IsZero() {
 		seen := tracker.lastSeen
@@ -191,5 +204,5 @@ func (handler *Handler) getObservers(writer http.ResponseWriter, request *http.R
 		writeError(writer, http.StatusMethodNotAllowed, "method_not_allowed", "only GET is allowed")
 		return
 	}
-	writeJSON(writer, http.StatusOK, handler.observers.snapshot())
+	writeJSON(writer, http.StatusOK, handler.observers.snapshot(request.Context()))
 }

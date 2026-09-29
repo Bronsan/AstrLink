@@ -160,6 +160,9 @@ WHERE request_records.status = 'pending' OR excluded.status <> 'pending'`,
 	if err = transaction.Commit(); err != nil {
 		return fmt.Errorf("commit request upsert: %w", err)
 	}
+	if applied > 0 && record.Status != contract.RequestStatusPending {
+		store.requestEnded(record.ID)
+	}
 	return nil
 }
 
@@ -195,7 +198,26 @@ func (store *Store) RecoverPendingRequestRecords(ctx context.Context) (int, erro
 	if err != nil {
 		return 0, fmt.Errorf("encode interrupted request error: %w", err)
 	}
-	transaction, err := store.db.BeginTx(ctx, nil)
+	// A request body stored while its privacy inspection was still running
+	// never received a decision. Withhold it for good (plan §5.11.3); while
+	// no raw password is set, nothing raw is kept, so its content goes.
+	settlePending := `UPDATE audit_blobs SET exposure = 'raw' WHERE exposure = 'pending'`
+	if !store.keepsRawCaptures() {
+		settlePending = `UPDATE audit_blobs SET ` + dropRawContent + ` WHERE exposure = 'pending'`
+	}
+	var updated int64
+	err = store.withSecureDelete(ctx, true, func(conn *sql.Conn) (err error) {
+		updated, err = recoverPendingRequestRecords(ctx, conn, completedAt, string(errorJSON), settlePending)
+		return err
+	})
+	if err != nil {
+		return 0, err
+	}
+	return int(updated), nil
+}
+
+func recoverPendingRequestRecords(ctx context.Context, conn *sql.Conn, completedAt, errorJSON, settlePending string) (int64, error) {
+	transaction, err := conn.BeginTx(ctx, nil)
 	if err != nil {
 		return 0, err
 	}
@@ -206,7 +228,7 @@ SET status = 'failed',
     latency_ms = NULL,
     usage_json = CASE WHEN usage_json IS NOT NULL AND usage_json <> 'null' THEN json_set(usage_json, '$.billing_incomplete', json('true')) ELSE usage_json END,
     error_json = ?
-WHERE status = 'pending'`, completedAt, string(errorJSON))
+WHERE status = 'pending'`, completedAt, errorJSON)
 	if err != nil {
 		return 0, fmt.Errorf("recover pending request records: %w", err)
 	}
@@ -219,15 +241,13 @@ usage_json=CASE WHEN usage_json IS NOT NULL AND usage_json<>'null' THEN json_set
 WHERE terminal=0`); err != nil {
 		return 0, fmt.Errorf("recover pending billing entries: %w", err)
 	}
-	// A request body stored while its privacy inspection was still running
-	// never received a decision. Withhold it for good (plan §5.11.3).
-	if _, err = transaction.ExecContext(ctx, `UPDATE audit_blobs SET exposure = 'raw' WHERE exposure = 'pending'`); err != nil {
+	if _, err = transaction.ExecContext(ctx, settlePending); err != nil {
 		return 0, fmt.Errorf("recover pending audit exposure: %w", err)
 	}
 	if err = transaction.Commit(); err != nil {
 		return 0, err
 	}
-	return int(updated), nil
+	return updated, nil
 }
 
 func (store *Store) GetRequestRecord(ctx context.Context, id contract.RequestID) (contract.RequestRecord, error) {

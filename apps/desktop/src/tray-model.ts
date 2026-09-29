@@ -23,9 +23,32 @@ export interface TrayCoreView {
   observer_read_level: TrayObserverReadLevel | null;
   /** Agent requests for raw audit content awaiting the operator. */
   pending_raw_access: number;
+  /** No raw password is set; only the main window asks for it. */
+  raw_password_required: boolean;
+  /** The latest raw password or key change this Core recorded. */
+  raw_key_event: TrayRawKeyEvent | null;
+  /** The raw key differs from the desktop's pin; only the main window resolves it. */
+  raw_key_replaced: boolean;
 }
 
 export type TrayObserverReadLevel = "metadata" | "shareable" | "raw";
+
+export type TrayRawKeyEventKind =
+  | "raw_password_set"
+  | "raw_password_changed"
+  | "raw_key_reset";
+
+export interface TrayRawKeyEvent {
+  kind: TrayRawKeyEventKind;
+  /** RFC 3339, from Core. */
+  at: string;
+}
+
+const rawKeyEventKinds = new Set<TrayRawKeyEventKind>([
+  "raw_password_set",
+  "raw_password_changed",
+  "raw_key_reset",
+]);
 
 const observerReadLevels = new Set<TrayObserverReadLevel>([
   "metadata",
@@ -201,6 +224,9 @@ function parseView(value: unknown, path: string): TrayCoreView {
       "observer_active",
       "observer_read_level",
       "pending_raw_access",
+      "raw_password_required",
+      "raw_key_event",
+      "raw_key_replaced",
     ],
     path,
   );
@@ -261,6 +287,33 @@ function parseView(value: unknown, path: string): TrayCoreView {
     pending_raw_access: countAt(
       view.pending_raw_access,
       `${path}.pending_raw_access`,
+    ),
+    raw_password_required: booleanAt(
+      view.raw_password_required,
+      `${path}.raw_password_required`,
+    ),
+    raw_key_event: nullable(
+      view.raw_key_event,
+      `${path}.raw_key_event`,
+      (raw, rawPath) => {
+        const event = objectAt(raw, rawPath);
+        exactKeys(event, ["kind", "at"], rawPath);
+        if (
+          typeof event.kind !== "string" ||
+          !rawKeyEventKinds.has(event.kind as TrayRawKeyEventKind)
+        ) {
+          invalid(`${rawPath}.kind`, "unknown raw key event");
+        }
+        const at = nullableStringAt(event.at, `${rawPath}.at`, 64);
+        if (at === null || Number.isNaN(Date.parse(at))) {
+          invalid(`${rawPath}.at`, "expected an RFC 3339 time");
+        }
+        return { kind: event.kind as TrayRawKeyEventKind, at };
+      },
+    ),
+    raw_key_replaced: booleanAt(
+      view.raw_key_replaced,
+      `${path}.raw_key_replaced`,
     ),
   };
 }

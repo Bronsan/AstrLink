@@ -457,6 +457,10 @@ struct CoreInner {
     observer_seen_at: Option<Instant>,
     observer_read_level: Option<ObserverReadLevel>,
     pending_raw_access: u32,
+    raw_password_required: bool,
+    raw_key_event: Option<RawKeyEvent>,
+    /// The desktop's latest verdict on this Core's raw key pin.
+    raw_key_replaced: bool,
     data_directory: Option<PathBuf>,
     /// Where the running Core's local key lives, for the Settings status line.
     local_key_storage: Option<LocalKeyStorage>,
@@ -493,6 +497,9 @@ impl Default for CoreInner {
             observer_seen_at: None,
             observer_read_level: None,
             pending_raw_access: 0,
+            raw_password_required: false,
+            raw_key_event: None,
+            raw_key_replaced: false,
             data_directory: None,
             local_key_storage: None,
             #[cfg(windows)]
@@ -519,6 +526,33 @@ pub struct CoreView {
     pub observer_read_level: Option<ObserverReadLevel>,
     /// Agent requests for raw audit content awaiting the operator.
     pub pending_raw_access: u32,
+    /// No raw password is set yet; the tray points at the main window's
+    /// setup, which is the only place that asks for it.
+    pub raw_password_required: bool,
+    /// The latest raw password or key change this Core recorded, whoever
+    /// made it.
+    pub raw_key_event: Option<RawKeyEvent>,
+    /// The raw key differs from the one the desktop pinned; like the raw
+    /// password setup, only the main window resolves it.
+    pub raw_key_replaced: bool,
+}
+
+/// A raw password or key change, as Core's observer log names it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+pub enum RawKeyEventKind {
+    #[serde(rename = "raw_password_set")]
+    PasswordSet,
+    #[serde(rename = "raw_password_changed")]
+    PasswordChanged,
+    #[serde(rename = "raw_key_reset")]
+    KeyReset,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct RawKeyEvent {
+    pub kind: RawKeyEventKind,
+    /// Core's RFC 3339 timestamp, rendered by the popover in local time.
+    pub at: String,
 }
 
 /// The level of an agent-side read, as Core classifies it.
@@ -536,6 +570,8 @@ struct ObserverState {
     age: Option<Duration>,
     read_level: Option<ObserverReadLevel>,
     pending_raw_access: u32,
+    raw_password_required: bool,
+    raw_key_event: Option<RawKeyEvent>,
 }
 
 fn parse_observer_state(
@@ -563,10 +599,35 @@ fn parse_observer_state(
         .get("pending_raw_access")
         .and_then(serde_json::Value::as_u64)
         .map_or(0, |count| count.min(u64::from(u32::MAX)) as u32);
+    let raw_password_required = value
+        .get("raw_password_required")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+    let raw_key_event = value
+        .get("raw_access_events")
+        .and_then(serde_json::Value::as_array)
+        .and_then(|events| events.iter().rev().find_map(raw_key_event));
     Ok(ObserverState {
         age,
         read_level,
         pending_raw_access,
+        raw_password_required,
+        raw_key_event,
+    })
+}
+
+fn raw_key_event(event: &serde_json::Value) -> Option<RawKeyEvent> {
+    let kind = match event.get("kind")?.as_str()? {
+        "raw_password_set" => RawKeyEventKind::PasswordSet,
+        "raw_password_changed" => RawKeyEventKind::PasswordChanged,
+        "raw_key_reset" => RawKeyEventKind::KeyReset,
+        _ => return None,
+    };
+    let at = event.get("at")?.as_str()?;
+    chrono::DateTime::parse_from_rfc3339(at).ok()?;
+    Some(RawKeyEvent {
+        kind,
+        at: at.to_string(),
     })
 }
 
@@ -590,6 +651,11 @@ impl CoreInner {
             } else {
                 0
             },
+            raw_password_required: self.phase == CorePhase::Ready && self.raw_password_required,
+            raw_key_event: (self.phase == CorePhase::Ready)
+                .then(|| self.raw_key_event.clone())
+                .flatten(),
+            raw_key_replaced: self.phase == CorePhase::Ready && self.raw_key_replaced,
         }
     }
 
@@ -645,6 +711,9 @@ impl CoreInner {
         self.observer_seen_at = None;
         self.observer_read_level = None;
         self.pending_raw_access = 0;
+        self.raw_password_required = false;
+        self.raw_key_event = None;
+        self.raw_key_replaced = false;
         self.ready = None;
         self.started_inference_port = None;
         self.health = None;
@@ -1168,6 +1237,44 @@ impl CoreManager {
         self.lock_inner().local_key_storage
     }
 
+    /// The data directory of the last Core start.
+    pub fn data_directory(&self) -> Option<PathBuf> {
+        self.lock_inner().data_directory.clone()
+    }
+
+    /// A ready Core for `data_directory`, without starting one.
+    #[cfg(test)]
+    pub(crate) fn ready_for_tests(&self, data_directory: PathBuf) {
+        let mut inner = self.lock_inner();
+        inner.phase = CorePhase::Ready;
+        inner.data_directory = Some(data_directory);
+    }
+
+    /// Like `ready_for_tests`, with the control API served at `control_url`.
+    #[cfg(test)]
+    pub(crate) fn serve_control_for_tests(&self, data_directory: PathBuf, control_url: String) {
+        self.ready_for_tests(data_directory);
+        let mut inner = self.lock_inner();
+        inner.control_token = Some("local-test-token".into());
+        inner.ready = Some(ReadyAnnouncement {
+            event: "ready".into(),
+            core_version: "0.1.0".into(),
+            control_api_version: "v1".into(),
+            protocol_contract_version: "v1".into(),
+            inference_url: control_url.clone(),
+            control_url,
+        });
+    }
+
+    /// Records the desktop's verdict on the raw key pin for the tray and
+    /// returns whether it differs from the previous one.
+    pub fn note_raw_key_replaced(&self, replaced: bool) -> bool {
+        let mut inner = self.lock_inner();
+        let changed = inner.raw_key_replaced != replaced;
+        inner.raw_key_replaced = replaced;
+        changed
+    }
+
     pub fn snapshot(&self) -> CoreSnapshot {
         let inner = self.lock_inner();
         CoreSnapshot {
@@ -1433,6 +1540,8 @@ impl CoreManager {
         inner.observer_seen_at = state.age.and_then(|age| Instant::now().checked_sub(age));
         inner.observer_read_level = state.read_level;
         inner.pending_raw_access = state.pending_raw_access;
+        inner.raw_password_required = state.raw_password_required;
+        inner.raw_key_event = state.raw_key_event;
         Ok(())
     }
 
@@ -1479,6 +1588,17 @@ impl CoreManager {
     ) -> Result<serde_json::Value, String> {
         let body = crate::raw_access::unlock_body(proof)?;
         self.send_sealing_proof(crate::raw_access::RAW_UNLOCK_PATH, &body)
+            .await
+    }
+
+    /// Checks a proof without unlocking: Core zeroes the raw key at once and
+    /// leaves any unlock session as it was.
+    pub async fn verify_raw(
+        &self,
+        proof: &crate::raw_access::Proof,
+    ) -> Result<serde_json::Value, String> {
+        let body = crate::raw_access::unlock_body(proof)?;
+        self.send_sealing_proof(crate::raw_access::RAW_VERIFY_PATH, &body)
             .await
     }
 
@@ -5256,8 +5376,37 @@ mod tests {
                 age: Some(Duration::from_secs(5)),
                 read_level: Some(ObserverReadLevel::Raw),
                 pending_raw_access: 3,
+                ..ObserverState::default()
             }
         );
+
+        // The setup gate and the latest raw password or key change, whoever
+        // made it; agent steps after it do not hide it.
+        let state = parse_observer_state(
+            br#"{"raw_password_required":true,"raw_access_events":[
+                {"at":"2026-09-28T09:00:00Z","kind":"raw_password_set","client_name":""},
+                {"at":"2026-09-28T09:30:00Z","kind":"raw_key_reset","client_name":""},
+                {"at":"2026-09-28T09:40:00Z","kind":"requested","client_name":"astrlink-mcp"},
+                {"at":"not a time","kind":"raw_password_changed","client_name":""}]}"#,
+            now,
+        )
+        .unwrap();
+        assert!(state.raw_password_required);
+        assert_eq!(
+            state.raw_key_event,
+            Some(RawKeyEvent {
+                kind: RawKeyEventKind::KeyReset,
+                at: "2026-09-28T09:30:00Z".to_string(),
+            })
+        );
+        // The popover reads Core's own event names.
+        for (kind, name) in [
+            (RawKeyEventKind::PasswordSet, "raw_password_set"),
+            (RawKeyEventKind::PasswordChanged, "raw_password_changed"),
+            (RawKeyEventKind::KeyReset, "raw_key_reset"),
+        ] {
+            assert_eq!(serde_json::to_value(kind).unwrap(), name);
+        }
 
         // No read yet, an unknown level, and a clock ahead of the desktop.
         let state = parse_observer_state(
@@ -5282,10 +5431,19 @@ mod tests {
             observer_seen_at: Some(Instant::now()),
             observer_read_level: Some(ObserverReadLevel::Shareable),
             pending_raw_access: 2,
+            raw_password_required: true,
+            raw_key_event: Some(RawKeyEvent {
+                kind: RawKeyEventKind::PasswordChanged,
+                at: "2026-09-28T09:00:00Z".to_string(),
+            }),
+            raw_key_replaced: true,
             ..CoreInner::default()
         };
         let view = inner.view();
         assert!(view.observer_active);
+        assert!(view.raw_password_required);
+        assert!(view.raw_key_event.is_some());
+        assert!(view.raw_key_replaced);
         assert_eq!(view.observer_read_level, Some(ObserverReadLevel::Shareable));
         assert_eq!(view.pending_raw_access, 2);
 
@@ -5296,6 +5454,29 @@ mod tests {
 
         inner.phase = CorePhase::Stopped;
         assert_eq!(inner.view().pending_raw_access, 0);
+        assert!(!inner.view().raw_password_required);
+        assert_eq!(inner.view().raw_key_event, None);
+        assert!(!inner.view().raw_key_replaced);
+        inner.clear_handshake();
+        assert!(!inner.raw_password_required);
+        assert_eq!(inner.raw_key_event, None);
+        assert!(!inner.raw_key_replaced);
+    }
+
+    #[test]
+    fn a_raw_key_verdict_reaches_the_tray_only_when_it_changes() {
+        let manager = CoreManager::new();
+        manager.lock_inner().phase = CorePhase::Ready;
+        let mut changes = manager.subscribe();
+        changes.borrow_and_update();
+
+        assert!(manager.note_raw_key_replaced(true));
+        assert!(changes.has_changed().unwrap());
+        assert!(changes.borrow_and_update().raw_key_replaced);
+        assert!(!manager.note_raw_key_replaced(true));
+        assert!(!changes.has_changed().unwrap());
+        assert!(manager.note_raw_key_replaced(false));
+        assert!(!changes.borrow_and_update().raw_key_replaced);
     }
 
     #[test]

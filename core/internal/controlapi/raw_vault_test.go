@@ -316,6 +316,66 @@ func TestRawVaultProofZeroesThePrivateKeyAndLeavesTheSessionLocked(t *testing.T)
 	}
 }
 
+func TestRawVaultVerifyChecksAProofWithoutASession(t *testing.T) {
+	ctx := context.Background()
+	clock := newRawTestClock()
+	vault := newTestRawVault(newRawAccessFixture(t, nil).store, false, clock)
+	if _, err := vault.Verify(ctx, RawProof{}); !errors.Is(err, ErrRawProofRequired) {
+		t.Fatalf("verify without proof: %v", err)
+	}
+	if _, err := vault.Verify(ctx, passwordProof(rawTestPassword)); !errors.Is(err, ErrRawNotConfigured) {
+		t.Fatalf("verify before a raw password: %v", err)
+	}
+	set := mustSetRawPassword(t, vault, rawTestPassword, RawProof{})
+	var cleared [][]byte
+	vault.privateCleared = func(private []byte) { cleared = append(cleared, private) }
+
+	status, err := vault.Verify(ctx, passwordProof(rawTestPassword))
+	if err != nil || status.Unlocked || status.UnlockExpiresAt != nil || status.KeyFingerprint != set.KeyFingerprint {
+		t.Fatalf("verify status=%#v err=%v", status, err)
+	}
+	if _, unlocked := vault.UnlockedOpener(); unlocked {
+		t.Fatal("verify started an unlock session")
+	}
+	if len(cleared) != 1 || len(cleared[0]) != rawseal.PrivateKeyBytes || strings.Trim(string(cleared[0]), "\x00") != "" {
+		t.Fatal("verify left the private key in memory")
+	}
+
+	// An open session is neither ended nor extended.
+	unlocked, err := vault.Unlock(ctx, passwordProof(rawTestPassword))
+	if err != nil {
+		t.Fatal(err)
+	}
+	clock.Advance(time.Minute)
+	status, err = vault.Verify(ctx, passwordProof(rawTestPassword))
+	if err != nil || !status.Unlocked || status.UnlockExpiresAt == nil || !status.UnlockExpiresAt.Equal(*unlocked.UnlockExpiresAt) {
+		t.Fatalf("verify inside a session=%#v err=%v (session until %v)", status, err, unlocked.UnlockExpiresAt)
+	}
+	vault.Lock()
+
+	// Wrong passwords through Verify count toward the shared backoff, and
+	// the backoff refuses Verify and Unlock alike.
+	for attempt := 1; attempt <= 3; attempt++ {
+		if _, err := vault.Verify(ctx, passwordProof("wrong password")); !errors.Is(err, ErrRawPasswordInvalid) {
+			t.Fatalf("attempt %d: %v", attempt, err)
+		}
+	}
+	var backoff *RawBackoffError
+	if _, err := vault.Unlock(ctx, passwordProof(rawTestPassword)); !errors.As(err, &backoff) || backoff.Remaining != time.Second {
+		t.Fatalf("unlock after three wrong verifies: %v", err)
+	}
+	if _, err := vault.Verify(ctx, passwordProof(rawTestPassword)); !errors.As(err, &backoff) {
+		t.Fatalf("verify inside the backoff: %v", err)
+	}
+	clock.Advance(time.Second)
+	if _, err := vault.Verify(ctx, passwordProof(rawTestPassword)); err != nil {
+		t.Fatalf("verify after the wait: %v", err)
+	}
+	if _, unlocked := vault.UnlockedOpener(); unlocked {
+		t.Fatal("verify after the backoff started an unlock session")
+	}
+}
+
 func TestRawVaultUnlockSessionIdlesOut(t *testing.T) {
 	ctx := context.Background()
 	clock := newRawTestClock()
@@ -375,7 +435,7 @@ func TestRawVaultUnlockSessionIdlesOut(t *testing.T) {
 	}
 }
 
-func TestRawVaultKeychainPathNeedsNoPassword(t *testing.T) {
+func TestRawVaultKeychainKeyWaitsForARawPassword(t *testing.T) {
 	ctx := context.Background()
 	store := newRawAccessFixture(t, nil).store
 	vault := newTestRawVault(store, true, nil)
@@ -396,8 +456,39 @@ func TestRawVaultKeychainPathNeedsNoPassword(t *testing.T) {
 	if again, _ := store.LoadRawSealing(ctx); again.KeyID != first.KeyID {
 		t.Fatal("EnsureRawSealing replaced an existing key")
 	}
+	// The local key takes older raw parts off the audit key, but nothing
+	// raw opens until a raw password is set: not local presence, not a
+	// password proof, not an unlock.
 	resealAll(t, store)
 	blob := rawPartByDirection(t, store, storage.AuditDirectionRequest)
+	for name, proof := range map[string]RawProof{"local presence": localPresenceProof, "password": passwordProof(rawTestPassword)} {
+		if err := vault.WithProof(ctx, proof, func(RawKeyOpener) error {
+			t.Fatalf("%s opened raw content without a raw password", name)
+			return nil
+		}); !errors.Is(err, ErrRawNotConfigured) {
+			t.Fatalf("%s proof without a raw password: %v", name, err)
+		}
+		if _, err := vault.Unlock(ctx, proof); !errors.Is(err, ErrRawNotConfigured) {
+			t.Fatalf("%s unlock without a raw password: %v", name, err)
+		}
+	}
+	if _, err := vault.ChangePassword(ctx, RawPasswordSet, []byte(rawTestPassword), RawProof{}); !errors.Is(err, ErrRawProofRequired) {
+		t.Fatalf("set without presence: %v", err)
+	}
+	// Setting the first password starts the reseal pass at once.
+	select {
+	case <-vault.reseal:
+	default:
+	}
+	status = mustSetRawPassword(t, vault, rawTestPassword, localPresenceProof)
+	if !status.PasswordSet || !status.LocalPresence {
+		t.Fatalf("status after set=%#v", status)
+	}
+	select {
+	case <-vault.reseal:
+	default:
+		t.Fatal("setting the first raw password did not request a reseal")
+	}
 	if err := vault.WithProof(ctx, localPresenceProof, func(opener RawKeyOpener) error {
 		if !strings.Contains(openWithOpener(t, opener, blob), rawTestSecret) {
 			t.Fatal("local presence did not open the raw part")
@@ -405,17 +496,6 @@ func TestRawVaultKeychainPathNeedsNoPassword(t *testing.T) {
 		return nil
 	}); err != nil {
 		t.Fatal(err)
-	}
-	// A password proof means nothing until a password is set.
-	if err := vault.WithProof(ctx, passwordProof(rawTestPassword), func(RawKeyOpener) error { return nil }); !errors.Is(err, ErrRawProofRequired) {
-		t.Fatalf("password proof without a password: %v", err)
-	}
-	if _, err := vault.ChangePassword(ctx, RawPasswordSet, []byte(rawTestPassword), RawProof{}); !errors.Is(err, ErrRawProofRequired) {
-		t.Fatalf("set without presence: %v", err)
-	}
-	status = mustSetRawPassword(t, vault, rawTestPassword, localPresenceProof)
-	if !status.PasswordSet || !status.LocalPresence {
-		t.Fatalf("status after set=%#v", status)
 	}
 	// A forgotten password is rewrapped from the local envelope without
 	// losing a single part.
@@ -430,10 +510,89 @@ func TestRawVaultKeychainPathNeedsNoPassword(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	// Reset may leave the new key with only its local envelope.
-	outcome, err := vault.ChangePassword(ctx, RawPasswordReset, nil, RawProof{})
-	if err != nil || outcome.Reset == nil || outcome.Reset.DeletedParts != 2 || outcome.Status.PasswordSet || !outcome.Status.LocalPresence {
+	// A reset needs a new password even here: a key with only its local
+	// envelope would keep nothing raw.
+	if _, err := vault.ChangePassword(ctx, RawPasswordReset, nil, RawProof{}); !errors.Is(err, ErrRawPasswordRequired) {
+		t.Fatalf("reset without a password: %v", err)
+	}
+	if again := rawPartByDirection(t, store, storage.AuditDirectionRequest); again.Sealing != storage.AuditSealingRawV1 ||
+		string(again.WrappedKey) != string(blob.WrappedKey) {
+		t.Fatal("a refused reset discarded raw parts")
+	}
+	outcome, err := vault.ChangePassword(ctx, RawPasswordReset, []byte(rawTestPassword), localPresenceProof)
+	if err != nil || outcome.Reset == nil || outcome.Reset.DeletedParts != 2 || !outcome.Status.PasswordSet || !outcome.Status.LocalPresence {
 		t.Fatalf("reset outcome=%#v err=%v", outcome, err)
+	}
+}
+
+func TestRawVaultResetTakesTheProofTheLocalEnvelopeOpens(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "astrlink.db")
+	first := newRawAccessFixtureAt(t, path, nil).store
+	vault := newTestRawVault(first, true, nil)
+	if err := vault.EnsureRawSealing(ctx); err != nil {
+		t.Fatal(err)
+	}
+	// Raw parts kept before an upgrade wait on the keychain key alone.
+	resealAll(t, first)
+	before, err := first.LoadRawSealing(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	kept := func(when string) {
+		t.Helper()
+		state, err := first.LoadRawSealing(ctx)
+		if err != nil || state.KeyID != before.KeyID {
+			t.Fatalf("%s replaced the key: state=%d err=%v", when, state.KeyID, err)
+		}
+		if blob := rawPartByDirection(t, first, storage.AuditDirectionRequest); blob.Sealing != storage.AuditSealingRawV1 {
+			t.Fatalf("%s discarded raw parts", when)
+		}
+	}
+	// Driving the operator API alone neither discards them nor plants a
+	// password: the local envelope opens this key, so a reset takes its
+	// proof.
+	if _, err := vault.ChangePassword(ctx, RawPasswordReset, []byte(rawVaultNewPassword), RawProof{}); !errors.Is(err, ErrRawProofRequired) {
+		t.Fatalf("reset of a keychain key without a proof: %v", err)
+	}
+	kept("a reset without a proof")
+	if _, err := vault.ChangePassword(ctx, RawPasswordReset, []byte(rawVaultNewPassword), passwordProof(rawTestPassword)); !errors.Is(err, ErrRawProofRequired) {
+		t.Fatalf("reset with a password the key does not have: %v", err)
+	}
+	kept("a reset with a password proof and no password")
+
+	mustSetRawPassword(t, vault, rawTestPassword, localPresenceProof)
+	if _, err := vault.ChangePassword(ctx, RawPasswordReset, []byte(rawVaultNewPassword), RawProof{}); !errors.Is(err, ErrRawProofRequired) {
+		t.Fatalf("reset of a password key without a proof: %v", err)
+	}
+	if _, err := vault.ChangePassword(ctx, RawPasswordReset, []byte(rawVaultNewPassword), passwordProof("not the raw password")); !errors.Is(err, ErrRawPasswordInvalid) {
+		t.Fatalf("reset with a wrong password: %v", err)
+	}
+	kept("a refused reset")
+	vault.noteRightPassword()
+	// The current password opens the key as well as presence does.
+	outcome, err := vault.ChangePassword(ctx, RawPasswordReset, []byte(rawVaultNewPassword), passwordProof(rawTestPassword))
+	if err != nil || outcome.Reset == nil || outcome.Reset.DeletedParts != 2 {
+		t.Fatalf("reset with the current password=%#v err=%v", outcome, err)
+	}
+	if err := first.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	// Once the keychain entry is lost nothing here opens the key: a reset
+	// is the only way back and takes no proof.
+	lost, err := sqlite.Open(ctx, path, sqlite.WithLocalKey(make([]byte, storage.AuditKeyBytes)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = lost.Close() })
+	recovered := newTestRawVault(lost, true, nil)
+	if status, err := recovered.Status(ctx); err != nil || status.LocalPresence {
+		t.Fatalf("status with a lost keychain=%#v err=%v", status, err)
+	}
+	outcome, err = recovered.ChangePassword(ctx, RawPasswordReset, []byte(rawTestPassword), RawProof{})
+	if err != nil || outcome.Reset == nil || !outcome.Status.PasswordSet || !outcome.Status.LocalPresence {
+		t.Fatalf("reset with a lost keychain=%#v err=%v", outcome, err)
 	}
 }
 
@@ -647,13 +806,40 @@ func TestRawSealingRoutes(t *testing.T) {
 		return body + `}`
 	}
 
+	// The agent-readable observer state tells the tray the password is
+	// still missing and logs who touched the password or key.
+	observers := func() ObserversResponse {
+		t.Helper()
+		response := rawHTTP(t, handler, rawAsAgent, http.MethodGet, ObserversPath, "", "")
+		wantRawStatus(t, response, http.StatusOK, "")
+		var parsed ObserversResponse
+		decode(t, response, &parsed)
+		return parsed
+	}
+	lastEvent := func() RawAccessEvent {
+		t.Helper()
+		events := observers().RawAccessEvents
+		if len(events) == 0 {
+			t.Fatal("no observer events")
+		}
+		return events[len(events)-1]
+	}
+
 	status := operatorRawStatus(t, handler)
-	if status.Configured || status.RawAvailable || len(status.Envelopes) != 0 || status.UnlockIdleSeconds != 900 ||
-		status.PasswordMinRunes != rawseal.MinPasswordRunes || status.PasswordMaxRunes != rawseal.MaxPasswordRunes {
+	if status.Configured || status.RawAvailable || !status.PasswordRequired || len(status.Envelopes) != 0 || status.UnlockIdleSeconds != 900 ||
+		status.PasswordMinRunes != rawseal.MinPasswordRunes || status.PasswordMaxRunes != rawseal.MaxPasswordRunes || status.KeyFingerprint != "" {
 		t.Fatalf("fresh status=%#v", status)
+	}
+	if fresh := observers(); !fresh.RawPasswordRequired || len(fresh.RawAccessEvents) != 0 {
+		t.Fatalf("fresh observers=%#v", fresh)
 	}
 	wantRawStatus(t, rawHTTP(t, handler, rawAsOperator, http.MethodPost, RawUnlockPath,
 		`{"proof":{"password":`+rawTestPasswordJS+`}}`, ""), http.StatusConflict, "raw_access_unavailable")
+	// Raw parts kept before the password was required wait for it.
+	waiting := readRawAudit(t, handler, rawAsOperator, rawAuditPath(rawTestRequestID), "")
+	if !waiting.RequestBody.Withheld || waiting.RequestBody.Reason != contract.AuditWithheldRawPasswordRequired {
+		t.Fatalf("read before the password=%#v", waiting.RequestBody)
+	}
 
 	// Observers may read availability only, and never write.
 	observed := rawHTTP(t, handler, rawAsAgent, http.MethodGet, RawSealingPath, "", "")
@@ -661,7 +847,7 @@ func TestRawSealingRoutes(t *testing.T) {
 	if strings.TrimSpace(observed.Body.String()) != `{"raw_available":false}` {
 		t.Fatalf("observer view=%s", observed.Body.String())
 	}
-	for _, path := range []string{RawPasswordPath, RawUnlockPath, RawLockPath} {
+	for _, path := range []string{RawPasswordPath, RawUnlockPath, RawLockPath, RawVerifyPath} {
 		wantRawStatus(t, rawHTTP(t, handler, rawAsAgent, http.MethodPost, path,
 			passwordBody("set", rawTestPasswordJS, ""), ""), http.StatusForbidden, "forbidden")
 	}
@@ -682,11 +868,21 @@ func TestRawSealingRoutes(t *testing.T) {
 	wantRawStatus(t, set, http.StatusOK, "")
 	var created RawPasswordResponse
 	decode(t, set, &created)
-	if !created.Configured || !created.PasswordSet || created.Reset != nil || len(created.Envelopes) != 1 || created.Envelopes[0] != "password" {
+	if !created.Configured || !created.PasswordSet || created.PasswordRequired || created.Reset != nil || len(created.Envelopes) != 1 || created.Envelopes[0] != "password" {
 		t.Fatalf("set response=%#v", created)
 	}
 	if strings.Contains(set.Body.String(), "horse") {
 		t.Fatal("a response echoed the password")
+	}
+	fingerprint := created.KeyFingerprint
+	if len(fingerprint) != 64 || strings.Trim(fingerprint, "0123456789abcdef") != "" {
+		t.Fatalf("key fingerprint=%q", fingerprint)
+	}
+	if after := observers(); after.RawPasswordRequired {
+		t.Fatalf("observers after the password=%#v", after)
+	}
+	if event := lastEvent(); event.Kind != RawAccessEventPasswordSet || event.ClientName != "" || event.GrantID != "" {
+		t.Fatalf("set event=%#v", event)
 	}
 	wantRawStatus(t, rawHTTP(t, handler, rawAsOperator, http.MethodPost, RawPasswordPath, passwordBody("set", `"another phrase"`, ""), ""),
 		http.StatusConflict, "raw_password_already_set")
@@ -696,6 +892,11 @@ func TestRawSealingRoutes(t *testing.T) {
 		t.Fatalf("observer view=%s", observed.Body.String())
 	}
 	resealAll(t, fixture.store)
+	for _, direction := range []storage.AuditDirection{storage.AuditDirectionRequest, storage.AuditDirectionResponse} {
+		if part := rawPartByDirection(t, fixture.store, direction); part.Sealing != storage.AuditSealingRawV1 {
+			t.Fatalf("%s part after the password = sealing %q", direction, part.Sealing)
+		}
+	}
 
 	// A locked operator read withholds raw parts.
 	full := rawAuditPath(rawTestRequestID)
@@ -722,11 +923,32 @@ func TestRawSealingRoutes(t *testing.T) {
 	if status := operatorRawStatus(t, handler); status.RetryAfterSeconds != 1 {
 		t.Fatalf("status retry_after_seconds=%d", status.RetryAfterSeconds)
 	}
-	events := handler.observers.snapshot().RawAccessEvents
-	if len(events) != 3 || events[0].Kind != RawAccessEventPasswordInvalid || events[0].GrantID != "" {
+	events := handler.observers.snapshot(context.Background()).RawAccessEvents
+	if len(events) != 4 || events[0].Kind != RawAccessEventPasswordSet || events[1].Kind != RawAccessEventPasswordInvalid || events[1].GrantID != "" {
 		t.Fatalf("observer events=%#v", events)
 	}
 	fixture.clock.Advance(time.Second)
+
+	// Verify answers whether the proof holds and leaves the operator locked.
+	wantRawStatus(t, rawHTTP(t, handler, rawAsOperator, http.MethodPost, RawVerifyPath, "", ""),
+		http.StatusUnprocessableEntity, "raw_proof_required")
+	wantRawStatus(t, rawHTTP(t, handler, rawAsOperator, http.MethodPost, RawVerifyPath, `{"proof":{"kind":"local_presence"}}`, ""),
+		http.StatusUnprocessableEntity, "raw_proof_required")
+	wantRawStatus(t, rawHTTP(t, handler, rawAsOperator, http.MethodGet, RawVerifyPath, "", ""),
+		http.StatusMethodNotAllowed, "method_not_allowed")
+	verified := rawHTTP(t, handler, rawAsOperator, http.MethodPost, RawVerifyPath, `{"proof":{"password":`+rawTestPasswordJS+`}}`, "")
+	wantRawStatus(t, verified, http.StatusOK, "")
+	decode(t, verified, &status)
+	if status.Unlocked || status.UnlockExpiresAt != nil || status.KeyFingerprint != fingerprint || status.RetryAfterSeconds != 0 {
+		t.Fatalf("verified status=%#v", status)
+	}
+	if strings.Contains(verified.Body.String(), "horse") {
+		t.Fatal("verify echoed the password")
+	}
+	content = readRawAudit(t, handler, rawAsOperator, full, "")
+	if !content.RequestBody.Withheld || content.RequestBody.Reason != contract.AuditWithheldRawLocked {
+		t.Fatalf("read after verify=%#v", content.RequestBody)
+	}
 
 	unlocked := rawHTTP(t, handler, rawAsOperator, http.MethodPost, RawUnlockPath, `{"proof":{"password":`+rawTestPasswordJS+`}}`, "")
 	wantRawStatus(t, unlocked, http.StatusOK, "")
@@ -772,17 +994,43 @@ func TestRawSealingRoutes(t *testing.T) {
 	if status.Unlocked {
 		t.Fatalf("lock status=%#v", status)
 	}
+	wantRawStatus(t, rawHTTP(t, handler, rawAsOperator, http.MethodPost, RawVerifyPath, `{"proof":{"password":"wrong password"}}`, ""),
+		http.StatusForbidden, "raw_password_invalid")
+	if event := lastEvent(); event.Kind != RawAccessEventPasswordInvalid {
+		t.Fatalf("a refused verify left event %#v", event)
+	}
 
 	wantRawStatus(t, rawHTTP(t, handler, rawAsOperator, http.MethodPost, RawPasswordPath,
 		passwordBody("change", `"another phrase"`, `{"password":"wrong password"}`), ""), http.StatusForbidden, "raw_password_invalid")
-	wantRawStatus(t, rawHTTP(t, handler, rawAsOperator, http.MethodPost, RawPasswordPath,
-		passwordBody("change", `"another phrase"`, `{"password":`+rawTestPasswordJS+`}`), ""), http.StatusOK, "")
+	if event := lastEvent(); event.Kind != RawAccessEventPasswordInvalid {
+		t.Fatalf("a refused change left event %#v", event)
+	}
+	changed := rawHTTP(t, handler, rawAsOperator, http.MethodPost, RawPasswordPath,
+		passwordBody("change", `"another phrase"`, `{"password":`+rawTestPasswordJS+`}`), "")
+	wantRawStatus(t, changed, http.StatusOK, "")
+	var changedResponse RawPasswordResponse
+	decode(t, changed, &changedResponse)
+	if changedResponse.KeyFingerprint != fingerprint {
+		t.Fatalf("a change moved the key fingerprint: %q -> %q", fingerprint, changedResponse.KeyFingerprint)
+	}
+	if event := lastEvent(); event.Kind != RawAccessEventPasswordChanged {
+		t.Fatalf("change event=%#v", event)
+	}
 	reset := rawHTTP(t, handler, rawAsOperator, http.MethodPost, RawPasswordPath, passwordBody("reset", `"a third phrase"`, ""), "")
 	wantRawStatus(t, reset, http.StatusOK, "")
 	var resetResponse RawPasswordResponse
 	decode(t, reset, &resetResponse)
 	if resetResponse.Reset == nil || resetResponse.Reset.DeletedParts != 2 || resetResponse.Reset.AffectedRecords != 1 {
 		t.Fatalf("reset response=%#v", resetResponse)
+	}
+	if len(resetResponse.KeyFingerprint) != 64 || resetResponse.KeyFingerprint == fingerprint {
+		t.Fatalf("a reset kept the key fingerprint %q", resetResponse.KeyFingerprint)
+	}
+	if status := operatorRawStatus(t, handler); status.KeyFingerprint != resetResponse.KeyFingerprint {
+		t.Fatalf("status fingerprint %q, reset answered %q", status.KeyFingerprint, resetResponse.KeyFingerprint)
+	}
+	if event := lastEvent(); event.Kind != RawAccessEventKeyReset {
+		t.Fatalf("reset event=%#v", event)
 	}
 	record, err := fixture.store.GetRequestRecord(context.Background(), rawTestRequestID)
 	if err != nil || record.Audit.RequestBodyCaptured || record.Audit.ResponseContentCaptured || len(record.PrivacyFindings) != 1 {

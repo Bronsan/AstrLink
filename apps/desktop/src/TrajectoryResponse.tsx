@@ -18,6 +18,7 @@ import {
   responseErrors,
   useResponsePreview,
   wireStructuredLabel,
+  withheldHint,
   type WireViewMode,
 } from "./AuditReviewer";
 import { copyButtonLabel, type CopyFeedback } from "./copy-feedback";
@@ -358,19 +359,6 @@ export function CapturePane({
       </div>
     </Panel>
   );
-}
-
-/**
- * The hint for a captured body this read leaves out: a raw part waits for
- * an unlock, so the capture switch is not the reason it is missing.
- */
-export function withheldHint(
-  withheld: AuditWithheldPart | null | undefined,
-): string | null {
-  if (!withheld) return null;
-  return withheld.reason === "raw_locked"
-    ? i18n.t("rawSealing.lockedDetail")
-    : i18n.t("rawSealing.withheldDetail");
 }
 
 type FactLabel = "http" | "duration" | "ttft" | "tokens" | "size";

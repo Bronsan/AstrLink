@@ -11,6 +11,7 @@ const mocks = vi.hoisted(() => ({
   lockRaw: vi.fn(),
   unlockRaw: vi.fn(),
   verifyLocalPresence: vi.fn(),
+  verifyRawPassword: vi.fn(),
 }));
 
 vi.mock("./bridge", () => mocks);
@@ -29,6 +30,7 @@ function sealing(overrides: Partial<RawSealingState> = {}): RawSealingState {
     raw_available: true,
     configured: true,
     password_set: true,
+    password_required: overrides.password_set === false,
     local_presence: false,
     envelopes: ["password"],
     key_verified: true,
@@ -38,13 +40,19 @@ function sealing(overrides: Partial<RawSealingState> = {}): RawSealingState {
     retry_after_seconds: 0,
     password_min_length: 8,
     password_max_length: 128,
+    key_replaced: false,
     presence_available: false,
+    keychain_build: false,
     ...overrides,
   };
 }
 
 function sealedOutcome(overrides: Partial<RawSealingState> = {}) {
-  const { presence_available: _presence, ...status } = sealing(overrides);
+  const {
+    presence_available: _presence,
+    keychain_build: _keychain,
+    ...status
+  } = sealing(overrides);
   return { outcome: "sealing", status, reset: null };
 }
 
@@ -75,7 +83,6 @@ beforeEach(() => {
   ).IS_REACT_ACT_ENVIRONMENT = true;
   for (const mock of Object.values(mocks)) mock.mockReset();
   notifyMocks.error.mockReset();
-  mocks.lockRaw.mockResolvedValue(sealedOutcome().status);
   results = [];
   container = document.createElement("div");
   document.body.append(container);
@@ -152,14 +159,14 @@ describe("useRevealProof", () => {
     );
     expect(results).toEqual([true]);
     expect(dialog()).toBeNull();
-    expect(mocks.unlockRaw).not.toHaveBeenCalled();
+    expect(mocks.verifyRawPassword).not.toHaveBeenCalled();
   });
 
-  it("checks the raw password with an unlock and locks again", async () => {
+  it("checks the raw password without starting an unlock session", async () => {
     mocks.getRawSealingStatus.mockResolvedValue(sealing());
-    mocks.unlockRaw
+    mocks.verifyRawPassword
       .mockResolvedValueOnce({ outcome: "password_invalid" })
-      .mockResolvedValueOnce(sealedOutcome({ unlocked: true }));
+      .mockResolvedValueOnce(sealedOutcome());
     await requestProof();
 
     await typePassword("wrong password");
@@ -169,54 +176,25 @@ describe("useRevealProof", () => {
 
     await typePassword("correct horse");
     await click(button("复制令牌"));
-    expect(mocks.unlockRaw).toHaveBeenLastCalledWith({
-      kind: "password",
-      password: "correct horse",
-    });
-    expect(mocks.lockRaw).toHaveBeenCalledOnce();
+    expect(mocks.verifyRawPassword).toHaveBeenLastCalledWith("correct horse");
+    expect(mocks.verifyRawPassword).toHaveBeenCalledTimes(2);
+    // Neither an unlock to check the password nor a lock to undo it.
+    expect(mocks.unlockRaw).not.toHaveBeenCalled();
+    expect(mocks.lockRaw).not.toHaveBeenCalled();
+    expect(mocks.getRawSealingStatus).toHaveBeenCalledOnce();
     expect(results).toEqual([true]);
     expect(dialog()).toBeNull();
   });
 
-  it("leaves an unlock session the operator already opened", async () => {
-    mocks.getRawSealingStatus.mockResolvedValue(sealing({ unlocked: true }));
-    mocks.unlockRaw.mockResolvedValue(sealedOutcome({ unlocked: true }));
-    await requestProof();
-
-    await typePassword("correct horse");
-    await click(button("复制令牌"));
-    expect(mocks.lockRaw).not.toHaveBeenCalled();
-    expect(results).toEqual([true]);
-  });
-
-  it("reads the unlock session again when the password is checked", async () => {
-    // The session ended while the dialog was open, so the proof's unlock
-    // is a new one and has to go again.
-    mocks.getRawSealingStatus
-      .mockResolvedValueOnce(sealing({ unlocked: true }))
-      .mockResolvedValueOnce(sealing());
-    mocks.unlockRaw.mockResolvedValue(sealedOutcome({ unlocked: true }));
-    await requestProof();
-
-    await typePassword("correct horse");
-    await click(button("复制令牌"));
-    expect(mocks.getRawSealingStatus).toHaveBeenCalledTimes(2);
-    expect(mocks.lockRaw).toHaveBeenCalledOnce();
-    expect(results).toEqual([true]);
-  });
-
-  it("reports a lock that failed after the proof", async () => {
+  it("keeps the dialog open when the password check fails", async () => {
     mocks.getRawSealingStatus.mockResolvedValue(sealing());
-    mocks.unlockRaw.mockResolvedValue(sealedOutcome({ unlocked: true }));
-    mocks.lockRaw.mockRejectedValue(new Error("socket closed"));
+    mocks.verifyRawPassword.mockRejectedValue(new Error("socket closed"));
     await requestProof();
 
     await typePassword("correct horse");
     await click(button("复制令牌"));
-    expect(results).toEqual([true]);
-    expect(notifyMocks.error).toHaveBeenCalledExactlyOnceWith(
-      expect.stringContaining("锁定原文失败"),
-    );
+    expect(dialog()?.textContent).toContain("socket closed");
+    expect(results).toEqual([]);
   });
 
   it("falls back to a confirmation without a raw password", async () => {
@@ -228,7 +206,7 @@ describe("useRevealProof", () => {
     expect(document.querySelector('input[type="password"]')).toBeNull();
     await click(button("复制令牌"));
     expect(mocks.verifyLocalPresence).not.toHaveBeenCalled();
-    expect(mocks.unlockRaw).not.toHaveBeenCalled();
+    expect(mocks.verifyRawPassword).not.toHaveBeenCalled();
     expect(results).toEqual([true]);
   });
 

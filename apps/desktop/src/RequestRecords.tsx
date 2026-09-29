@@ -69,6 +69,7 @@ import {
   getRawSealingStatus,
   getRequestAuditContent,
   getRequestSession,
+  listenRawSealingChanged,
   listRequestRecordChildren,
   listRequestSessions,
   lockRaw,
@@ -83,12 +84,11 @@ import { notify } from "./notify";
 import { PageHeader } from "./PageHeader";
 import {
   RawSealingDialogs,
-  rawUpgradeNeeded,
+  rawPasswordMissing,
   unlockIdleMinutes,
   type RawDialog,
 } from "./RawSealingControls";
 import {
-  rawProofMode,
   unlockCheckDelay,
   withPresence,
   type RawSealingState,
@@ -109,6 +109,7 @@ import {
   type RecordFilters,
 } from "./request-live-model";
 import {
+  holdsPasswordRequiredPart,
   holdsRawPart,
   isModelDiscoveryProtocol,
   statusLabel,
@@ -733,14 +734,19 @@ export function RequestRecords({
     }
     const generation = ++auditGenerationRef.current;
     const cacheable = !selectedIsPending;
-    const rawLocks = rawSealing?.configured !== false;
     setAuditLoading(true);
     setAuditError(null);
     setAuditContent(null);
     void getRequestAuditContent(selected.id)
       .then((content) => {
         if (auditGenerationRef.current !== generation) return;
-        if (cacheable && !(rawLocks && holdsRawPart(content))) {
+        // Raw parts show only while unlocked, and parts waiting for a raw
+        // password become readable once one is set.
+        if (
+          cacheable &&
+          !holdsRawPart(content) &&
+          !holdsPasswordRequiredPart(content)
+        ) {
           cacheInsert(selected.id, content);
         }
         setAuditContent(content);
@@ -803,6 +809,41 @@ export function RequestRecords({
     return () => window.clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [unlockExpiresAt, unlockCheck]);
+
+  // The password gate, the Security page, or another window may set, reset,
+  // unlock, or lock the raw key.
+  useEffect(() => {
+    if (!isReady) return;
+    let active = true;
+    let stop: (() => void) | null = null;
+    listenRawSealingChanged(() => {
+      if (active) void refreshRawSealing();
+    }).then(
+      (unlisten) => {
+        if (active) stop = unlisten;
+        else unlisten();
+      },
+      (error: unknown) => {
+        console.error("AstrLink cannot watch the raw sealing state", error);
+      },
+    );
+    return () => {
+      active = false;
+      stop?.();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [coreSessionKey, isReady]);
+
+  // A first raw password, set here or anywhere else, turns the parts that
+  // waited for it into locked ones.
+  const rawPasswordSet = rawSealing?.password_set;
+  const rawPasswordSetRef = useRef(rawPasswordSet);
+  useEffect(() => {
+    const previous = rawPasswordSetRef.current;
+    rawPasswordSetRef.current = rawPasswordSet;
+    if (previous === false && rawPasswordSet === true) reloadAudit();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rawPasswordSet]);
 
   const openDetail = (sessionId: string) => {
     selectedFocusRef.current = sessionId;
@@ -1027,7 +1068,7 @@ export function RequestRecords({
   const bodyCaptureEnabled = Boolean(
     settings?.request_body_enabled || settings?.response_content_enabled,
   );
-  const rawUpgrade = rawUpgradeNeeded(bodyCaptureEnabled, rawSealing);
+  const rawPasswordNeeded = rawPasswordMissing(rawSealing);
 
   const toggleBodyCapture = (enabled: boolean) => {
     if (!settings || settingsBusy) return;
@@ -1079,8 +1120,9 @@ export function RequestRecords({
     setAuditNonce((current) => current + 1);
   };
 
-  // Without a raw key, turning capture on must set the raw password in the
-  // same confirmation (D11). This decides on Core's state, not the platform.
+  // Without a raw password, turning capture on must set one in the same
+  // confirmation (D11), on every platform: a keychain key alone keeps no raw
+  // content. This decides on Core's state, not the platform.
   const confirmCaptureEnable = async () => {
     const generation = generationRef.current;
     setSettingsBusy(true);
@@ -1098,7 +1140,7 @@ export function RequestRecords({
       }
       return;
     }
-    if (!current.configured) {
+    if (!current.password_set) {
       setRawDialog({ kind: "capture" });
       return;
     }
@@ -1156,15 +1198,8 @@ export function RequestRecords({
       reloadAudit();
       return;
     }
-    if (!current.configured) {
-      notify.error(i18n.t("rawSealing.errors.notConfigured"));
-      return;
-    }
-    if (rawProofMode(current) === "confirm") {
-      notify.error(i18n.t("rawSealing.unlockUnavailable"));
-      return;
-    }
-    setRawDialog({ kind: "unlock" });
+    // Nothing unlocks raw content until a raw password is set (D11).
+    setRawDialog({ kind: current.password_set ? "unlock" : "set" });
   };
 
   const lockRawContent = async () => {
@@ -1255,15 +1290,17 @@ export function RequestRecords({
                           onClick={() => void openSettings()}
                           size="sm"
                           title={
-                            rawUpgrade ? t("rawSealing.upgradeHint") : undefined
+                            rawPasswordNeeded
+                              ? t("rawSealing.hint.unset")
+                              : undefined
                           }
                           type="button"
                         >
                           <Settings2 aria-hidden="true" />
                           {t("records.auditSettings")}
-                          {rawUpgrade ? (
+                          {rawPasswordNeeded ? (
                             <StatusDot
-                              data-slot="raw-upgrade-dot"
+                              data-slot="raw-password-dot"
                               tone="pending"
                             />
                           ) : null}
@@ -1535,7 +1572,6 @@ export function RequestRecords({
       {settingsOpen && pendingConfirm === null && rawDialog === null ? (
         <AuditSettingsDialog
           busy={settingsBusy}
-          captureEnabled={bodyCaptureEnabled}
           draft={settingsDraft}
           error={settingsError}
           notice={settingsNotice}

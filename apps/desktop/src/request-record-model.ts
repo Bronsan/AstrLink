@@ -308,7 +308,11 @@ export type AuditWithheldReason =
   | "privacy_fail_open"
   | "privacy_pending"
   | "privacy_unknown"
-  | "raw_locked";
+  | "raw_locked"
+  /** Kept before the upgrade; readable once a raw password is set (D11). */
+  | "raw_password_required"
+  /** Captured while no raw password was set, so it was never kept (D11). */
+  | "raw_not_kept";
 
 /** A captured part this read may not see. It never carries content. */
 export interface AuditWithheldPart {
@@ -379,6 +383,13 @@ export function holdsRawPart(content: AuditContent): boolean {
 export function holdsLockedPart(content: AuditContent): boolean {
   return Object.values(content.withheld).some(
     (part) => part?.reason === "raw_locked",
+  );
+}
+
+/** Whether the content leaves out a part until a raw password is set. */
+export function holdsPasswordRequiredPart(content: AuditContent): boolean {
+  return Object.values(content.withheld).some(
+    (part) => part?.reason === "raw_password_required",
   );
 }
 
@@ -1088,6 +1099,8 @@ const auditWithheldReasons = new Set<AuditWithheldReason>([
   "privacy_pending",
   "privacy_unknown",
   "raw_locked",
+  "raw_password_required",
+  "raw_not_kept",
 ]);
 
 const auditBodyPartNames: AuditBodyPartName[] = [

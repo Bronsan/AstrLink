@@ -2,6 +2,7 @@ package controlapi
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -136,14 +137,38 @@ func newRawAccessFixtureAt(t *testing.T, path string, vault RawVault) rawAccessF
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := store.InsertAuditBlob(ctx, storage.AuditBlob{
+		blob := storage.AuditBlob{
 			RequestID: rawTestRequestID, Direction: part.direction, MediaType: "application/json",
 			Nonce: nonce, Ciphertext: ciphertext, CapturedBytes: len(part.plain), Exposure: part.exposure,
-		}); err != nil {
+		}
+		if part.exposure == storage.AuditExposureRaw {
+			// The fake vault holds no raw key, so the raw parts are the ones
+			// an earlier release kept under the audit key.
+			insertPreUpgradeRawPart(t, path, blob)
+			continue
+		}
+		if err := store.InsertAuditBlob(ctx, blob); err != nil {
 			t.Fatal(err)
 		}
 	}
 	return rawAccessFixture{store: store, handler: newRawAccessHandler(t, store, vault)}
+}
+
+// insertPreUpgradeRawPart writes a raw part the way releases before the raw
+// password kept it: inline, under the audit key. This release keeps no new
+// raw capture there.
+func insertPreUpgradeRawPart(t *testing.T, path string, blob storage.AuditBlob) {
+	t.Helper()
+	database, err := sql.Open("sqlite", "file:"+path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if _, err := database.Exec(`INSERT INTO audit_blobs (request_id, direction, media_type, nonce, ciphertext, truncated, captured_bytes, created_at, exposure)
+VALUES (?, ?, ?, ?, ?, 0, ?, '2026-09-20T00:00:00Z', 'raw')`,
+		blob.RequestID, string(blob.Direction), blob.MediaType, blob.Nonce, blob.Ciphertext, blob.CapturedBytes); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func newRawAccessHandler(t *testing.T, store *sqlite.Store, vault RawVault) *Handler {
@@ -293,7 +318,7 @@ func TestShareableAuditViewWithholdsRawParts(t *testing.T) {
 		strings.Contains(wire, `"content":""`) {
 		t.Fatalf("withheld wire shape: %s", wire)
 	}
-	if snapshot := fixture.handler.observers.snapshot(); snapshot.ReadLevel != ReadLevelShareable {
+	if snapshot := fixture.handler.observers.snapshot(context.Background()); snapshot.ReadLevel != ReadLevelShareable {
 		t.Fatalf("read level=%q", snapshot.ReadLevel)
 	}
 
@@ -351,16 +376,37 @@ func TestPrivacyWithheldReasonCoversEveryDecision(t *testing.T) {
 }
 
 func TestOperatorFullViewFollowsRawUnlock(t *testing.T) {
-	// Without raw sealing, operators read every part as before.
+	// Until a raw password is set, raw parts kept from before it was
+	// required wait for it: the audit key alone does not open them, and
+	// neither does a key only the local envelope opens.
 	fixture := newRawAccessFixture(t, nil)
-	content := readRawAudit(t, fixture.handler, rawAsOperator, rawAuditPath(rawTestRequestID), "")
-	if content.View != contract.AuditContentViewFull || content.RequestBody == nil ||
-		content.RequestBody.Withheld || content.RequestBody.Exposure != contract.AuditPartExposureRaw ||
-		!strings.Contains(content.RequestBody.Content, rawTestSecret) {
-		t.Fatalf("unsealed operator read=%#v", content.RequestBody)
+	localOnly := &fakeRawVault{status: RawVaultStatus{Configured: true, KeyVerified: true}, unlocked: true}
+	for name, handler := range map[string]*Handler{
+		"no raw key":          fixture.handler,
+		"local envelope only": newRawAccessHandler(t, fixture.store, localOnly),
+	} {
+		content := readRawAudit(t, handler, rawAsOperator, rawAuditPath(rawTestRequestID), "")
+		if content.View != contract.AuditContentViewFull {
+			t.Fatalf("%s: view=%q", name, content.View)
+		}
+		for direction, part := range map[string]*contract.AuditContentPart{
+			"request": content.RequestBody, "response": content.ResponseContent,
+		} {
+			if part == nil || !part.Withheld || part.Reason != contract.AuditWithheldRawPasswordRequired ||
+				part.RawAvailable == nil || *part.RawAvailable || strings.Contains(part.Content, rawTestSecret) {
+				t.Fatalf("%s: %s part=%#v", name, direction, part)
+			}
+		}
+		if content.UpstreamRequestBody == nil || content.UpstreamRequestBody.Withheld {
+			t.Fatalf("%s: shareable part withheld: %#v", name, content.UpstreamRequestBody)
+		}
+	}
+	if localOnly.opened != 0 {
+		t.Fatalf("a local-only key opened %d raw part(s)", localOnly.opened)
 	}
 
 	vault := configuredRawVault()
+	var content contract.AuditContent
 	locked := newRawAccessHandler(t, fixture.store, vault)
 	content = readRawAudit(t, locked, rawAsOperator, rawAuditPath(rawTestRequestID), "")
 	for name, part := range map[string]*contract.AuditContentPart{
@@ -380,7 +426,7 @@ func TestOperatorFullViewFollowsRawUnlock(t *testing.T) {
 		t.Fatalf("unlocked read=%#v", content.RequestBody)
 	}
 	// An operator read is not an agent read.
-	if snapshot := locked.observers.snapshot(); snapshot.ReadLevel != "" || snapshot.LastRawReadAt != nil {
+	if snapshot := locked.observers.snapshot(context.Background()); snapshot.ReadLevel != "" || snapshot.LastRawReadAt != nil {
 		t.Fatalf("operator read noted as agent read: %#v", snapshot)
 	}
 
@@ -409,7 +455,7 @@ func TestRawAccessGrantOnceLifecycle(t *testing.T) {
 	if len(page.Items) != 1 || page.Items[0].GrantID != created.GrantID || page.Items[0].Reason != "debug a failed tool call" {
 		t.Fatalf("pending=%#v", page.Items)
 	}
-	if snapshot := handler.observers.snapshot(); snapshot.PendingRawAccess != 1 {
+	if snapshot := handler.observers.snapshot(context.Background()); snapshot.PendingRawAccess != 1 {
 		t.Fatalf("pending_raw_access=%d", snapshot.PendingRawAccess)
 	}
 
@@ -437,7 +483,7 @@ func TestRawAccessGrantOnceLifecycle(t *testing.T) {
 		content.ResponseContent == nil || content.ResponseContent.Withheld {
 		t.Fatalf("granted read=%#v", content)
 	}
-	snapshot := handler.observers.snapshot()
+	snapshot := handler.observers.snapshot(context.Background())
 	wantRawStatus(t, rawHTTP(t, handler, rawAsAgent, http.MethodGet, full, "", created.GrantToken),
 		http.StatusForbidden, "raw_grant_invalid")
 

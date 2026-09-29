@@ -124,6 +124,7 @@ function sealing(
     raw_available: true,
     configured: true,
     password_set: true,
+    password_required: false,
     local_presence: false,
     envelopes: ["password"],
     key_verified: true,
@@ -133,7 +134,9 @@ function sealing(
     retry_after_seconds: 0,
     password_min_length: 8,
     password_max_length: 128,
+    key_replaced: false,
     presence_available: false,
+    keychain_build: false,
   };
 }
 

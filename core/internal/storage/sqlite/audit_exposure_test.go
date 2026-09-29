@@ -31,6 +31,7 @@ func TestAuditExposureDefaultsToRawAndRawIsSticky(t *testing.T) {
 	key := auditPayloadFixture(t, store, id)
 
 	unlabelled := sealedPayload(t, key, id, storage.AuditDirectionRequest, "body")
+	unlabelled.Exposure = ""
 	if err := store.InsertAuditBlob(ctx, unlabelled); err != nil {
 		t.Fatal(err)
 	}
@@ -217,8 +218,9 @@ func TestShareableAuditBlobsOmitWithheldCiphertext(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, blob := range full {
-		if len(blob.Ciphertext) == 0 {
-			t.Fatalf("%s full read lost ciphertext", blob.Direction)
+		// Without a raw password the raw part keeps no content at all.
+		if raw := parts[blob.Direction] == storage.AuditExposureRaw; raw != (len(blob.Ciphertext) == 0) {
+			t.Fatalf("%s full read ciphertext bytes=%d sealing=%q", blob.Direction, len(blob.Ciphertext), blob.Sealing)
 		}
 	}
 }

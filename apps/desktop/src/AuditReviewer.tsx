@@ -386,6 +386,27 @@ function HeaderList({
   );
 }
 
+/**
+ * The hint for a captured body this read leaves out: a raw part waits for
+ * an unlock or a raw password, or was never kept without one, so the
+ * capture switch is not the reason it is missing.
+ */
+export function withheldHint(
+  withheld: AuditWithheldPart | null | undefined,
+): string | null {
+  if (!withheld) return null;
+  switch (withheld.reason) {
+    case "raw_locked":
+      return i18n.t("rawSealing.lockedDetail");
+    case "raw_password_required":
+      return i18n.t("rawSealing.passwordRequiredDetail");
+    case "raw_not_kept":
+      return i18n.t("rawSealing.notKeptDetail");
+    default:
+      return i18n.t("rawSealing.withheldDetail");
+  }
+}
+
 export function AuditPartSection({
   title,
   part,
@@ -402,11 +423,16 @@ export function AuditPartSection({
   copyFeedback: CopyFeedback;
   /** Why a captured part is missing from this read, if it is. */
   withheld?: AuditWithheldPart | null;
-  /** Opens the raw unlock for a part sealed with the raw key. */
+  /**
+   * Opens the raw unlock for a part sealed with the raw key, or sets the
+   * raw password for one that waits for it.
+   */
   onUnlock?: () => void;
 }) {
   const t = i18n.t.bind(i18n);
-  const locked = part === null && withheld?.reason === "raw_locked";
+  const reason = part === null ? withheld?.reason : undefined;
+  const locked = reason === "raw_locked";
+  const awaitsPassword = reason === "raw_password_required";
   return (
     <DetailBlock
       actions={
@@ -419,14 +445,14 @@ export function AuditPartSection({
           >
             {copyButtonLabel(copyFeedback, sectionKey)}
           </Button>
-        ) : locked && onUnlock ? (
+        ) : (locked || awaitsPassword) && onUnlock ? (
           <Button
             className="h-auto px-0 text-xs"
             onClick={onUnlock}
             type="button"
             variant="link"
           >
-            {t("rawSealing.unlock")}
+            {locked ? t("rawSealing.unlock") : t("rawSealing.setAction")}
           </Button>
         ) : null
       }
@@ -441,12 +467,14 @@ export function AuditPartSection({
         >
           {locked ? (
             <StatusBadge tone="neutral">{t("rawSealing.locked")}</StatusBadge>
+          ) : awaitsPassword ? (
+            <StatusBadge tone="pending">
+              {t("rawSealing.passwordRequired")}
+            </StatusBadge>
+          ) : reason === "raw_not_kept" ? (
+            <StatusBadge tone="neutral">{t("rawSealing.notKept")}</StatusBadge>
           ) : null}
-          <span>
-            {locked
-              ? t("rawSealing.lockedDetail")
-              : t("rawSealing.withheldDetail")}
-          </span>
+          <span>{withheldHint(withheld)}</span>
           <span>{formatBytes(withheld.captured_bytes)}</span>
         </div>
       ) : (

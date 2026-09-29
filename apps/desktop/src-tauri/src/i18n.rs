@@ -128,6 +128,8 @@ mod tests {
             "host.tray.status.observed",
             "host.tray.status.observedRaw",
             "host.tray.status.rawAccessPending",
+            "host.tray.status.rawPasswordRequired",
+            "host.tray.status.rawKeyReplaced",
             "host.tray.menubar.alert",
             "host.tray.hiddenMenuBarTitle",
             "host.tray.hiddenMenuBarBody",

@@ -19,6 +19,7 @@ const bridgeMocks = vi.hoisted(() => ({
   listRequestRecordChildren: vi.fn(),
   listRequestRecords: vi.fn(),
   listRequestSessions: vi.fn(),
+  listenRawSealingChanged: vi.fn(async () => () => {}),
   lockRaw: vi.fn(),
   purgeRequestRecords: vi.fn(),
   saveTextFile: vi.fn(),
@@ -86,6 +87,7 @@ function rawSealing(overrides: Partial<RawSealingState> = {}): RawSealingState {
     raw_available: true,
     configured: true,
     password_set: true,
+    password_required: overrides.password_set === false,
     local_presence: false,
     envelopes: ["password"],
     key_verified: true,
@@ -95,7 +97,9 @@ function rawSealing(overrides: Partial<RawSealingState> = {}): RawSealingState {
     retry_after_seconds: 0,
     password_min_length: 8,
     password_max_length: 128,
+    key_replaced: false,
     presence_available: false,
+    keychain_build: false,
     ...overrides,
   };
 }
@@ -173,7 +177,11 @@ const secondRecord: RequestRecord = {
 
 /** A sealing status as the host returns it, without the presence flag. */
 function rawStatus(overrides: Partial<RawSealingState> = {}) {
-  const { presence_available: _presence, ...status } = rawSealing(overrides);
+  const {
+    presence_available: _presence,
+    keychain_build: _keychain,
+    ...status
+  } = rawSealing(overrides);
   return status;
 }
 
@@ -2890,7 +2898,63 @@ describe("RequestRecords", () => {
     expect(notifyMocks.success).not.toHaveBeenCalledWith("已设置原文口令");
     expect(proofDialog()).toBeNull();
     expect(captureSwitch().getAttribute("aria-checked")).toBe("true");
-    expect(document.querySelector('[data-slot="raw-upgrade-dot"]')).toBeNull();
+    expect(document.querySelector('[data-slot="raw-password-dot"]')).toBeNull();
+    expect(window.confirm).not.toHaveBeenCalled();
+  });
+
+  it("asks a signed Mac for a raw password before capture, with Touch ID", async () => {
+    // The keychain key a signed Mac creates on its own no longer suffices.
+    bridgeMocks.getRawSealingStatus.mockResolvedValue(
+      rawSealing({
+        raw_available: false,
+        password_set: false,
+        envelopes: ["local"],
+        local_presence: true,
+        presence_available: true,
+      }),
+    );
+    bridgeMocks.setRawPassword.mockResolvedValue({
+      outcome: "sealing",
+      status: rawStatus({
+        envelopes: ["password", "local"],
+        local_presence: true,
+      }),
+      reset: null,
+    });
+    await renderRecords();
+    await flush(1);
+
+    await act(async () => {
+      captureSwitch().click();
+      await Promise.resolve();
+    });
+    await flush();
+
+    const dialog = proofDialog();
+    expect(dialog?.textContent).toContain("确认开启正文捕获");
+    expect(dialog?.textContent).toContain("开启前需要设置原文口令");
+    expect(dialog?.querySelector('[data-slot="proof-presence"]')).not.toBe(
+      null,
+    );
+    expect(exactButton("确认开启", dialog!).disabled).toBe(true);
+    await typeNewRawPassword("correct horse");
+    await act(async () => {
+      exactButton("确认开启", dialog!).click();
+      await Promise.resolve();
+    });
+    await flush();
+
+    expect(bridgeMocks.setRawPassword).toHaveBeenCalledExactlyOnceWith(
+      "set",
+      "correct horse",
+      { kind: "local_presence" },
+    );
+    expect(bridgeMocks.updateAuditSettings).toHaveBeenCalledExactlyOnceWith({
+      request_body_enabled: true,
+      response_content_enabled: true,
+      audit_risk_acknowledged: true,
+    });
+    expect(captureSwitch().getAttribute("aria-checked")).toBe("true");
     expect(window.confirm).not.toHaveBeenCalled();
   });
 
@@ -2966,7 +3030,7 @@ describe("RequestRecords", () => {
     expect(captureSwitch().getAttribute("aria-checked")).toBe("false");
   });
 
-  it("points a capturing user without a raw key to the raw password", async () => {
+  it("points a capturing user without a raw password to one", async () => {
     bridgeMocks.getAuditSettings.mockResolvedValue({
       request_body_enabled: true,
       response_content_enabled: true,
@@ -2990,16 +3054,18 @@ describe("RequestRecords", () => {
 
     const settingsButton = exactButton("审计设置");
     expect(
-      settingsButton.querySelector('[data-slot="raw-upgrade-dot"]'),
+      settingsButton.querySelector('[data-slot="raw-password-dot"]'),
     ).not.toBeNull();
-    expect(settingsButton.title).toBe("设置原文口令后 Agent 才能申请原文。");
+    expect(settingsButton.title).toBe(
+      "未设置原文口令：原文正文不会被记录，升级前记录的原文在设置前也无法查看。",
+    );
 
     await act(async () => settingsButton.click());
     await flush();
     let panel = document.querySelector<HTMLElement>(
       '[data-slot="raw-password-panel"]',
     )!;
-    expect(panel.querySelector('[data-slot="raw-upgrade-hint"]')).not.toBe(
+    expect(panel.querySelector('[data-slot="raw-password-missing"]')).not.toBe(
       null,
     );
     expect(
@@ -3031,13 +3097,15 @@ describe("RequestRecords", () => {
     expect(
       panel.querySelector('[data-slot="raw-password-state"]')?.textContent,
     ).toBe("已设置");
-    expect(panel.querySelector('[data-slot="raw-upgrade-hint"]')).toBeNull();
+    expect(
+      panel.querySelector('[data-slot="raw-password-missing"]'),
+    ).toBeNull();
     const agentSwitch =
       panel.querySelector<HTMLButtonElement>('[role="switch"]')!;
     expect(agentSwitch.disabled).toBe(false);
     expect(agentSwitch.getAttribute("aria-checked")).toBe("true");
     expect(
-      exactButton("审计设置").querySelector('[data-slot="raw-upgrade-dot"]'),
+      exactButton("审计设置").querySelector('[data-slot="raw-password-dot"]'),
     ).toBeNull();
   });
 
@@ -3317,7 +3385,7 @@ describe("RequestRecords", () => {
     expect(container.textContent).not.toContain("sealed secret");
   });
 
-  it("does not open an unlock that this device cannot prove", async () => {
+  it("asks for a raw password instead of an unlock no proof can open", async () => {
     bridgeMocks.getRawSealingStatus.mockResolvedValue(
       rawSealing({ password_set: false, envelopes: ["local"] }),
     );
@@ -3357,11 +3425,18 @@ describe("RequestRecords", () => {
     });
     await flush();
 
-    expect(proofDialog()).toBeNull();
+    // Nothing unlocks raw content until a raw password is set (D11); this
+    // keychain key cannot be opened here, so only replacing it is left.
+    const dialog = proofDialog();
+    expect(dialog?.textContent).toContain("设置原文口令");
+    expect(
+      dialog?.querySelector('[data-slot="raw-replace-key"]')?.textContent,
+    ).toContain("已无法打开");
+    expect(exactButton("重置原文密钥", dialog!)).toBeTruthy();
+    expect(
+      dialog?.querySelector('input[autocomplete="current-password"]'),
+    ).toBe(null);
     expect(bridgeMocks.unlockRaw).not.toHaveBeenCalled();
-    expect(notifyMocks.error).toHaveBeenCalledWith(
-      "暂时无法使用 Touch ID，且未设置原文口令，此设备现在无法解锁原文。请在 Touch ID 可用时重试。",
-    );
   });
 
   it("keeps raw content locked when the sealing state cannot be read", async () => {

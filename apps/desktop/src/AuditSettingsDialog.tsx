@@ -22,7 +22,6 @@ const MIB = 1024 * 1024;
 export function AuditSettingsDialog({
   draft,
   busy,
-  captureEnabled,
   error,
   notice,
   rawSealing,
@@ -34,8 +33,6 @@ export function AuditSettingsDialog({
 }: {
   draft: AuditSettings | null;
   busy: boolean;
-  /** Body capture is on, as saved. */
-  captureEnabled: boolean;
   error: string | null;
   notice: string | null;
   rawSealing: RawSealingState | null;
@@ -87,7 +84,6 @@ export function AuditSettingsDialog({
                 <RawPasswordPanel
                   agentAccess={draft.agent_raw_access_enabled}
                   busy={busy}
-                  captureEnabled={captureEnabled}
                   error={rawSealingError}
                   onAction={onRawPasswordAction}
                   onAgentAccessChange={(value) =>
