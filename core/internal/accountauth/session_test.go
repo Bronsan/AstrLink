@@ -421,6 +421,10 @@ func TestBrowserAuthorizationUsesFallbackPortThenDeviceCode(t *testing.T) {
 				"interval":       "60",
 			})
 		case "/api/accounts/deviceauth/token":
+			// Keep poll connections out of the idle pool: net/http can close a
+			// pooled connection when cancelling the poll that just returned it,
+			// failing the next Begin with context.Canceled.
+			writer.Header().Set("Connection", "close")
 			writer.WriteHeader(http.StatusForbidden)
 		default:
 			http.NotFound(writer, request)

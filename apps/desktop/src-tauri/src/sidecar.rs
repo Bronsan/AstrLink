@@ -5638,6 +5638,9 @@ mod tests {
                         std::thread::sleep(Duration::from_millis(10));
                         continue;
                     };
+                    // BSD sockets inherit O_NONBLOCK from the listener, so reads
+                    // could fail with WouldBlock before the request arrives.
+                    stream.set_nonblocking(false).unwrap();
                     stream
                         .set_read_timeout(Some(Duration::from_secs(5)))
                         .unwrap();
