@@ -18,7 +18,8 @@ const (
 	// RawPasswordPath sets, changes or resets the raw password.
 	RawPasswordPath = "/control/v1/audit/raw-password"
 	// RawUnlockPath and RawLockPath start and end the operator's unlock
-	// session. Agent approvals never use that session.
+	// session. While it lasts an agent approval needs no password. A lock
+	// also revokes every agent grant unless its body keeps them.
 	RawUnlockPath = "/control/v1/audit/raw-unlock"
 	RawLockPath   = "/control/v1/audit/raw-lock"
 	// RawVerifyPath checks a proof without starting or touching the unlock
@@ -216,6 +217,8 @@ func (handler *Handler) postRawPassword(writer http.ResponseWriter, request *htt
 		handler.writeRawPasswordError(writer, err)
 		return
 	}
+	// Whatever an agent was granted under the old password ends with it.
+	handler.rawGrants.revokeAll()
 	handler.observers.noteRawEvent(rawPasswordEvents[action], RawAccessGrant{ClientName: classifyObserver(request)})
 	view, err := handler.rawSealingStatus(request, outcome.Status)
 	if err != nil {
@@ -309,12 +312,27 @@ func (handler *Handler) postRawProof(
 	handler.writeRawSealingStatus(writer, request, status)
 }
 
+type rawLockBody struct {
+	// KeepAgentGrants is set when the desktop locks on its own, as its main
+	// window hides; the operator's lock takes the grants back too.
+	KeepAgentGrants bool `json:"keep_agent_grants"`
+}
+
 func (handler *Handler) postRawLock(writer http.ResponseWriter, request *http.Request) {
 	controller, ok := handler.requireRawController(writer, request)
 	if !ok {
 		return
 	}
+	var body rawLockBody
+	if request.ContentLength != 0 {
+		if !requireMediaType(writer, request, "application/json") || !decodeControlJSON(writer, request, &body) {
+			return
+		}
+	}
 	controller.Lock()
+	if !body.KeepAgentGrants {
+		handler.rawGrants.revokeAll()
+	}
 	status, err := handler.rawVaultStatus(request.Context())
 	if err != nil {
 		writeError(writer, http.StatusInternalServerError, "raw_vault_unavailable", "raw sealing state is unavailable")

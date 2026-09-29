@@ -12,6 +12,7 @@ mod kek_store;
 mod macos_app;
 mod preferences;
 mod raw_access;
+mod raw_approval;
 mod raw_key_pin;
 mod recovery_path;
 mod service_proxy;
@@ -442,6 +443,7 @@ fn hide_main_window_to_tray(app: &tauri::AppHandle) {
     // A tray-parked app must not leave a following inspector on screen showing
     // a request the operator can no longer reach. Pinned ones stay.
     close_unpinned_inspectors(app);
+    raw_approval::lock_on_hide(app);
     notify_hidden_to_tray(app);
 }
 
@@ -1176,7 +1178,7 @@ async fn list_raw_access(
     manager.list_raw_access().await
 }
 
-/// Turns the dialog's proof into one for Core.
+/// Turns a window's proof into one for Core.
 fn raw_proof(arg: raw_access::ProofArg) -> raw_access::Proof {
     match arg {
         raw_access::ProofArg::Password { password } => raw_access::Proof::Password(password),
@@ -1198,6 +1200,15 @@ async fn decide_raw_access(
     manager
         .decide_raw_access(&grant_id, &decision, proof.as_ref())
         .await
+}
+
+/// Ends a running timed agent grant before it expires.
+#[tauri::command]
+async fn revoke_raw_grant(
+    grant_id: String,
+    manager: State<'_, Arc<CoreManager>>,
+) -> Result<serde_json::Value, String> {
+    manager.revoke_raw_grant(&grant_id).await
 }
 
 /// Raw sealing state plus whether the raw key was replaced outside the
@@ -1315,6 +1326,8 @@ async fn unlock_raw(
     broadcast_raw_sealing_change(&app, result)
 }
 
+/// The operator's own lock also revokes every agent grant; locking when the
+/// main window hides keeps them (`raw_approval::lock_on_hide`).
 #[tauri::command]
 async fn lock_raw(
     app: tauri::AppHandle,
@@ -1322,7 +1335,7 @@ async fn lock_raw(
     pins: State<'_, Arc<raw_key_pin::RawKeyPins>>,
 ) -> Result<serde_json::Value, String> {
     let _pinning = pins.guard().await;
-    let result = match manager.lock_raw().await {
+    let result = match manager.lock_raw(false).await {
         Ok(mut status) => {
             note_raw_key(&pins, &manager, &mut status, raw_key_pin::PinAction::Check).await;
             Ok(status)
@@ -1731,6 +1744,7 @@ pub fn run() {
             get_request_audit_content,
             list_raw_access,
             decide_raw_access,
+            revoke_raw_grant,
             raw_sealing_status,
             unlock_raw,
             lock_raw,
@@ -1891,6 +1905,26 @@ pub fn run() {
         {
             if label == tray::POPOVER_LABEL {
                 tray::on_popover_blur(app_handle);
+            }
+        }
+        if let RunEvent::WindowEvent {
+            label,
+            event: WindowEvent::Focused(focused),
+            ..
+        } = &event
+        {
+            if label == "main" {
+                raw_approval::on_main_focus(app_handle, *focused);
+            }
+        }
+        if let RunEvent::WindowEvent {
+            label,
+            event: WindowEvent::Resized(_),
+            ..
+        } = &event
+        {
+            if label == "main" {
+                raw_approval::on_main_resized(app_handle);
             }
         }
         if let RunEvent::WindowEvent {

@@ -3,6 +3,7 @@ import {
   useRef,
   useState,
   type ReactNode,
+  type Ref,
   type RefObject,
 } from "react";
 
@@ -32,6 +33,58 @@ const MAX_PASSWORD_LENGTH = 128;
 
 /** Fixed so password managers recognise the raw password field. */
 export const PROOF_PASSWORD_ID = "raw-current-password";
+
+/** Core would refuse the password, so no action should send it. */
+export function proofPasswordTooLong(password: string): boolean {
+  return passwordLength(password) > MAX_PASSWORD_LENGTH;
+}
+
+/**
+ * The raw password input every proof shares, with the length check Core
+ * applies. Its value lives only in the caller's state.
+ */
+export function ProofPasswordField({
+  disabled,
+  inputRef,
+  label,
+  onChange,
+  value,
+}: {
+  disabled?: boolean;
+  inputRef?: Ref<HTMLInputElement>;
+  label?: string;
+  onChange: (value: string) => void;
+  value: string;
+}) {
+  const t = useT();
+  const tooLong = proofPasswordTooLong(value);
+  return (
+    <div className="grid gap-1">
+      <Field
+        htmlFor={PROOF_PASSWORD_ID}
+        label={label ?? t("proofDialog.passwordLabel")}
+      >
+        <Input
+          aria-invalid={tooLong || undefined}
+          autoComplete="current-password"
+          disabled={disabled}
+          id={PROOF_PASSWORD_ID}
+          name="current-password"
+          onChange={(event) => onChange(event.target.value)}
+          ref={inputRef}
+          spellCheck={false}
+          type="password"
+          value={value}
+        />
+      </Field>
+      {tooLong ? (
+        <FormMessage tone="error">
+          {t("rawSealing.tooLong", { max: MAX_PASSWORD_LENGTH })}
+        </FormMessage>
+      ) : null}
+    </div>
+  );
+}
 
 /**
  * What the user gave to prove the action; a plain `confirm` click proves
@@ -162,8 +215,7 @@ export function ProofConfirmDialog(props: ProofConfirmDialogProps) {
   const retrySeconds =
     retryAt === null ? 0 : Math.max(1, Math.ceil((retryAt - now) / 1000));
   const needsPassword = proof === "password";
-  const passwordTooLong =
-    needsPassword && passwordLength(password) > MAX_PASSWORD_LENGTH;
+  const passwordTooLong = needsPassword && proofPasswordTooLong(password);
   const blocked =
     submitDisabled ||
     retryAt !== null ||
@@ -256,27 +308,13 @@ export function ProofConfirmDialog(props: ProofConfirmDialogProps) {
           </AlertDialogHeader>
           {children}
           {needsPassword ? (
-            <div className="grid gap-1">
-              <Field htmlFor={PROOF_PASSWORD_ID} label={passwordLabel}>
-                <Input
-                  aria-invalid={passwordTooLong || undefined}
-                  autoComplete="current-password"
-                  disabled={pending}
-                  id={PROOF_PASSWORD_ID}
-                  name="current-password"
-                  onChange={(event) => setPassword(event.target.value)}
-                  ref={passwordRef}
-                  spellCheck={false}
-                  type="password"
-                  value={password}
-                />
-              </Field>
-              {passwordTooLong ? (
-                <FormMessage tone="error">
-                  {t("rawSealing.tooLong", { max: MAX_PASSWORD_LENGTH })}
-                </FormMessage>
-              ) : null}
-            </div>
+            <ProofPasswordField
+              disabled={pending}
+              inputRef={passwordRef}
+              label={passwordLabel}
+              onChange={setPassword}
+              value={password}
+            />
           ) : null}
           {fields ? (
             // The caller's inputs wait with the proof while it is on its way.

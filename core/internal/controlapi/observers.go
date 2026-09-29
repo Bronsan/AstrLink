@@ -36,6 +36,7 @@ const (
 	RawAccessEventDenied          RawAccessEventKind = "denied"
 	RawAccessEventPasswordInvalid RawAccessEventKind = "password_invalid"
 	RawAccessEventRawRead         RawAccessEventKind = "raw_read"
+	RawAccessEventRevoked         RawAccessEventKind = "revoked"
 	// The raw password and key events record who changed what guards raw
 	// content, so a change the operator did not make is visible.
 	RawAccessEventPasswordSet     RawAccessEventKind = "raw_password_set"
@@ -71,6 +72,8 @@ type observerTracker struct {
 	now         func() time.Time
 	// pending counts raw access requests awaiting a decision.
 	pending func() int
+	// active counts timed raw grants still running.
+	active func() int
 	// passwordRequired reports whether raw capture waits for a raw password.
 	passwordRequired func(context.Context) bool
 }
@@ -163,6 +166,8 @@ type ObserversResponse struct {
 	LastRawReadAt *time.Time `json:"last_raw_read_at"`
 	// PendingRawAccess counts agent raw access requests awaiting a decision.
 	PendingRawAccess int `json:"pending_raw_access"`
+	// ActiveRawGrants counts timed raw grants still running.
+	ActiveRawGrants int `json:"active_raw_grants"`
 	// RawAccessEvents is the recent raw access log, oldest first.
 	RawAccessEvents []RawAccessEvent `json:"raw_access_events"`
 	// RawPasswordRequired is true while no raw password is set, so the
@@ -174,9 +179,12 @@ func (tracker *observerTracker) snapshot(ctx context.Context) ObserversResponse 
 	if tracker == nil {
 		return ObserversResponse{RawAccessEvents: []RawAccessEvent{}}
 	}
-	pending := 0
+	pending, active := 0, 0
 	if tracker.pending != nil {
 		pending = tracker.pending()
+	}
+	if tracker.active != nil {
+		active = tracker.active()
 	}
 	passwordRequired := tracker.passwordRequired != nil && tracker.passwordRequired(ctx)
 	tracker.mu.Lock()
@@ -184,6 +192,7 @@ func (tracker *observerTracker) snapshot(ctx context.Context) ObserversResponse 
 	response := ObserversResponse{
 		Client: tracker.client, Requests: tracker.requests, ReadLevel: tracker.readLevel,
 		PendingRawAccess:    pending,
+		ActiveRawGrants:     active,
 		RawAccessEvents:     append([]RawAccessEvent{}, tracker.events...),
 		RawPasswordRequired: passwordRequired,
 	}

@@ -23,6 +23,7 @@ export const readyTrayState = {
     observer_active: false,
     observer_read_level: null,
     pending_raw_access: 0,
+    active_raw_grants: 0,
     raw_password_required: false,
     raw_key_event: null,
     raw_key_replaced: false,
@@ -154,6 +155,12 @@ describe("tray state IPC contract", () => {
         view: { ...readyTrayState.view, pending_raw_access: -1 },
       }),
     ).toThrow("$.view.pending_raw_access");
+    expect(() =>
+      parseTrayState({
+        ...readyTrayState,
+        view: { ...readyTrayState.view, active_raw_grants: 1.5 },
+      }),
+    ).toThrow("$.view.active_raw_grants");
     expect(() =>
       parseTrayState({
         ...readyTrayState,

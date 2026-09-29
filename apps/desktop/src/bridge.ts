@@ -92,10 +92,12 @@ import {
   type RequestSessionPage,
 } from "./request-record-model";
 import {
+  parseRawAccessGrant,
   parseRawAccessList,
   parseRawAccessProofOutcome,
   type RawAccessDecision,
   type RawAccessGrant,
+  type RawAccessList,
   type RawAccessProofOutcome,
 } from "./raw-access-model";
 import {
@@ -601,14 +603,15 @@ export async function getRequestAuditContent(
   );
 }
 
-export async function listRawAccess(): Promise<RawAccessGrant[]> {
+export async function listRawAccess(): Promise<RawAccessList> {
   requireNativeBridge();
   return parseRawAccessList(await invoke<unknown>("list_raw_access"));
 }
 
 /**
- * Decides one agent raw access request. Approving needs the raw password,
- * which the host forwards once and keeps no copy of. Denying carries none.
+ * Decides one agent raw access request. While Core is unlocked an approval
+ * needs no proof; otherwise it carries the raw password, which the host
+ * forwards once and keeps no copy of. Denying carries none.
  */
 export async function decideRawAccess(
   grantId: string,
@@ -622,6 +625,14 @@ export async function decideRawAccess(
       decision,
       proof: decision === "deny" ? null : (proof ?? null),
     }),
+  );
+}
+
+/** Ends a running timed grant before it expires. */
+export async function revokeRawGrant(grantId: string): Promise<RawAccessGrant> {
+  requireNativeBridge();
+  return parseRawAccessGrant(
+    await invoke<unknown>("revoke_raw_grant", { grantId }),
   );
 }
 

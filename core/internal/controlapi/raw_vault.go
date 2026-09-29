@@ -322,11 +322,13 @@ func (opener sessionOpener) OpenBlobKey(blob storage.AuditBlob) ([]byte, error) 
 	return openRawBlobKey(vault.session, vault.sessionKeyID, blob)
 }
 
-// proofOpener lends a proof-opened private key to one callback.
+// proofOpener lends a private key to one callback, or to a holder until
+// Close.
 type proofOpener struct {
 	mu      sync.Mutex
 	private []byte
 	keyID   int64
+	cleared func([]byte)
 }
 
 func (opener *proofOpener) OpenBlobKey(blob storage.AuditBlob) ([]byte, error) {
@@ -338,13 +340,20 @@ func (opener *proofOpener) OpenBlobKey(blob storage.AuditBlob) ([]byte, error) {
 	return openRawBlobKey(opener.private, opener.keyID, blob)
 }
 
-func (opener *proofOpener) close() []byte {
+// Close zeroes the private key; later opens fail. It implements
+// RawKeyHolder and may be called more than once.
+func (opener *proofOpener) Close() {
 	opener.mu.Lock()
 	defer opener.mu.Unlock()
 	private := opener.private
+	if private == nil {
+		return
+	}
 	clear(private)
 	opener.private = nil
-	return private
+	if opener.cleared != nil {
+		opener.cleared(private)
+	}
 }
 
 func openRawBlobKey(private []byte, keyID int64, blob storage.AuditBlob) ([]byte, error) {
@@ -361,14 +370,30 @@ func (vault *Vault) WithProof(ctx context.Context, proof RawProof, use func(RawK
 	if err != nil {
 		return err
 	}
-	opener := &proofOpener{private: private, keyID: keyID}
-	defer func() {
-		cleared := opener.close()
-		if vault.privateCleared != nil {
-			vault.privateCleared(cleared)
-		}
-	}()
+	opener := &proofOpener{private: private, keyID: keyID, cleared: vault.privateCleared}
+	defer opener.Close()
 	return use(opener)
+}
+
+// HoldKey implements RawVault. An empty proof copies the unlock session's
+// key without extending its idle window, so holding a key is not a raw
+// read by the operator.
+func (vault *Vault) HoldKey(ctx context.Context, proof RawProof) (RawKeyHolder, error) {
+	if proof.Empty() {
+		vault.mu.Lock()
+		defer vault.mu.Unlock()
+		if !vault.sessionActiveLocked(vault.now()) {
+			return nil, ErrRawProofRequired
+		}
+		return &proofOpener{
+			private: append([]byte(nil), vault.session...), keyID: vault.sessionKeyID, cleared: vault.privateCleared,
+		}, nil
+	}
+	private, keyID, err := vault.openWithProof(ctx, proof)
+	if err != nil {
+		return nil, err
+	}
+	return &proofOpener{private: private, keyID: keyID, cleared: vault.privateCleared}, nil
 }
 
 // Unlock implements RawVaultController.

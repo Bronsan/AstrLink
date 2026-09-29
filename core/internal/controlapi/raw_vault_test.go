@@ -577,16 +577,17 @@ func operatorRawStatus(t *testing.T, handler *Handler) RawSealingStatus {
 	return status
 }
 
+func passwordBody(action, password, proof string) string {
+	body := `{"action":"` + action + `","password":` + password
+	if proof != "" {
+		body += `,"proof":` + proof
+	}
+	return body + `}`
+}
+
 func TestRawSealingRoutes(t *testing.T) {
 	fixture := newRawVaultFixture(t)
 	handler := fixture.handler
-	passwordBody := func(action, password, proof string) string {
-		body := `{"action":"` + action + `","password":` + password
-		if proof != "" {
-			body += `,"proof":` + proof
-		}
-		return body + `}`
-	}
 
 	// The agent-readable observer state tells the tray the password is
 	// still missing and logs who touched the password or key.
@@ -743,15 +744,12 @@ func TestRawSealingRoutes(t *testing.T) {
 		t.Fatalf("unlocked read=%#v", content.RequestBody)
 	}
 
-	// The unlock session never approves an agent: decisions still need proof,
-	// and the proof's private key is zeroed once the part keys are out.
+	// While unlocked an approval takes no password. A once approval copies
+	// the session key and zeroes the copy once the part keys are out.
 	var cleared []byte
 	fixture.vault.privateCleared = func(private []byte) { cleared = private }
 	grant := requestRawGrant(t, handler, rawTestRequestID)
-	wantRawStatus(t, decideRawGrant(t, handler, grant.GrantID, `{"decision":"once"}`),
-		http.StatusUnprocessableEntity, "raw_proof_required")
-	wantRawStatus(t, decideRawGrant(t, handler, grant.GrantID, `{"decision":"once","proof":{"password":`+rawTestPasswordJS+`}}`),
-		http.StatusOK, "")
+	wantRawStatus(t, decideRawGrant(t, handler, grant.GrantID, `{"decision":"once"}`), http.StatusOK, "")
 	if len(cleared) != rawseal.PrivateKeyBytes || strings.Trim(string(cleared), "\x00") != "" {
 		t.Fatal("the approval left the private key in memory")
 	}
@@ -827,6 +825,80 @@ func TestRawSealingRoutes(t *testing.T) {
 		http.StatusMethodNotAllowed, "method_not_allowed")
 	wantRawStatus(t, rawHTTP(t, bare, rawAsAgent, http.MethodGet, RawLockPath, "", ""),
 		http.StatusForbidden, "forbidden")
+}
+
+func TestRawGrantsFollowLocksAndPasswordChanges(t *testing.T) {
+	fixture := newRawVaultFixture(t)
+	handler := fixture.handler
+	mustSetRawPassword(t, fixture.vault, rawTestPassword, RawProof{})
+	captureRawTestParts(t, fixture.store)
+	full := rawAuditPath(rawTestRequestID)
+	unlock := `{"proof":{"password":` + rawTestPasswordJS + `}}`
+	readsRaw := func(token string) bool {
+		t.Helper()
+		response := rawHTTP(t, handler, rawAsAgent, http.MethodGet, full, "", token)
+		if response.Code != http.StatusOK {
+			wantRawStatus(t, response, http.StatusForbidden, "raw_grant_invalid")
+			return false
+		}
+		return strings.Contains(response.Body.String(), rawTestSecret)
+	}
+
+	wantRawStatus(t, rawHTTP(t, handler, rawAsOperator, http.MethodPost, RawUnlockPath, unlock, ""), http.StatusOK, "")
+	var cleared []byte
+	fixture.vault.privateCleared = func(private []byte) { cleared = private }
+	grant := requestRawGrant(t, handler, rawTestRequestID)
+	wantRawStatus(t, decideRawGrant(t, handler, grant.GrantID, `{"decision":"window_1h"}`), http.StatusOK, "")
+
+	// Locking as the window hides keeps agent grants, and a timed grant
+	// outlives the unlock session it was approved in.
+	wantRawStatus(t, rawHTTP(t, handler, rawAsOperator, http.MethodPost, RawLockPath, `{"keep_agent_grants":true}`, ""),
+		http.StatusOK, "")
+	if status := operatorRawStatus(t, handler); status.Unlocked {
+		t.Fatal("the lock left the session open")
+	}
+	fixture.clock.Advance(rawUnlockIdle + time.Minute)
+	if !readsRaw(grant.GrantToken) {
+		t.Fatal("a timed grant stopped with the unlock session")
+	}
+	wantRawStatus(t, rawHTTP(t, handler, rawAsOperator, http.MethodPost, RawLockPath, `{"keep":true}`, ""),
+		http.StatusBadRequest, "invalid_json")
+
+	// The operator's lock takes every grant back and zeroes the held key.
+	if cleared != nil {
+		t.Fatal("the grant's key was zeroed while it still ran")
+	}
+	wantRawStatus(t, rawHTTP(t, handler, rawAsOperator, http.MethodPost, RawLockPath, "", ""), http.StatusOK, "")
+	if len(cleared) != rawseal.PrivateKeyBytes || strings.Trim(string(cleared), "\x00") != "" {
+		t.Fatal("the lock left a grant's private key in memory")
+	}
+	if readsRaw(grant.GrantToken) {
+		t.Fatal("a grant outlived the operator's lock")
+	}
+
+	// A locked Core needs the password to approve.
+	changed := requestRawGrant(t, handler, rawTestRequestID)
+	wantRawStatus(t, decideRawGrant(t, handler, changed.GrantID, `{"decision":"window_5m"}`),
+		http.StatusUnprocessableEntity, "raw_proof_required")
+	wantRawStatus(t, decideRawGrant(t, handler, changed.GrantID, `{"decision":"window_5m","proof":{"password":`+rawTestPasswordJS+`}}`),
+		http.StatusOK, "")
+	if !readsRaw(changed.GrantToken) {
+		t.Fatal("a password approval did not read")
+	}
+	wantRawStatus(t, rawHTTP(t, handler, rawAsOperator, http.MethodPost, RawPasswordPath,
+		passwordBody("change", `"another phrase"`, `{"password":`+rawTestPasswordJS+`}`), ""), http.StatusOK, "")
+	if readsRaw(changed.GrantToken) {
+		t.Fatal("a grant outlived a password change")
+	}
+
+	reset := requestRawGrant(t, handler, rawTestRequestID)
+	wantRawStatus(t, decideRawGrant(t, handler, reset.GrantID, `{"decision":"window_5m","proof":{"password":"another phrase"}}`),
+		http.StatusOK, "")
+	wantRawStatus(t, rawHTTP(t, handler, rawAsOperator, http.MethodPost, RawPasswordPath, passwordBody("reset", `"a third phrase"`, ""), ""),
+		http.StatusOK, "")
+	if readsRaw(reset.GrantToken) {
+		t.Fatal("a grant outlived a key reset")
+	}
 }
 
 const (

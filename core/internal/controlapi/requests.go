@@ -392,7 +392,8 @@ func writeRawGrantError(writer http.ResponseWriter, err error) bool {
 	case errors.Is(err, errRawGrantDenied):
 		writeError(writer, http.StatusForbidden, "raw_access_denied", "raw access was denied on the desktop")
 	default:
-		writeError(writer, http.StatusForbidden, "raw_grant_invalid", "raw grant is unknown, expired, or for another request")
+		writeError(writer, http.StatusForbidden, "raw_grant_invalid",
+			"raw grant is unknown, expired, revoked, or for another request; request raw access again")
 	}
 	return false
 }
@@ -504,6 +505,15 @@ func (reader *auditReader) auditKeyOrphaned() bool {
 func (reader *auditReader) openRawSealed(blob storage.AuditBlob) ([]byte, contract.AuditWithheldReason, error) {
 	var partKey []byte
 	switch {
+	case reader.lease != nil && reader.lease.opener != nil:
+		key, err := reader.lease.opener.OpenBlobKey(blob)
+		if err != nil {
+			// Sealed to a key the grant does not hold, or the grant
+			// ended during this read.
+			return nil, privacyWithheldReason(reader.record, blob), nil
+		}
+		defer clear(key)
+		partKey = key
 	case reader.lease != nil:
 		partKey = reader.lease.keys[blob.Direction]
 		if len(partKey) == 0 {

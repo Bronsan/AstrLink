@@ -110,7 +110,10 @@ x-astrlink-implementation:
     - GET /control/v1/requests/{request_id}/audit
     - POST /control/v1/requests/{request_id}/audit/raw-access
     - GET /control/v1/audit/raw-access
+    - DELETE /control/v1/audit/raw-access/{grant_id}
     - POST /control/v1/audit/raw-access/{grant_id}/decision
+    - GET /control/v1/audit/raw-grant
+    - DELETE /control/v1/audit/raw-grant
     - GET /control/v1/audit/raw-sealing
     - POST /control/v1/audit/raw-password
     - POST /control/v1/audit/raw-unlock
@@ -2458,7 +2461,9 @@ paths:
             $ref: "#/components/schemas/AuditContentView"
         - name: X-AstrLink-Raw-Grant
           in: header
-          description: Token of an approved raw access grant for this request. Each read spends one of the grant's reads.
+          description: |
+            Token of an approved raw access grant. A `once` grant reads its own
+            request one time; a timed grant reads any request until it ends.
           schema:
             type: string
             minLength: 1
@@ -2493,11 +2498,11 @@ paths:
       x-astrlink-role: observer
       tags: [Requests]
       operationId: requestRawAuditAccess
-      summary: Ask the desktop operator to approve one read of a request's raw parts.
+      summary: Ask the desktop operator to approve reading a request's raw parts.
       description: |
         Files an in-memory grant awaiting a desktop decision. The returned token is
-        useless until the operator approves with the raw password; it is shown
-        only in this response and is stored as a hash. A
+        useless until the operator approves; it is shown only in this response
+        and is stored as a hash. A
         Core restart invalidates every grant. A new request from the same client
         for the same request replaces the one still awaiting a decision; at most
         16 requests may await a decision.
@@ -2535,11 +2540,11 @@ paths:
       x-astrlink-role: operator
       tags: [Requests]
       operationId: listRawAuditAccess
-      summary: List agent raw access grants awaiting a decision.
+      summary: List agent raw access grants awaiting a decision and timed grants still running.
       description: Grant tokens are never returned.
       responses:
         "200":
-          description: Pending grants, oldest first.
+          description: Pending and running grants, oldest first.
           headers:
             Cache-Control:
               $ref: "#/components/headers/NoStore"
@@ -2547,18 +2552,64 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [items]
+                required: [items, active, unlocked]
                 properties:
                   items:
                     type: array
                     maxItems: 32
                     items:
                       $ref: "#/components/schemas/RawAccessGrant"
+                    description: Grants awaiting a decision.
+                  active:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/RawAccessGrant"
+                    description: Approved timed grants that have not ended.
+                  unlocked:
+                    type: boolean
+                    description: |
+                      True while the operator's unlock session lasts, so an
+                      approval needs no password.
                 additionalProperties: false
         "401":
           $ref: "#/components/responses/Unauthorized"
         "403":
           $ref: "#/components/responses/Forbidden"
+  /control/v1/audit/raw-access/{grant_id}:
+    x-astrlink-implementation-status: implemented
+    parameters:
+      - name: grant_id
+        in: path
+        required: true
+        schema:
+          type: string
+          pattern: "^rawgrant_[0-9a-f]{16}$"
+    delete:
+      x-astrlink-role: operator
+      tags: [Requests]
+      operationId: revokeRawAuditAccess
+      summary: Revoke a running timed grant.
+      description: |
+        Ends the grant and zeroes the raw key it holds. A grant that is not a
+        running timed grant returns 409 `raw_access_not_active`.
+      responses:
+        "200":
+          description: The revoked grant.
+          headers:
+            Cache-Control:
+              $ref: "#/components/headers/NoStore"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RawAccessGrant"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
   /control/v1/audit/raw-access/{grant_id}/decision:
     x-astrlink-implementation-status: implemented
     parameters:
@@ -2574,10 +2625,14 @@ paths:
       operationId: decideRawAuditAccess
       summary: Approve or deny a pending agent raw access grant.
       description: |
-        `deny` needs no proof. `once` allows one read and `window_15m` allows up to
-        50 reads for 15 minutes; both need a fresh proof, which never uses or
-        extends the desktop's own unlock session. Repeated wrong passwords back
-        off exponentially and return 429 with `Retry-After`.
+        `deny` needs no proof. `once` allows one read of the requested record.
+        `window_5m` and `window_1h` allow unlimited reads of every request,
+        including ones recorded while the grant runs, until the window ends;
+        the grant keeps its own copy of the raw key, which is zeroed when it
+        ends, is revoked, or Core exits. While the operator's unlock session
+        lasts an approval needs no proof; otherwise it needs the raw password
+        and returns 422 `raw_proof_required` without one. Repeated wrong
+        passwords back off exponentially and return 429 with `Retry-After`.
       requestBody:
         required: true
         content:
@@ -2610,6 +2665,64 @@ paths:
           $ref: "#/components/responses/TooManyRequests"
         "500":
           $ref: "#/components/responses/InternalServerError"
+  /control/v1/audit/raw-grant:
+    x-astrlink-implementation-status: implemented
+    parameters:
+      - name: X-AstrLink-Raw-Grant
+        in: header
+        required: true
+        description: The grant token returned when the request was filed.
+        schema:
+          type: string
+          minLength: 1
+          maxLength: 128
+    get:
+      x-astrlink-role: observer
+      tags: [Requests]
+      operationId: getRawAuditGrant
+      summary: Read the state of the caller's own raw access grant.
+      description: |
+        While `agent_raw_access_enabled` is off it returns 409
+        `raw_access_disabled`. An unknown token returns 403 `raw_grant_invalid`.
+      responses:
+        "200":
+          description: The grant.
+          headers:
+            Cache-Control:
+              $ref: "#/components/headers/NoStore"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RawAccessGrant"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          $ref: "#/components/responses/Conflict"
+    delete:
+      x-astrlink-role: observer
+      tags: [Requests]
+      operationId: revokeRawAuditGrant
+      summary: Revoke the caller's own raw access grant.
+      description: |
+        Whoever holds the token may revoke it; no password is needed. Revoking
+        a grant that already ended returns its final state. An unknown token
+        returns 403 `raw_grant_invalid`.
+      responses:
+        "200":
+          description: The grant after revoking.
+          headers:
+            Cache-Control:
+              $ref: "#/components/headers/NoStore"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RawAccessGrant"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
   /control/v1/audit/raw-sealing:
     x-astrlink-implementation-status: implemented
     get:
@@ -2652,7 +2765,8 @@ paths:
         recovered from.
         Passwords contain 8 to 128 characters.
         Raw parts are kept only once a password protects the raw key. Wrong
-        proofs back off like raw access decisions.
+        proofs back off like raw access decisions. A successful call revokes
+        every agent grant.
       requestBody:
         required: true
         content:
@@ -2693,7 +2807,8 @@ paths:
       description: |
         Opens the raw key with a proof and keeps it in Core memory until 15
         minutes pass without a raw read, `raw-lock` is called, or Core exits.
-        Agent raw access grants never use this session. Without a raw password
+        While it lasts, approving an agent request needs no password; the
+        approved grant keeps its own key and outlives it. Without a raw password
         it returns 409 `raw_access_unavailable`. Repeated wrong proofs return
         429 with `Retry-After`.
       requestBody:
@@ -2776,7 +2891,16 @@ paths:
       tags: [Requests]
       operationId: lockRawSealing
       summary: End the operator's raw unlock session now.
-      description: Clears the raw private key from Core memory. Approved agent grants are unaffected.
+      description: |
+        Clears the raw private key from Core memory and revokes every agent
+        grant. The desktop's automatic lock, when its window is hidden or
+        minimized, sends `keep_agent_grants: true` to leave the grants running.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RawLockRequest"
       responses:
         "200":
           description: The locked raw sealing state.
@@ -6399,12 +6523,19 @@ components:
           maxLength: 64
           description: Agent client name shown to the operator. Defaults to `agent`.
       additionalProperties: false
+    RawLockRequest:
+      type: object
+      properties:
+        keep_agent_grants:
+          type: boolean
+          default: false
+      additionalProperties: false
     RawAccessGrantStatus:
       type: string
-      enum: [pending, approved, denied, expired, consumed]
+      enum: [pending, approved, denied, expired, consumed, revoked]
     RawAccessDecisionMode:
       type: string
-      enum: [once, window_15m, deny]
+      enum: [once, window_5m, window_1h, deny]
     RawAccessGrant:
       allOf:
         - $ref: "#/components/schemas/RawAccessGrantFields"
@@ -6431,6 +6562,12 @@ components:
           $ref: "#/components/schemas/RawAccessGrantStatus"
         decision:
           $ref: "#/components/schemas/RawAccessDecisionMode"
+        scope:
+          type: string
+          enum: [request, all_requests]
+          description: |
+            Present once decided: `request` for a `once` grant, `all_requests`
+            for a timed grant.
         reason:
           type: string
           minLength: 1
@@ -6480,7 +6617,9 @@ components:
           oneOf:
             - $ref: "#/components/schemas/RawProof"
             - type: "null"
-          description: Required for `once` and `window_15m`; ignored for `deny`.
+          description: |
+            The raw password. Needed to approve while the operator's unlock
+            session is closed; ignored for `deny`.
       additionalProperties: false
     RawAccessEvent:
       type: object
@@ -6504,6 +6643,7 @@ components:
               denied,
               password_invalid,
               raw_read,
+              revoked,
               raw_password_set,
               raw_password_changed,
               raw_key_reset,
@@ -6673,6 +6813,7 @@ components:
         - read_level
         - last_raw_read_at
         - pending_raw_access
+        - active_raw_grants
         - raw_access_events
         - raw_password_required
       properties:
@@ -6695,6 +6836,10 @@ components:
         pending_raw_access:
           type: integer
           minimum: 0
+        active_raw_grants:
+          type: integer
+          minimum: 0
+          description: Approved timed grants that have not ended.
         raw_access_events:
           type: array
           maxItems: 64

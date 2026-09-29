@@ -315,8 +315,9 @@ operator_reads = %w[
   /control/v1/builtin-tools/{kind}/credential
   /control/v1/audit/raw-access
 ]
-# An agent may ask for raw access; only the operator can approve it.
-observer_writes = %w[/control/v1/requests/{request_id}/audit/raw-access]
+# An agent may ask for raw access and give up its own grant; only the
+# operator can approve it.
+observer_writes = %w[/control/v1/requests/{request_id}/audit/raw-access /control/v1/audit/raw-grant]
 openapi.fetch("paths").each do |path, item|
   item.slice("get", "head", "post", "put", "patch", "delete").each do |method, operation|
     role = operation["x-astrlink-role"]

@@ -36,6 +36,10 @@ func (provenRawVault) WithProof(context.Context, RawProof, func(RawKeyOpener) er
 	return ErrRawProofRequired
 }
 
+func (provenRawVault) HoldKey(context.Context, RawProof) (RawKeyHolder, error) {
+	return nil, ErrRawProofRequired
+}
+
 // ReadFullAudit returns the full audit view of one request as an unlocked
 // operator sees it. opener is the raw key the caller proved with the raw
 // password, or nil when none is set; no raw part was kept then. It serves

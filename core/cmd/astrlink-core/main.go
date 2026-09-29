@@ -342,6 +342,9 @@ func main() {
 		go func() { defer monitors.Done(); subscriptionManager.RunUsageMonitor(monitorCtx) }()
 		go func() { defer monitors.Done(); rawVault.Run(monitorCtx) }()
 		closeStore = func() error {
+			// Zero every key an agent grant or the unlock session holds.
+			handler.RevokeRawGrants()
+			rawVault.Lock()
 			stopMonitors()
 			monitors.Wait()
 			return store.Close()

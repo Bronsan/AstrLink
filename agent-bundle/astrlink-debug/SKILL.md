@@ -16,9 +16,10 @@ text.
 ## Use the AstrLink CLI
 
 AstrLink installed a read-only command-line tool at `{{ASTRLINK_CLI}}`. Run it
-from your shell tool. It only reads; the one exception is `raw-audit`, which
-files an approval request that the user decides in the AstrLink desktop. Use it
-instead of calling the Control API with curl or reading SQLite.
+from your shell tool. It only reads; the exceptions are `raw-audit`, which files
+an approval request that the user decides in the AstrLink desktop, and
+`raw-revoke`, which gives up a raw access grant. Use it instead of calling the
+Control API with curl or reading SQLite.
 
 Run each command exactly as shown, as the whole shell command: no pipes, `&&`,
 `;`, redirections, `cd`, or environment prefixes. The host's allow rules match
@@ -135,12 +136,34 @@ has `raw_available: true` and the shareable parts cannot answer the question:
    timeout in your shell tool: it waits up to 10 minutes for the decision. If
    your tool allows less, pass `--wait` just under its limit, for example
    `--wait 110s` for a 2-minute limit.
-3. Ask the user to approve it in the AstrLink desktop while the command waits.
-   Approval needs the user's raw password. Only the user can approve; do not try
-   to click, script, or otherwise complete the approval yourself.
-4. Once approved, the command prints the audit with `content_view: "raw"`. An
-   approval for "only this time" allows one read. If the wait ends first, ask
-   the user whether they still want to approve before running it again.
+3. Ask the user to approve it in AstrLink's approval window while the command
+   waits. Only the user can approve; do not try to click, script, or otherwise
+   complete the approval yourself.
+4. Once approved, the command prints the audit with `content_view: "raw"`. A
+   one-time approval (`once`) allows one read of that request and prints no
+   token. A timed approval (`window_5m` or `window_1h`) lets you read the raw
+   parts of every request; the output then carries `raw_grant` with its
+   `grant_token`. If the wait ends first, ask the user whether they still want
+   to approve before running it again.
+
+These rules for a `grant_token` are mandatory:
+
+- Use the same token for the whole investigation: every later raw read, on any
+  request, is `{{ASTRLINK_CLI}} raw-audit <id> --grant <token>`. Do not file a
+  new request while the token works, and do not revoke it mid-investigation.
+- You may give the token to subagents working on the same investigation, only
+  through their task prompt. Subagents read with `--grant` and never run
+  `raw-revoke`.
+- Only the agent that started the investigation revokes the token, exactly once,
+  with `{{ASTRLINK_CLI}} raw-revoke --grant <token>`, when the whole
+  investigation ends: it is finished, it cannot continue or it failed, or the
+  user asked you to stop. Revoke before you give your final result.
+- Never write the token into files, code, notes, or commits, and never carry it
+  into an unrelated later task.
+- A one-time approval has no token and needs no revoke.
+- If `raw-audit --grant` fails with `raw_grant_invalid` (the token expired, was
+  revoked, or is unknown), request access again with
+  `{{ASTRLINK_CLI}} raw-audit <id> --reason "<why>" --agent "<name>"`.
 
 If a withheld part has `raw_available: false`, or `raw-audit` fails with
 `raw_access_disabled`, `raw_access_unavailable`, or `raw_access_denied`, do not

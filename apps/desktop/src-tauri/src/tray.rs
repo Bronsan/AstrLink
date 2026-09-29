@@ -222,10 +222,17 @@ pub struct TrayStateSnapshot {
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum TrayAction {
     Open,
-    Navigate { page: String },
+    Navigate {
+        page: String,
+    },
     CopyAddress,
-    Core { op: CoreOp },
+    Core {
+        op: CoreOp,
+    },
     Refresh,
+    /// Opens the raw access approval window, which lists pending requests
+    /// and running grants.
+    RawAccess,
     Quit,
 }
 
@@ -301,8 +308,9 @@ fn status_line(view: &CoreView, locale: Locale) -> (String, TrayIconState) {
                     &[],
                 ));
             }
-            // An agent waiting on the operator is as worth noticing as one
-            // reading; both switch to the watched icon.
+            // An agent waiting on the operator, or one holding a timed grant,
+            // is as worth noticing as one reading; all switch to the watched
+            // icon.
             if view.pending_raw_access > 0 {
                 text.push_str(" · ");
                 text.push_str(&t(
@@ -310,9 +318,16 @@ fn status_line(view: &CoreView, locale: Locale) -> (String, TrayIconState) {
                     &[("count", &view.pending_raw_access.to_string())],
                 ));
             }
-            // Only the main window asks for the raw password; say so where a
-            // user who closed it still looks. No agent is involved, so the
-            // icon keeps its meaning.
+            if view.active_raw_grants > 0 {
+                text.push_str(" · ");
+                text.push_str(&t(
+                    "host.tray.status.rawGrantsActive",
+                    &[("count", &view.active_raw_grants.to_string())],
+                ));
+            }
+            // The raw password is set up only in the main window; say so
+            // where a user who closed it still looks. No agent is involved,
+            // so the icon keeps its meaning.
             if view.raw_password_required {
                 text.push_str(" · ");
                 text.push_str(&t("host.tray.status.rawPasswordRequired", &[]));
@@ -323,7 +338,7 @@ fn status_line(view: &CoreView, locale: Locale) -> (String, TrayIconState) {
                 text.push_str(" · ");
                 text.push_str(&t("host.tray.status.rawKeyReplaced", &[]));
             }
-            if view.observer_active || view.pending_raw_access > 0 {
+            if view.observer_active || view.pending_raw_access > 0 || view.active_raw_grants > 0 {
                 return (text, TrayIconState::Watched);
             }
             (text, TrayIconState::Ready)
@@ -1273,6 +1288,10 @@ pub fn perform(app: &AppHandle, action: TrayAction) -> Result<(), String> {
         TrayAction::Core { op } => run_core(app, op),
         // An explicit refresh means "now", plan windows included.
         TrayAction::Refresh => request_usage_refresh(app, true, PlanRefresh::Force),
+        TrayAction::RawAccess => {
+            hide_popover(app);
+            crate::raw_approval::open(app, true)?;
+        }
         TrayAction::Quit => quit(app),
     }
     Ok(())
@@ -1700,11 +1719,25 @@ pub fn start(app: &AppHandle) {
     tauri::async_runtime::spawn(async move {
         let mut was_ready = false;
         let mut last_raw_key_event = None;
+        let mut last_pending_raw_access = 0;
         while changes.changed().await.is_ok() {
-            let (ready, raw_key_event) = {
+            let (ready, raw_key_event, pending_raw_access) = {
                 let view = changes.borrow_and_update();
-                (view.phase == CorePhase::Ready, view.raw_key_event.clone())
+                (
+                    view.phase == CorePhase::Ready,
+                    view.raw_key_event.clone(),
+                    view.pending_raw_access,
+                )
             };
+            // A new agent request opens the approval window without taking
+            // focus, with a notification in case the operator looks away.
+            if pending_raw_access > last_pending_raw_access {
+                if let Err(error) = crate::raw_approval::open(&watcher, false) {
+                    eprintln!("unable to open the raw access approval window: {error}");
+                }
+                crate::raw_approval::notify_pending(&watcher);
+            }
+            last_pending_raw_access = pending_raw_access;
             // A key replaced while the app was closed, or through another
             // client of this Core, is only noticed by comparing it with the
             // pin; do so without waiting for a window to ask.
@@ -1775,6 +1808,7 @@ mod tests {
             observer_active: false,
             observer_read_level: None,
             pending_raw_access: 0,
+            active_raw_grants: 0,
             raw_password_required: false,
             raw_key_event: None,
             raw_key_replaced: false,
@@ -1898,6 +1932,21 @@ mod tests {
             model.tooltip,
             "AstrLink · Gateway running · 127.0.0.1:8317 · Raw access requests awaiting you: 1"
         );
+        // A running timed grant keeps the watched icon until it ends.
+        let mut granted = ready_view();
+        granted.active_raw_grants = 2;
+        let model = tray_model(
+            &granted,
+            &TrayPreferences::default(),
+            None,
+            Locale::En,
+            QuotaDisplayMode::Remaining,
+        );
+        assert_eq!(model.icon, TrayIconState::Watched);
+        assert_eq!(
+            model.tooltip,
+            "AstrLink · Gateway running · 127.0.0.1:8317 · Agents that may read raw content: 2"
+        );
         // A missing raw password points at the main window's setup without
         // pretending an agent is reading.
         let mut gated = ready_view();
@@ -1912,7 +1961,7 @@ mod tests {
         assert_eq!(model.icon, TrayIconState::Ready);
         assert_eq!(
             model.tooltip,
-            "AstrLink · 网关运行中 · 127.0.0.1:8317 · 尚未设置原文口令，请打开 AstrLink 设置"
+            "AstrLink · 网关运行中 · 127.0.0.1:8317 · 请求原文还没有保护，请打开 AstrLink 设置"
         );
         gated.pending_raw_access = 1;
         let model = tray_model(
@@ -1925,7 +1974,7 @@ mod tests {
         assert_eq!(model.icon, TrayIconState::Watched);
         assert_eq!(
             model.tooltip,
-            "AstrLink · Gateway running · 127.0.0.1:8317 · Raw access requests awaiting you: 1 · Raw password not set; open AstrLink to set it"
+            "AstrLink · Gateway running · 127.0.0.1:8317 · Raw access requests awaiting you: 1 · Raw request content is not protected yet; open AstrLink to set it up"
         );
         // A raw key replaced outside the desktop points at the main window's
         // warning; no agent is involved either.
@@ -1968,6 +2017,7 @@ mod tests {
             observer_active: false,
             observer_read_level: None,
             pending_raw_access: 0,
+            active_raw_grants: 0,
             raw_password_required: false,
             raw_key_event: None,
             raw_key_replaced: false,
@@ -2314,6 +2364,9 @@ mod tests {
                 page: "records".to_string()
             }
         );
+        let action: TrayAction =
+            serde_json::from_value(serde_json::json!({"kind": "raw_access"})).unwrap();
+        assert_eq!(action, TrayAction::RawAccess);
         assert!(
             serde_json::from_value::<TrayAction>(serde_json::json!({"kind": "explode"})).is_err()
         );

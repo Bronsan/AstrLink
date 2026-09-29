@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  formatRemaining,
   oldestPendingGrant,
+  parseRawAccessList,
   parseRawAccessProofOutcome,
   type RawAccessGrant,
 } from "./raw-access-model";
@@ -24,7 +26,11 @@ describe("raw access proof outcomes", () => {
         grant: { ...grant, status: "approved", decision: "once" },
       }),
     ).toMatchObject({ outcome: "decided", grant: { decision: "once" } });
-    for (const outcome of ["password_invalid", "not_pending"]) {
+    for (const outcome of [
+      "proof_required",
+      "password_invalid",
+      "not_pending",
+    ]) {
       expect(parseRawAccessProofOutcome({ outcome })).toEqual({ outcome });
     }
     expect(
@@ -45,6 +51,54 @@ describe("raw access proof outcomes", () => {
         retry_after_seconds: 0,
       }),
     ).toThrow("$.retry_after_seconds");
+  });
+});
+
+describe("raw access lists", () => {
+  it("reads pending requests, running grants, and the unlock state", () => {
+    const running = {
+      ...grant,
+      grant_id: "rawgrant_1111111111111111",
+      status: "approved",
+      decision: "window_5m",
+      scope: "all_requests",
+    };
+    expect(
+      parseRawAccessList({ items: [grant], active: [running], unlocked: true }),
+    ).toMatchObject({
+      pending: [{ grant_id: grant.grant_id, scope: null }],
+      active: [{ decision: "window_5m", scope: "all_requests" }],
+      unlocked: true,
+    });
+  });
+
+  it("rejects removed decisions, unknown scopes, and missing fields", () => {
+    expect(() =>
+      parseRawAccessList({
+        items: [{ ...grant, decision: "window_15m" }],
+        active: [],
+        unlocked: false,
+      }),
+    ).toThrow("$.items[0].decision");
+    expect(() =>
+      parseRawAccessList({
+        items: [],
+        active: [{ ...grant, scope: "session" }],
+        unlocked: false,
+      }),
+    ).toThrow("$.active[0].scope");
+    expect(() => parseRawAccessList({ items: [], active: [] })).toThrow(
+      "$.unlocked",
+    );
+  });
+});
+
+describe("remaining time", () => {
+  it("counts down in minutes, then hours", () => {
+    const now = Date.parse("2026-09-28T10:00:00Z");
+    expect(formatRemaining("2026-09-28T10:04:05Z", now)).toBe("4:05");
+    expect(formatRemaining("2026-09-28T11:00:00Z", now)).toBe("1:00:00");
+    expect(formatRemaining("2026-09-28T09:59:00Z", now)).toBe("0:00");
   });
 });
 

@@ -51,7 +51,6 @@ import { RequestRecords } from "./RequestRecords";
 import { RouteManager } from "./RouteManager";
 import { SafetyPolicy } from "./SafetyPolicy";
 import { AgentDebugSettings } from "./AgentDebugSettings";
-import { RawAccessApprovals } from "./RawAccessApprovals";
 import { RawPasswordGate, useRawSetupNeeded } from "./RawSealingControls";
 import { useRawSealingStatus } from "./use-raw-sealing-status";
 import { LocalDataNotice } from "./LocalDataNotice";
@@ -916,7 +915,6 @@ export default function App() {
         open={pendingPage !== null}
         title={t("common.discardUnsaved")}
       />
-      <RawAccessApprovals coreSessionKey={coreSessionKey} isReady={isReady} />
       <RawPasswordGate
         onStatus={rawSealing.setStatus}
         status={rawSealing.status}

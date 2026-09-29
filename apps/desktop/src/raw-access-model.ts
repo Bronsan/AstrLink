@@ -1,12 +1,17 @@
 import { invalidData, type DataProblem } from "./ipc-data-error";
 
-/** An agent's request to read one request's raw audit parts (plan §5.11). */
+/**
+ * An agent's request to read raw audit parts (plan §5.11). It names the
+ * request the agent asked about; a timed approval reaches every request.
+ */
 export interface RawAccessGrant {
   grant_id: string;
   request_id: string;
   status: RawAccessGrantStatus;
   /** How the operator decided; absent while the request is pending. */
   decision: RawAccessDecision | null;
+  /** What an approval reaches; absent until one is given. */
+  scope: RawAccessScope | null;
   /** Why the agent asked, in its own words. Untrusted display text. */
   reason: string;
   /** The agent's self-reported name (the CLI's `--agent`); it authorizes nothing. */
@@ -20,16 +25,31 @@ export type RawAccessGrantStatus =
   | "approved"
   | "denied"
   | "expired"
-  | "consumed";
+  | "consumed"
+  | "revoked";
 
-export type RawAccessDecision = "once" | "window_15m" | "deny";
+export type RawAccessDecision = "once" | "window_5m" | "window_1h" | "deny";
+
+/** `request` for a one-time approval, `all_requests` for a timed one. */
+export type RawAccessScope = "request" | "all_requests";
+
+/** What the approval window shows, read in one call. */
+export interface RawAccessList {
+  /** Requests awaiting the operator. */
+  pending: RawAccessGrant[];
+  /** Timed grants still running. */
+  active: RawAccessGrant[];
+  /** Core's unlock session is open, so approving needs no password. */
+  unlocked: boolean;
+}
 
 /**
- * What a proof-carrying decision ended in. Refusals the dialog can recover
- * from are outcomes, not errors, so it can stay open for another attempt.
+ * What a decision ended in. Refusals the window can recover from are
+ * outcomes, not errors, so it can ask for the password and try again.
  */
 export type RawAccessProofOutcome =
   | { outcome: "decided"; grant: RawAccessGrant }
+  | { outcome: "proof_required" }
   | { outcome: "password_invalid" }
   | { outcome: "backoff"; retry_after_seconds: number }
   | { outcome: "not_pending" };
@@ -42,8 +62,15 @@ const statuses = new Set<RawAccessGrantStatus>([
   "denied",
   "expired",
   "consumed",
+  "revoked",
 ]);
-const decisions = new Set<RawAccessDecision>(["once", "window_15m", "deny"]);
+const decisions = new Set<RawAccessDecision>([
+  "once",
+  "window_5m",
+  "window_1h",
+  "deny",
+]);
+const scopes = new Set<RawAccessScope>(["request", "all_requests"]);
 const grantIDPattern = /^rawgrant_[0-9a-f]{16}$/;
 
 function invalid(path: string, problem: DataProblem): never {
@@ -85,11 +112,20 @@ function parseGrant(value: unknown, path: string): RawAccessGrant {
     }
     decision = raw as RawAccessDecision;
   }
+  let scope: RawAccessScope | null = null;
+  if (grant.scope !== undefined && grant.scope !== "") {
+    const raw = stringAt(grant.scope, `${path}.scope`, 32);
+    if (!scopes.has(raw as RawAccessScope)) {
+      invalid(`${path}.scope`, "unknownScope");
+    }
+    scope = raw as RawAccessScope;
+  }
   return {
     grant_id: grantID,
     request_id: stringAt(grant.request_id, `${path}.request_id`, 128),
     status: status as RawAccessGrantStatus,
     decision,
+    scope,
     reason: stringAt(grant.reason, `${path}.reason`, 4096),
     client_name: stringAt(grant.client_name, `${path}.client_name`, 256),
     created_at: timestampAt(grant.created_at, `${path}.created_at`),
@@ -97,10 +133,25 @@ function parseGrant(value: unknown, path: string): RawAccessGrant {
   };
 }
 
-export function parseRawAccessList(value: unknown): RawAccessGrant[] {
+export function parseRawAccessList(value: unknown): RawAccessList {
   const list = objectAt(value, "$");
   if (!Array.isArray(list.items)) invalid("$.items", "array");
-  return list.items.map((item, index) => parseGrant(item, `$.items[${index}]`));
+  if (!Array.isArray(list.active)) invalid("$.active", "array");
+  if (typeof list.unlocked !== "boolean") invalid("$.unlocked", "boolean");
+  return {
+    pending: list.items.map((item, index) =>
+      parseGrant(item, `$.items[${index}]`),
+    ),
+    active: list.active.map((item, index) =>
+      parseGrant(item, `$.active[${index}]`),
+    ),
+    unlocked: list.unlocked,
+  };
+}
+
+/** A running grant as the operator revoked it. */
+export function parseRawAccessGrant(value: unknown): RawAccessGrant {
+  return parseGrant(value, "$");
 }
 
 export function parseRawAccessProofOutcome(
@@ -113,6 +164,7 @@ export function parseRawAccessProofOutcome(
         outcome: "decided",
         grant: parseGrant(outcome.grant, "$.grant"),
       };
+    case "proof_required":
     case "password_invalid":
     case "not_pending":
       return { outcome: outcome.outcome };
@@ -147,4 +199,15 @@ export function oldestPendingGrant(
     }
   }
   return oldest;
+}
+
+/** Time left on a grant as `m:ss`, or `h:mm:ss` from an hour up. */
+export function formatRemaining(expiresAt: string, now: number): string {
+  const total = Math.max(0, Math.ceil((Date.parse(expiresAt) - now) / 1000));
+  const hours = Math.floor(total / 3600);
+  const minutes = Math.floor((total % 3600) / 60);
+  const seconds = String(total % 60).padStart(2, "0");
+  return hours > 0
+    ? `${hours}:${String(minutes).padStart(2, "0")}:${seconds}`
+    : `${minutes}:${seconds}`;
 }

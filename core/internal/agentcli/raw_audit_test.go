@@ -51,6 +51,18 @@ func (vault *cliRawVault) Status(context.Context) (controlapi.RawVaultStatus, er
 
 func (vault *cliRawVault) UnlockedOpener() (controlapi.RawKeyOpener, bool) { return nil, false }
 
+func (opener cliRawOpener) Close() {}
+
+func (vault *cliRawVault) HoldKey(_ context.Context, proof controlapi.RawProof) (controlapi.RawKeyHolder, error) {
+	if proof.Empty() {
+		return nil, controlapi.ErrRawProofRequired
+	}
+	if string(proof.Password) != cliRawPassword {
+		return nil, controlapi.ErrRawPasswordInvalid
+	}
+	return cliRawOpener{private: vault.private}, nil
+}
+
 func (vault *cliRawVault) WithProof(_ context.Context, proof controlapi.RawProof, use func(controlapi.RawKeyOpener) error) error {
 	if string(proof.Password) != cliRawPassword {
 		return controlapi.ErrRawPasswordInvalid
@@ -417,6 +429,52 @@ func TestRawAuditWaitsForTheUsersDecision(t *testing.T) {
 		"id": cliRawRequestID, "reason": strings.Repeat("x", maxRawReasonRunes+1),
 	}); outcome.err == nil {
 		t.Fatal("oversized reason accepted")
+	}
+}
+
+func TestRawAuditReusesATimedGrantUntilRevoked(t *testing.T) {
+	fixture := newCLIRawFixture(t)
+	grant, done := startRawAudit(t, fixture, map[string]any{"id": cliRawRequestID, "reason": "debug the email field"})
+	fixture.decide(t, grant["grant_id"].(string), `{"decision":"window_5m","proof":{"password":"`+cliRawPassword+`"}}`)
+	approved := <-done
+	if approved.err != nil {
+		t.Fatal(approved.err)
+	}
+	printed, _ := approved.decoded["raw_grant"].(map[string]any)
+	token, _ := printed["grant_token"].(string)
+	if token == "" || printed["decision"] != "window_5m" || !strings.Contains(printed["usage"].(string), "raw-revoke --grant") ||
+		!strings.Contains(approved.text, cliRawMarker) {
+		t.Fatalf("approved=%s", approved.text)
+	}
+
+	// The printed token reads again without a new request or reason.
+	reused := runRawAudit(fixture.client, map[string]any{"id": cliRawRequestID, "grant": token})
+	if reused.err != nil || !strings.Contains(reused.text, cliRawMarker) || strings.Contains(reused.text, "grant_token") {
+		t.Fatalf("reused=%+v", reused)
+	}
+	if pending := fixture.pendingGrants(t); len(pending) != 0 {
+		t.Fatalf("reuse filed a request: %v", pending)
+	}
+
+	revoked, err := callCommand(context.Background(), fixture.client, "raw-revoke", map[string]any{"grant": token})
+	if err != nil || !strings.Contains(string(revoked), `"status":"revoked"`) {
+		t.Fatalf("revoke=%s err=%v", revoked, err)
+	}
+	if outcome := runRawAudit(fixture.client, map[string]any{"id": cliRawRequestID, "grant": token}); outcome.err == nil ||
+		!strings.HasPrefix(outcome.err.Error(), "raw_grant_invalid") || !strings.Contains(outcome.err.Error(), "request raw access again") {
+		t.Fatalf("revoked read err=%v", outcome.err)
+	}
+	// Revoking twice reports the grant's final state.
+	if again, err := callCommand(context.Background(), fixture.client, "raw-revoke", map[string]any{"grant": token}); err != nil ||
+		!strings.Contains(string(again), `"status":"revoked"`) {
+		t.Fatalf("second revoke=%s err=%v", again, err)
+	}
+	if _, err := callCommand(context.Background(), fixture.client, "raw-revoke", map[string]any{"grant": "unknown"}); err == nil ||
+		!strings.HasPrefix(err.Error(), "raw_grant_invalid") {
+		t.Fatalf("unknown revoke err=%v", err)
+	}
+	if _, err := callCommand(context.Background(), fixture.client, "raw-revoke", map[string]any{}); err == nil {
+		t.Fatal("missing grant accepted")
 	}
 }
 

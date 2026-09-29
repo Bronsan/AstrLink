@@ -6,6 +6,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const bridge = vi.hoisted(() => ({
   getTrayState: vi.fn(),
+  listRawAccess: vi.fn(),
+  revokeRawGrant: vi.fn(),
   trayAction: vi.fn(),
   trayPopoverHide: vi.fn(),
   trayPopoverResize: vi.fn(),
@@ -97,6 +99,55 @@ describe("TrayPopoverPanel", () => {
     });
     expect(bridge.trayPopoverHide).toHaveBeenCalledTimes(3);
     expect(bridge.trayAction).not.toHaveBeenCalled();
+  });
+
+  it("lists running raw grants and revokes one", async () => {
+    const running = {
+      grant_id: "rawgrant_2222222222222222",
+      request_id: "req_raw_01",
+      status: "approved",
+      decision: "window_5m",
+      scope: "all_requests",
+      reason: "debugging",
+      client_name: "Codex",
+      created_at: "2026-09-28T10:00:00Z",
+      expires_at: new Date(Date.now() + 5 * 60_000).toISOString(),
+    };
+    bridge.getTrayState.mockResolvedValue(
+      parseTrayState({
+        ...readyTrayState,
+        view: { ...readyTrayState.view, active_raw_grants: 1 },
+      }),
+    );
+    bridge.listRawAccess
+      .mockReset()
+      .mockResolvedValueOnce({
+        pending: [],
+        active: [running],
+        unlocked: false,
+      })
+      .mockResolvedValue({ pending: [], active: [], unlocked: false });
+    bridge.revokeRawGrant
+      .mockReset()
+      .mockResolvedValue({ ...running, status: "revoked" });
+    await act(async () => root.render(<TrayPopoverWindow />));
+    await act(async () => {});
+
+    const grants = container.querySelector('[data-slot="active-raw-grants"]');
+    expect(grants?.textContent).toContain("可读取原文的 Agent");
+    expect(grants?.textContent).toContain("Codex");
+    expect(grants?.textContent).toContain("所有请求 · 剩余 ");
+
+    await act(async () => grants!.querySelector("button")!.click());
+    await act(async () => {});
+
+    expect(bridge.revokeRawGrant).toHaveBeenCalledExactlyOnceWith(
+      "rawgrant_2222222222222222",
+    );
+    expect(bridge.listRawAccess).toHaveBeenCalledTimes(2);
+    expect(
+      container.querySelector('[data-slot="active-raw-grants"]'),
+    ).toBeNull();
   });
 
   it("shows the gateway, today's numbers and subscription windows by default", async () => {
@@ -337,9 +388,13 @@ describe("TrayPopoverPanel", () => {
     expect(
       document.querySelector('[data-slot="tray-observed"]')?.textContent,
     ).toBe("Agent 正在读取已批准的原文");
-    expect(
-      document.querySelector('[data-slot="tray-raw-pending"]')?.textContent,
-    ).toBe("2 个原文申请待批准");
+    const pending = document.querySelector<HTMLButtonElement>(
+      '[data-slot="tray-raw-pending"]',
+    );
+    expect(pending?.textContent).toBe("2 个原文申请待批准");
+    // Requests are decided in the approval window, which this opens.
+    await act(async () => pending!.click());
+    expect(actions).toEqual([{ kind: "raw_access" }]);
   });
 
   it("points a missing raw password at the main window", async () => {

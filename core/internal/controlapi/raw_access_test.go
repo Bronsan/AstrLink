@@ -22,6 +22,7 @@ import (
 const (
 	rawTestRequestID  = "request_raw_access"
 	rawTestOtherID    = "request_raw_other"
+	rawTestLaterID    = "request_raw_later"
 	rawTestPassword   = `correct "horse" é`
 	rawTestPasswordJS = `"correct \"horse\" \u00e9"`
 	rawTestSecret     = "alice@example.com"
@@ -107,6 +108,26 @@ func (vault *fakeRawVault) WithProof(_ context.Context, proof RawProof, use func
 	return use(fakeRawOpener{vault})
 }
 
+// HoldKey checks proof like WithProof, or copies the key while unlocked.
+func (vault *fakeRawVault) HoldKey(_ context.Context, proof RawProof) (RawKeyHolder, error) {
+	vault.mu.Lock()
+	unlocked, backoff := vault.unlocked, vault.backoff
+	if !proof.Empty() {
+		vault.proofs++
+	}
+	vault.mu.Unlock()
+	switch {
+	case proof.Empty() && !unlocked:
+		return nil, ErrRawProofRequired
+	case proof.Empty():
+	case backoff > 0:
+		return nil, &RawBackoffError{Remaining: backoff}
+	case string(proof.Password) != rawTestPassword:
+		return nil, ErrRawPasswordInvalid
+	}
+	return &proofOpener{private: append([]byte(nil), vault.private...), keyID: vault.keyID}, nil
+}
+
 func configuredRawVault() *fakeRawVault {
 	return &fakeRawVault{status: RawVaultStatus{Configured: true, PasswordSet: true}}
 }
@@ -136,17 +157,8 @@ func newRawAccessFixtureAt(t *testing.T, path string, vault RawVault) rawAccessF
 	if err != nil {
 		t.Fatal(err)
 	}
-	decision := contract.PrivacyDecisionRedact
 	for _, id := range []contract.RequestID{rawTestRequestID, rawTestOtherID} {
-		if err := store.InsertRequestRecord(ctx, contract.RequestRecord{
-			ID: id, StartedAt: time.Now().UTC(), Status: contract.RequestStatusSucceeded,
-			InputProtocol:   contract.ProtocolOpenAIChat,
-			Audit:           contract.AuditRecordSummary{RequestBodyCaptured: true, ResponseContentCaptured: true},
-			PrivacyDecision: &decision,
-			PrivacyFindings: []contract.PrivacyFinding{{Kind: contract.CanonicalKindEmail, JSONPath: "/messages/0/content", Count: 1}},
-		}); err != nil {
-			t.Fatal(err)
-		}
+		insertRawTestRecord(t, store, id)
 	}
 	meta, err := json.Marshal(contract.AuditHTTPMeta{Method: "POST", URL: "/v1/chat/completions", HTTPVersion: "HTTP/1.1"})
 	if err != nil {
@@ -164,17 +176,47 @@ func newRawAccessFixtureAt(t *testing.T, path string, vault RawVault) rawAccessF
 	return rawAccessFixture{store: store, handler: newRawAccessHandler(t, store, vault)}
 }
 
+func insertRawTestRecord(t *testing.T, store *sqlite.Store, id contract.RequestID) {
+	t.Helper()
+	decision := contract.PrivacyDecisionRedact
+	if err := store.InsertRequestRecord(context.Background(), contract.RequestRecord{
+		ID: id, StartedAt: time.Now().UTC(), Status: contract.RequestStatusSucceeded,
+		InputProtocol:   contract.ProtocolOpenAIChat,
+		Audit:           contract.AuditRecordSummary{RequestBodyCaptured: true, ResponseContentCaptured: true},
+		PrivacyDecision: &decision,
+		PrivacyFindings: []contract.PrivacyFinding{{Kind: contract.CanonicalKindEmail, JSONPath: "/messages/0/content", Count: 1}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // captureRawTestParts captures the fixture request's raw bodies the way Core
 // does: the store seals them to the raw key, or keeps nothing without one.
 func captureRawTestParts(t *testing.T, store *sqlite.Store) {
 	t.Helper()
-	insertRawTestParts(t, store, storage.AuditExposureRaw, map[storage.AuditDirection]string{
+	captureRawTestPartsFor(t, store, rawTestRequestID)
+}
+
+func captureRawTestPartsFor(t *testing.T, store *sqlite.Store, id contract.RequestID) {
+	t.Helper()
+	insertRawTestPartsFor(t, store, id, storage.AuditExposureRaw, map[storage.AuditDirection]string{
 		storage.AuditDirectionRequest:  `{"content":"mail ` + rawTestSecret + `"}`,
 		storage.AuditDirectionResponse: `{"reply":"sent to ` + rawTestSecret + `"}`,
 	})
 }
 
 func insertRawTestParts(t *testing.T, store *sqlite.Store, exposure storage.AuditExposure, parts map[storage.AuditDirection]string) {
+	t.Helper()
+	insertRawTestPartsFor(t, store, rawTestRequestID, exposure, parts)
+}
+
+func insertRawTestPartsFor(
+	t *testing.T,
+	store *sqlite.Store,
+	id contract.RequestID,
+	exposure storage.AuditExposure,
+	parts map[storage.AuditDirection]string,
+) {
 	t.Helper()
 	ctx := context.Background()
 	key, err := store.GetOrCreateAuditKey(ctx)
@@ -188,7 +230,7 @@ func insertRawTestParts(t *testing.T, store *sqlite.Store, exposure storage.Audi
 			t.Fatal(err)
 		}
 		if err := store.InsertAuditBlob(ctx, storage.AuditBlob{
-			RequestID: rawTestRequestID, Direction: direction, MediaType: "application/json",
+			RequestID: id, Direction: direction, MediaType: "application/json",
 			Nonce: nonce, Ciphertext: ciphertext, CapturedBytes: len(plain), Exposure: exposure,
 		}); err != nil {
 			t.Fatal(err)
@@ -526,18 +568,18 @@ func TestRawAccessGrantOnceLifecycle(t *testing.T) {
 
 	// Grants live only in memory: a restarted Core forgets them.
 	second := requestRawGrant(t, handler, rawTestRequestID)
-	wantRawStatus(t, decideRawGrant(t, handler, second.GrantID, `{"decision":"window_15m","proof":{"password":`+rawTestPasswordJS+`}}`),
+	wantRawStatus(t, decideRawGrant(t, handler, second.GrantID, `{"decision":"window_5m","proof":{"password":`+rawTestPasswordJS+`}}`),
 		http.StatusOK, "")
 	restarted := newRawAccessHandler(t, fixture.store, vault)
 	wantRawStatus(t, rawHTTP(t, restarted, rawAsAgent, http.MethodGet, full, "", second.GrantToken),
 		http.StatusForbidden, "raw_grant_invalid")
 }
 
-func TestRawAccessGrantDenyWindowAndExpiry(t *testing.T) {
+func TestRawAccessGrantDenyAndExpiry(t *testing.T) {
 	vault := configuredRawVault()
 	handler := newRawAccessFixture(t, vault).handler
 	full := rawAuditPath(rawTestRequestID)
-	approve := `{"decision":"window_15m","proof":{"password":` + rawTestPasswordJS + `}}`
+	approve := `{"decision":"once","proof":{"password":` + rawTestPasswordJS + `}}`
 
 	denied := requestRawGrant(t, handler, rawTestRequestID)
 	wantRawStatus(t, decideRawGrant(t, handler, denied.GrantID, `{"decision":"deny"}`), http.StatusOK, "")
@@ -547,20 +589,11 @@ func TestRawAccessGrantDenyWindowAndExpiry(t *testing.T) {
 		t.Fatalf("deny asked for proof %d times", vault.proofs)
 	}
 
-	window := requestRawGrant(t, handler, rawTestRequestID)
-	wantRawStatus(t, decideRawGrant(t, handler, window.GrantID, approve), http.StatusOK, "")
-	for read := 0; read < rawGrantWindowReads; read++ {
-		readRawAudit(t, handler, rawAsAgent, full, window.GrantToken)
-	}
-	wantRawStatus(t, rawHTTP(t, handler, rawAsAgent, http.MethodGet, full, "", window.GrantToken),
-		http.StatusForbidden, "raw_grant_invalid")
-
 	now := time.Now()
 	handler.rawGrants.now = func() time.Time { return now }
 	expiring := requestRawGrant(t, handler, rawTestRequestID)
 	wantRawStatus(t, decideRawGrant(t, handler, expiring.GrantID, approve), http.StatusOK, "")
-	readRawAudit(t, handler, rawAsAgent, full, expiring.GrantToken)
-	now = now.Add(rawGrantApprovedTTL)
+	now = now.Add(rawGrantOnceTTL)
 	wantRawStatus(t, rawHTTP(t, handler, rawAsAgent, http.MethodGet, full, "", expiring.GrantToken),
 		http.StatusForbidden, "raw_grant_invalid")
 
@@ -568,8 +601,207 @@ func TestRawAccessGrantDenyWindowAndExpiry(t *testing.T) {
 	now = now.Add(rawGrantPendingTTL)
 	wantRawStatus(t, decideRawGrant(t, handler, stale.GrantID, approve), http.StatusConflict, "raw_access_not_pending")
 	// Finished grants are forgotten once their late-read window passes.
-	now = now.Add(rawGrantApprovedTTL + time.Second)
+	now = now.Add(rawGrantFinishedTTL + time.Second)
 	wantRawStatus(t, decideRawGrant(t, handler, stale.GrantID, approve), http.StatusNotFound, "not_found")
+}
+
+func rawGrantState(t *testing.T, handler *Handler, token string) RawAccessGrant {
+	t.Helper()
+	response := rawHTTP(t, handler, rawAsAgent, http.MethodGet, RawGrantPath, "", token)
+	wantRawStatus(t, response, http.StatusOK, "")
+	var grant RawAccessGrant
+	decode(t, response, &grant)
+	return grant
+}
+
+func rawAccessPage(t *testing.T, handler *Handler) RawAccessList {
+	t.Helper()
+	response := rawHTTP(t, handler, rawAsOperator, http.MethodGet, RawAccessPath, "", "")
+	wantRawStatus(t, response, http.StatusOK, "")
+	var page RawAccessList
+	decode(t, response, &page)
+	return page
+}
+
+func TestRawAccessTimedGrantReadsEveryRequestUntilItEnds(t *testing.T) {
+	vault := configuredRawVault()
+	fixture := newRawAccessFixture(t, vault)
+	handler := fixture.handler
+	full := rawAuditPath(rawTestRequestID)
+	now := time.Now().UTC()
+	handler.rawGrants.now = func() time.Time { return now }
+
+	grant := requestRawGrant(t, handler, rawTestRequestID)
+	if state := rawGrantState(t, handler, grant.GrantToken); state.Status != "pending" || state.Scope != "" {
+		t.Fatalf("pending state=%#v", state)
+	}
+	approve := decideRawGrant(t, handler, grant.GrantID, `{"decision":"window_5m","proof":{"password":`+rawTestPasswordJS+`}}`)
+	wantRawStatus(t, approve, http.StatusOK, "")
+	var decided RawAccessGrant
+	decode(t, approve, &decided)
+	if decided.Decision != "window_5m" || decided.Scope != rawGrantScopeAll || !decided.ExpiresAt.Equal(now.Add(5*time.Minute)) {
+		t.Fatalf("decided=%#v", decided)
+	}
+	if state := rawGrantState(t, handler, grant.GrantToken); state.Status != "approved" || state.Scope != rawGrantScopeAll {
+		t.Fatalf("approved state=%#v", state)
+	}
+	page := rawAccessPage(t, handler)
+	if len(page.Items) != 0 || len(page.Active) != 1 || page.Active[0].GrantID != grant.GrantID || page.Unlocked {
+		t.Fatalf("page=%#v", page)
+	}
+	if strings.Contains(fmt.Sprint(page), grant.GrantToken) {
+		t.Fatal("the active list leaked the grant token")
+	}
+	if snapshot := handler.observers.snapshot(context.Background()); snapshot.ActiveRawGrants != 1 {
+		t.Fatalf("active_raw_grants=%d", snapshot.ActiveRawGrants)
+	}
+
+	// No read limit, and every request is covered, including one recorded
+	// after the approval.
+	for read := 0; read < 60; read++ {
+		readRawAudit(t, handler, rawAsAgent, full, grant.GrantToken)
+	}
+	insertRawTestRecord(t, fixture.store, rawTestLaterID)
+	captureRawTestPartsFor(t, fixture.store, rawTestLaterID)
+	later := readRawAudit(t, handler, rawAsAgent, rawAuditPath(rawTestLaterID), grant.GrantToken)
+	if later.RequestBody == nil || later.RequestBody.Withheld || !strings.Contains(later.RequestBody.Content, rawTestSecret) {
+		t.Fatalf("later read=%#v", later.RequestBody)
+	}
+	readRawAudit(t, handler, rawAsAgent, rawAuditPath(rawTestOtherID), grant.GrantToken)
+	events := handler.observers.snapshot(context.Background()).RawAccessEvents
+	if last := events[len(events)-1]; last.Kind != RawAccessEventRawRead || last.RequestID != rawTestOtherID {
+		t.Fatalf("last event=%#v", last)
+	}
+
+	// The window closing zeroes the held key.
+	now = now.Add(5 * time.Minute)
+	wantRawStatus(t, rawHTTP(t, handler, rawAsAgent, http.MethodGet, full, "", grant.GrantToken),
+		http.StatusForbidden, "raw_grant_invalid")
+	if page := rawAccessPage(t, handler); len(page.Active) != 0 {
+		t.Fatalf("active after expiry=%#v", page.Active)
+	}
+	handler.rawGrants.mu.Lock()
+	held := handler.rawGrants.grants[grant.GrantID].holder
+	handler.rawGrants.mu.Unlock()
+	if held != nil {
+		t.Fatal("an expired grant kept its key")
+	}
+
+	hour := requestRawGrant(t, handler, rawTestRequestID)
+	approve = decideRawGrant(t, handler, hour.GrantID, `{"decision":"window_1h","proof":{"password":`+rawTestPasswordJS+`}}`)
+	wantRawStatus(t, approve, http.StatusOK, "")
+	decode(t, approve, &decided)
+	if decided.Decision != "window_1h" || !decided.ExpiresAt.Equal(now.Add(time.Hour)) {
+		t.Fatalf("decided=%#v", decided)
+	}
+	// A once grant still reads only its own request.
+	once := requestRawGrant(t, handler, rawTestRequestID)
+	wantRawStatus(t, decideRawGrant(t, handler, once.GrantID, `{"decision":"once","proof":{"password":`+rawTestPasswordJS+`}}`), http.StatusOK, "")
+	if state := rawGrantState(t, handler, once.GrantToken); state.Scope != rawGrantScopeRequest {
+		t.Fatalf("once state=%#v", state)
+	}
+	wantRawStatus(t, rawHTTP(t, handler, rawAsAgent, http.MethodGet, rawAuditPath(rawTestOtherID), "", once.GrantToken),
+		http.StatusForbidden, "raw_grant_invalid")
+	if page := rawAccessPage(t, handler); len(page.Active) != 1 || page.Active[0].GrantID != hour.GrantID {
+		t.Fatalf("active=%#v", page.Active)
+	}
+}
+
+func TestRawAccessApprovalUsesTheUnlockSession(t *testing.T) {
+	vault := configuredRawVault()
+	handler := newRawAccessFixture(t, vault).handler
+	full := rawAuditPath(rawTestRequestID)
+
+	locked := requestRawGrant(t, handler, rawTestRequestID)
+	wantRawStatus(t, decideRawGrant(t, handler, locked.GrantID, `{"decision":"window_1h"}`),
+		http.StatusUnprocessableEntity, "raw_proof_required")
+
+	vault.unlocked = true
+	if page := rawAccessPage(t, handler); !page.Unlocked {
+		t.Fatalf("page=%#v", page)
+	}
+	for _, decision := range []string{"once", "window_5m"} {
+		grant := requestRawGrant(t, handler, rawTestRequestID)
+		wantRawStatus(t, decideRawGrant(t, handler, grant.GrantID, `{"decision":"`+decision+`"}`), http.StatusOK, "")
+		content := readRawAudit(t, handler, rawAsAgent, full, grant.GrantToken)
+		if content.RequestBody.Withheld || !strings.Contains(content.RequestBody.Content, rawTestSecret) {
+			t.Fatalf("%s read=%#v", decision, content.RequestBody)
+		}
+	}
+	if vault.proofs != 0 {
+		t.Fatalf("an unlocked approval asked for proof %d times", vault.proofs)
+	}
+	// The observer role cannot decide, unlocked or not.
+	grant := requestRawGrant(t, handler, rawTestRequestID)
+	wantRawStatus(t, rawHTTP(t, handler, rawAsAgent, http.MethodPost, RawAccessPath+"/"+grant.GrantID+"/decision", `{"decision":"once"}`, ""),
+		http.StatusForbidden, "forbidden")
+}
+
+func TestRawAccessGrantRevocation(t *testing.T) {
+	fixture := newRawAccessFixture(t, configuredRawVault())
+	handler := fixture.handler
+	full := rawAuditPath(rawTestRequestID)
+	approve := `{"decision":"window_1h","proof":{"password":` + rawTestPasswordJS + `}}`
+
+	// Whoever holds the token revokes it with observer credentials.
+	held := requestRawGrant(t, handler, rawTestRequestID)
+	wantRawStatus(t, decideRawGrant(t, handler, held.GrantID, approve), http.StatusOK, "")
+	readRawAudit(t, handler, rawAsAgent, full, held.GrantToken)
+	revoke := rawHTTP(t, handler, rawAsAgent, http.MethodDelete, RawGrantPath, "", held.GrantToken)
+	wantRawStatus(t, revoke, http.StatusOK, "")
+	var revoked RawAccessGrant
+	decode(t, revoke, &revoked)
+	if revoked.Status != "revoked" || revoked.GrantID != held.GrantID {
+		t.Fatalf("revoked=%#v", revoked)
+	}
+	wantRawStatus(t, rawHTTP(t, handler, rawAsAgent, http.MethodGet, full, "", held.GrantToken),
+		http.StatusForbidden, "raw_grant_invalid")
+	if state := rawGrantState(t, handler, held.GrantToken); state.Status != "revoked" {
+		t.Fatalf("state=%#v", state)
+	}
+	if page := rawAccessPage(t, handler); len(page.Active) != 0 {
+		t.Fatalf("active after revoke=%#v", page.Active)
+	}
+	events := handler.observers.snapshot(context.Background()).RawAccessEvents
+	if last := events[len(events)-1]; last.Kind != RawAccessEventRevoked || last.GrantID != held.GrantID {
+		t.Fatalf("last event=%#v", last)
+	}
+	// Revoking again answers what the grant already is.
+	wantRawStatus(t, rawHTTP(t, handler, rawAsAgent, http.MethodDelete, RawGrantPath, "", held.GrantToken), http.StatusOK, "")
+	wantRawStatus(t, rawHTTP(t, handler, rawAsAgent, http.MethodDelete, RawGrantPath, "", "unknown-token"),
+		http.StatusForbidden, "raw_grant_invalid")
+	wantRawStatus(t, rawHTTP(t, handler, rawAsAgent, http.MethodDelete, RawGrantPath, "", ""),
+		http.StatusForbidden, "raw_grant_invalid")
+	wantRawStatus(t, rawHTTP(t, handler, rawAsAgent, http.MethodPost, RawGrantPath, "", held.GrantToken),
+		http.StatusMethodNotAllowed, "method_not_allowed")
+
+	// The desktop revokes a running grant by id.
+	desktop := requestRawGrant(t, handler, rawTestRequestID)
+	wantRawStatus(t, decideRawGrant(t, handler, desktop.GrantID, approve), http.StatusOK, "")
+	wantRawStatus(t, rawHTTP(t, handler, rawAsAgent, http.MethodDelete, RawAccessPath+"/"+desktop.GrantID, "", ""),
+		http.StatusForbidden, "forbidden")
+	wantRawStatus(t, rawHTTP(t, handler, rawAsOperator, http.MethodDelete, RawAccessPath+"/"+desktop.GrantID, "", ""),
+		http.StatusOK, "")
+	wantRawStatus(t, rawHTTP(t, handler, rawAsAgent, http.MethodGet, full, "", desktop.GrantToken),
+		http.StatusForbidden, "raw_grant_invalid")
+	wantRawStatus(t, rawHTTP(t, handler, rawAsOperator, http.MethodDelete, RawAccessPath+"/"+desktop.GrantID, "", ""),
+		http.StatusConflict, "raw_access_not_active")
+	wantRawStatus(t, rawHTTP(t, handler, rawAsOperator, http.MethodDelete, RawAccessPath+"/rawgrant_0000000000000000", "", ""),
+		http.StatusNotFound, "not_found")
+	wantRawStatus(t, rawHTTP(t, handler, rawAsOperator, http.MethodGet, RawAccessPath+"/"+desktop.GrantID, "", ""),
+		http.StatusMethodNotAllowed, "method_not_allowed")
+
+	// Shutdown revokes whatever still runs.
+	last := requestRawGrant(t, handler, rawTestRequestID)
+	wantRawStatus(t, decideRawGrant(t, handler, last.GrantID, approve), http.StatusOK, "")
+	handler.RevokeRawGrants()
+	wantRawStatus(t, rawHTTP(t, handler, rawAsAgent, http.MethodGet, full, "", last.GrantToken),
+		http.StatusForbidden, "raw_grant_invalid")
+
+	// With agent access off the state read says so.
+	setAgentRawAccess(t, fixture.store, false)
+	wantRawStatus(t, rawHTTP(t, handler, rawAsAgent, http.MethodGet, RawGrantPath, "", last.GrantToken),
+		http.StatusConflict, "raw_access_disabled")
 }
 
 func TestRawAccessProofs(t *testing.T) {
@@ -676,7 +908,7 @@ func TestRawAccessRequestAvailabilityAndValidation(t *testing.T) {
 func TestRawAccessRequestReplacesTheClientsPendingOne(t *testing.T) {
 	handler := newRawAccessFixture(t, configuredRawVault()).handler
 	full := rawAuditPath(rawTestRequestID)
-	approve := `{"decision":"window_15m","proof":{"password":` + rawTestPasswordJS + `}}`
+	approve := `{"decision":"window_5m","proof":{"password":` + rawTestPasswordJS + `}}`
 
 	first := requestRawGrant(t, handler, rawTestRequestID)
 	other := requestRawGrant(t, handler, rawTestOtherID)
@@ -715,7 +947,7 @@ func TestTurningAgentRawAccessOffRevokesGrants(t *testing.T) {
 	fixture := newRawAccessFixture(t, configuredRawVault())
 	handler := fixture.handler
 	full := rawAuditPath(rawTestRequestID)
-	approve := `{"decision":"window_15m","proof":{"password":` + rawTestPasswordJS + `}}`
+	approve := `{"decision":"window_5m","proof":{"password":` + rawTestPasswordJS + `}}`
 
 	approved := requestRawGrant(t, handler, rawTestRequestID)
 	wantRawStatus(t, decideRawGrant(t, handler, approved.GrantID, approve), http.StatusOK, "")
@@ -730,10 +962,10 @@ func TestTurningAgentRawAccessOffRevokesGrants(t *testing.T) {
 	}
 	wantRawStatus(t, decideRawGrant(t, handler, pending.GrantID, approve), http.StatusConflict, "raw_access_not_pending")
 	handler.rawGrants.mu.Lock()
-	keys := len(handler.rawGrants.grants[approved.GrantID].keys)
+	held := handler.rawGrants.grants[approved.GrantID].holder
 	handler.rawGrants.mu.Unlock()
-	if keys != 0 {
-		t.Fatalf("a revoked grant kept %d key(s)", keys)
+	if held != nil {
+		t.Fatal("a revoked grant kept its key")
 	}
 
 	// Turning it back on does not bring the grants back.

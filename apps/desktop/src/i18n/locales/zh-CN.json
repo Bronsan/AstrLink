@@ -1949,6 +1949,7 @@
     "observed": "Agent 正在通过 CLI 读取",
     "observedRaw": "Agent 正在读取已批准的原文",
     "rawAccessPending": "{{count}} 个原文申请待批准",
+    "rawGrantsTitle": "可读取原文的 Agent",
     "rawPasswordRequired": "请求原文还没有保护，点此设置",
     "rawKeyReplaced": "原文密钥在 AstrLink 之外被更换，点此打开 AstrLink 查看",
     "rawKeyEvent": {
@@ -2021,6 +2022,7 @@
         "observed": "Agent 正在通过 CLI 读取",
         "observedRaw": "Agent 正在读取已批准的原文",
         "rawAccessPending": "{{count}} 个原文申请待批准",
+        "rawGrantsActive": "{{count}} 个 Agent 可读取原文",
         "rawPasswordRequired": "请求原文还没有保护，请打开 AstrLink 设置",
         "rawKeyReplaced": "原文密钥在 AstrLink 之外被更换，请打开 AstrLink 查看"
       },
@@ -2039,7 +2041,12 @@
     },
     "window": {
       "trajectoryInspector": "AstrLink · 轨迹链路",
-      "trajectoryInspectorPinned": "AstrLink · 轨迹链路（已置顶）"
+      "trajectoryInspectorPinned": "AstrLink · 轨迹链路（已置顶）",
+      "rawAccessApproval": "AstrLink · 原文申请"
+    },
+    "rawAccess": {
+      "notificationTitle": "Agent 申请读取原文",
+      "notificationBody": "请在 AstrLink 的审批窗口中批准或拒绝。"
     },
     "autostart": {
       "readFailed": "无法读取系统开机启动状态：{{error}}",
@@ -2636,15 +2643,35 @@
     "expires": "申请过期",
     "reason": "申请理由（由 Agent 填写）",
     "providerWarning": "原文将发送给该 Agent 使用的模型服务商。",
-    "once": "仅本次",
-    "window": "本请求 15 分钟内",
+    "queued": "之后还有 {{count}} 个申请在等待",
+    "once": "批准一次",
+    "window5m": "批准 5 分钟",
+    "window1h": "批准 1 小时",
     "deny": "拒绝",
+    "onceHint": "「批准一次」只允许它读取这一条请求的原文，读一次。",
+    "timedWarning": "「批准 5 分钟」和「批准 1 小时」会允许它在时间到之前读取所有请求的原文，包括这段时间里新产生的请求，次数不限。",
+    "locked": "AstrLink 已锁定，批准需要输入原文口令。",
+    "lockedMeanwhile": "AstrLink 刚刚已锁定，请输入原文口令后再批准。",
+    "closeHint": "关闭窗口不会批准或拒绝。申请会一直等到过期，可以从托盘重新打开这个窗口。",
     "approvedOnce": "已允许「{{client}}」读取一次原文",
-    "approvedWindow": "已允许「{{client}}」在 15 分钟内读取这条请求的原文",
+    "approved5m": "已允许「{{client}}」在 5 分钟内读取所有请求的原文",
+    "approved1h": "已允许「{{client}}」在 1 小时内读取所有请求的原文",
     "denied": "已拒绝原文申请",
     "denyFailed": "拒绝原文申请失败：{{message}}",
     "notPending": "该申请已过期或已被处理",
-    "proofUnavailable": "还没设置原文保护，此设备无法批准该申请。请先拒绝，设置原文保护后再让 Agent 重新申请。"
+    "proofUnavailable": "还没设置原文保护，此设备无法批准该申请。请先拒绝，设置原文保护后再让 Agent 重新申请。",
+    "loadFailed": "无法读取原文申请：{{message}}",
+    "emptyTitle": "没有待批准的申请",
+    "emptyDescription": "Agent 申请读取原文时，申请会显示在这里。",
+    "active": {
+      "title": "可读取原文的 Agent",
+      "scopeAll": "所有请求",
+      "scopeRequest": "这一条请求",
+      "remaining": "剩余 {{time}}",
+      "revoke": "撤销",
+      "revoked": "「{{client}}」已不能再读取原文",
+      "revokeFailed": "撤销失败：{{message}}"
+    }
   },
   "rawSealing": {
     "title": "原文保护",
@@ -2750,6 +2777,7 @@
       "unknownType": "未知类型",
       "unknownStatus": "未知状态",
       "unknownDecision": "未知决定",
+      "unknownScope": "未知范围",
       "unknownOutcome": "未知结果",
       "unsupportedField": "不支持的字段",
       "belowMinimumLength": "不应小于最短长度"

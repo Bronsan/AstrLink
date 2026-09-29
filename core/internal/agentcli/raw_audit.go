@@ -50,18 +50,39 @@ func (client *Client) progress(format string, args ...any) {
 	}
 }
 
-// requestRawAudit asks the user for a request's raw parts and waits for the
-// decision. The user approves in the desktop with their raw password. The
-// grant token lives only in this process and is never printed, so an
-// interrupted wait leaves nothing behind for the agent to reuse.
+// rawGrantView is the part of a grant's state the CLI reads.
+type rawGrantView struct {
+	GrantID   string    `json:"grant_id"`
+	Status    string    `json:"status"`
+	Decision  string    `json:"decision"`
+	Scope     string    `json:"scope"`
+	ExpiresAt time.Time `json:"expires_at"`
+}
+
+const rawGrantUsage = "Use this same token for every raw read in this investigation, on any request: " +
+	"`astrlink raw-audit <request_id> --grant <token>` reads without a new approval. " +
+	"You may pass it to subagents working on this same investigation, only through their task prompt; they use --grant and never revoke. " +
+	"Never write it into files, notes, code, or commits, and never carry it into an unrelated later task. " +
+	"When the whole investigation ends (finished, unable to continue, or the user asked you to stop), " +
+	"run `astrlink raw-revoke --grant <token>` exactly once, before giving your final result."
+
+// requestRawAudit reads a request's raw parts. With --grant it reads through
+// a timed grant the user already approved. Otherwise it asks the user and
+// waits for the decision; a timed approval prints its token so the rest of
+// the investigation reuses it, while a once approval's token stays in this
+// process.
 func requestRawAudit(ctx context.Context, client *Client, arguments map[string]any) (json.RawMessage, error) {
 	requestID, err := requiredID(arguments)
 	if err != nil {
 		return nil, err
 	}
+	auditPath := controlapi.RequestsPath + "/" + url.PathEscape(requestID) + "/audit"
+	if token, _ := arguments["grant"].(string); strings.TrimSpace(token) != "" {
+		return readRawAudit(ctx, client, auditPath, strings.TrimSpace(token), rawGrantView{})
+	}
 	reason, err := requiredString(arguments, "reason")
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%w (or pass --grant with a token from an earlier timed approval)", err)
 	}
 	if utf8.RuneCountInString(reason) > maxRawReasonRunes {
 		return nil, fmt.Errorf("reason must be at most %d characters", maxRawReasonRunes)
@@ -77,7 +98,6 @@ func requestRawAudit(ctx context.Context, client *Client, arguments map[string]a
 	if strings.TrimSpace(agent) == "" {
 		agent = client.Agent
 	}
-	auditPath := controlapi.RequestsPath + "/" + url.PathEscape(requestID) + "/audit"
 	created, err := client.post(ctx, auditPath+"/raw-access", map[string]string{
 		"reason": reason, "client_name": agentName(agent),
 	})
@@ -107,25 +127,29 @@ func requestRawAudit(ctx context.Context, client *Client, arguments map[string]a
 	deadline := time.Now().Add(wait)
 	header := http.Header{controlapi.RawGrantHeader: {grant.GrantToken}}
 	for {
-		raw, err := client.do(ctx, http.MethodGet, auditPath, url.Values{"view": {"full"}}, nil, header)
+		raw, err := client.do(ctx, http.MethodGet, controlapi.RawGrantPath, nil, nil, header)
 		switch apiErrorCode(err) {
 		case "":
 			if err != nil {
 				return nil, err
 			}
-			wrapped, err := annotateAuditPayload(raw, "raw")
-			if err != nil {
-				return nil, err
+			var state rawGrantView
+			if err := json.Unmarshal(raw, &state); err != nil {
+				return nil, fmt.Errorf("control API returned an unreadable raw grant: %w", err)
 			}
-			wrapped["status"] = "approved"
-			return json.Marshal(wrapped)
-		case "raw_access_pending":
-		case "raw_access_denied":
-			return nil, fmt.Errorf("raw_access_denied: the user denied raw access to this request; do not ask again unless the user asks you to")
+			switch state.Status {
+			case "pending":
+			case "approved":
+				return readRawAudit(ctx, client, auditPath, grant.GrantToken, state)
+			case "denied":
+				return nil, errRawAccessDenied
+			default:
+				return nil, errRawRequestLapsed
+			}
 		case "raw_access_disabled":
 			return nil, errRawAccessDisabled
 		case "raw_grant_invalid":
-			return nil, fmt.Errorf("raw_grant_invalid: the raw access request expired or AstrLink restarted before the user decided; ask the user before requesting again")
+			return nil, errRawRequestLapsed
 		default:
 			return nil, err
 		}
@@ -140,4 +164,72 @@ func requestRawAudit(ctx context.Context, client *Client, arguments map[string]a
 		case <-timer.C:
 		}
 	}
+}
+
+var (
+	errRawAccessDenied  = errors.New("raw_access_denied: the user denied raw access to this request; do not ask again unless the user asks you to")
+	errRawRequestLapsed = errors.New("raw_grant_invalid: the raw access request expired, was revoked, or AstrLink restarted before it was read; ask the user before requesting again")
+	errRawGrantInvalid  = errors.New("raw_grant_invalid: this raw grant token expired, was revoked, or is unknown; request raw access again with `astrlink raw-audit <id> --reason <why>`")
+)
+
+// readRawAudit reads one request's full audit through a grant. state is the
+// grant just approved, or empty when the agent reuses a token.
+func readRawAudit(ctx context.Context, client *Client, auditPath, token string, state rawGrantView) (json.RawMessage, error) {
+	header := http.Header{controlapi.RawGrantHeader: {token}}
+	raw, err := client.do(ctx, http.MethodGet, auditPath, url.Values{"view": {"full"}}, nil, header)
+	switch apiErrorCode(err) {
+	case "":
+		if err != nil {
+			return nil, err
+		}
+	case "raw_access_denied":
+		return nil, errRawAccessDenied
+	case "raw_access_disabled":
+		return nil, errRawAccessDisabled
+	case "raw_access_pending", "raw_grant_invalid":
+		return nil, errRawGrantInvalid
+	default:
+		return nil, err
+	}
+	wrapped, err := annotateAuditPayload(raw, "raw")
+	if err != nil {
+		return nil, err
+	}
+	wrapped["status"] = "approved"
+	if state.Scope == "all_requests" {
+		wrapped["raw_grant"] = map[string]any{
+			"grant_token": token,
+			"decision":    state.Decision,
+			"scope":       "all requests, including ones recorded while the grant runs",
+			"expires_at":  state.ExpiresAt,
+			"usage":       rawGrantUsage,
+		}
+	}
+	return json.Marshal(wrapped)
+}
+
+// revokeRawGrant gives up a timed grant. Whoever holds the token may revoke
+// it; revoking one that already ended reports its final state.
+func revokeRawGrant(ctx context.Context, client *Client, arguments map[string]any) (json.RawMessage, error) {
+	token, err := requiredString(arguments, "grant")
+	if err != nil {
+		return nil, err
+	}
+	header := http.Header{controlapi.RawGrantHeader: {strings.TrimSpace(token)}}
+	raw, err := client.do(ctx, http.MethodDelete, controlapi.RawGrantPath, nil, nil, header)
+	switch apiErrorCode(err) {
+	case "":
+		if err != nil {
+			return nil, err
+		}
+	case "raw_grant_invalid":
+		return nil, fmt.Errorf("raw_grant_invalid: AstrLink does not know this grant token; it already ended when AstrLink restarted, or the token is wrong. Nothing is left to revoke")
+	default:
+		return nil, err
+	}
+	var state rawGrantView
+	if err := json.Unmarshal(raw, &state); err != nil {
+		return nil, fmt.Errorf("control API returned an unreadable raw grant: %w", err)
+	}
+	return json.Marshal(map[string]string{"grant_id": state.GrantID, "status": state.Status})
 }

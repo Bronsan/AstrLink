@@ -18,6 +18,7 @@ import {
   getLocalDataStatus,
   getRawSealingStatus,
   listRawAccess,
+  revokeRawGrant,
   lockRaw,
   setRawPassword,
   unlockRaw,
@@ -114,10 +115,23 @@ describe("desktop bridge contract", () => {
       created_at: "2026-09-28T10:00:00Z",
       expires_at: "2026-09-28T10:10:00Z",
     };
-    invokeMock.mockResolvedValueOnce({ items: [grant] });
-    await expect(listRawAccess()).resolves.toEqual([
-      { ...grant, decision: null },
-    ]);
+    const running = {
+      ...grant,
+      grant_id: "rawgrant_fedcba9876543210",
+      status: "approved",
+      decision: "window_1h",
+      scope: "all_requests",
+    };
+    invokeMock.mockResolvedValueOnce({
+      items: [grant],
+      active: [running],
+      unlocked: true,
+    });
+    await expect(listRawAccess()).resolves.toEqual({
+      pending: [{ ...grant, decision: null, scope: null }],
+      active: [running],
+      unlocked: true,
+    });
     expect(invokeMock).toHaveBeenLastCalledWith("list_raw_access");
 
     invokeMock.mockResolvedValueOnce({
@@ -158,14 +172,40 @@ describe("desktop bridge contract", () => {
       retry_after_seconds: 8,
     });
     await expect(
-      decideRawAccess(grant.grant_id, "window_15m", {
+      decideRawAccess(grant.grant_id, "window_5m", {
         kind: "password",
         password: "wrong",
       }),
     ).resolves.toEqual({ outcome: "backoff", retry_after_seconds: 8 });
 
-    invokeMock.mockResolvedValueOnce({ items: [{ ...grant, grant_id: "x" }] });
+    // While Core is unlocked an approval carries no proof; Core asks for one
+    // if it locked in the meantime.
+    invokeMock.mockResolvedValueOnce({ outcome: "proof_required" });
+    await expect(decideRawAccess(grant.grant_id, "window_1h")).resolves.toEqual(
+      { outcome: "proof_required" },
+    );
+    expect(invokeMock).toHaveBeenLastCalledWith("decide_raw_access", {
+      grantId: grant.grant_id,
+      decision: "window_1h",
+      proof: null,
+    });
+
+    invokeMock.mockResolvedValueOnce({ ...running, status: "revoked" });
+    await expect(revokeRawGrant(running.grant_id)).resolves.toMatchObject({
+      status: "revoked",
+    });
+    expect(invokeMock).toHaveBeenLastCalledWith("revoke_raw_grant", {
+      grantId: running.grant_id,
+    });
+
+    invokeMock.mockResolvedValueOnce({
+      items: [{ ...grant, grant_id: "x" }],
+      active: [],
+      unlocked: false,
+    });
     await expect(listRawAccess()).rejects.toThrow("$.items[0].grant_id");
+    invokeMock.mockResolvedValueOnce({ items: [], unlocked: false });
+    await expect(listRawAccess()).rejects.toThrow("$.active");
     invokeMock.mockResolvedValueOnce({ outcome: "approved" });
     await expect(decideRawAccess(grant.grant_id, "deny")).rejects.toThrow(
       "$.outcome",

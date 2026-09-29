@@ -202,6 +202,7 @@ func newHandler(version contract.VersionResponse, dependencies Dependencies) (*H
 		observers:       newObserverTracker(),
 	}
 	handler.observers.pending = handler.rawGrants.pendingCount
+	handler.observers.active = handler.rawGrants.activeCount
 	handler.observers.passwordRequired = handler.rawPasswordRequired
 	handler.mux.HandleFunc(ObserversPath, handler.authenticated(handler.getObservers, RoleObserver))
 	handler.mux.HandleFunc(PricingPath+"/", handler.authenticated(handler.pricingResource, RoleObserver))

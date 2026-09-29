@@ -150,13 +150,13 @@ func TestRunValidatesUsage(t *testing.T) {
 	}
 	for _, name := range []string{
 		"sessions", "session", "requests", "search", "request", "children", "explain", "audit",
-		"raw-audit", "audit-settings", "routing", "services", "service", "privacy",
+		"raw-audit", "raw-revoke", "audit-settings", "routing", "services", "service", "privacy",
 	} {
 		if !strings.Contains(stdout.String(), "\n  "+name+" ") {
 			t.Fatalf("help misses %s:\n%s", name, stdout.String())
 		}
 	}
-	if len(commandCatalog()) != 14 {
+	if len(commandCatalog()) != 15 {
 		t.Fatalf("command count = %d", len(commandCatalog()))
 	}
 

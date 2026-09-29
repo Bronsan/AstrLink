@@ -23,7 +23,9 @@ export interface TrayCoreView {
   observer_read_level: TrayObserverReadLevel | null;
   /** Agent requests for raw audit content awaiting the operator. */
   pending_raw_access: number;
-  /** No raw password is set; only the main window asks for it. */
+  /** Timed agent grants to raw content still running. */
+  active_raw_grants: number;
+  /** No raw password is set; only the main window sets one up. */
   raw_password_required: boolean;
   /** The latest raw password or key change this Core recorded. */
   raw_key_event: TrayRawKeyEvent | null;
@@ -125,6 +127,7 @@ export type TrayAction =
   | { kind: "copy_address" }
   | { kind: "core"; op: "start" | "stop" | "restart" }
   | { kind: "refresh" }
+  | { kind: "raw_access" }
   | { kind: "quit" };
 
 const phases = new Set<CorePhase>([
@@ -224,6 +227,7 @@ function parseView(value: unknown, path: string): TrayCoreView {
       "observer_active",
       "observer_read_level",
       "pending_raw_access",
+      "active_raw_grants",
       "raw_password_required",
       "raw_key_event",
       "raw_key_replaced",
@@ -287,6 +291,10 @@ function parseView(value: unknown, path: string): TrayCoreView {
     pending_raw_access: countAt(
       view.pending_raw_access,
       `${path}.pending_raw_access`,
+    ),
+    active_raw_grants: countAt(
+      view.active_raw_grants,
+      `${path}.active_raw_grants`,
     ),
     raw_password_required: booleanAt(
       view.raw_password_required,

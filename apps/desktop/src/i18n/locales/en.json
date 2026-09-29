@@ -1949,6 +1949,7 @@
     "observed": "An agent is reading via the CLI",
     "observedRaw": "An agent is reading approved raw content",
     "rawAccessPending": "Raw access requests awaiting you: {{count}}",
+    "rawGrantsTitle": "Agents that may read raw content",
     "rawPasswordRequired": "Raw request content is not protected yet. Click to set it up",
     "rawKeyReplaced": "Raw key replaced outside AstrLink. Open AstrLink to review it",
     "rawKeyEvent": {
@@ -2021,6 +2022,7 @@
         "observed": "An agent is reading via the CLI",
         "observedRaw": "An agent is reading approved raw content",
         "rawAccessPending": "Raw access requests awaiting you: {{count}}",
+        "rawGrantsActive": "Agents that may read raw content: {{count}}",
         "rawPasswordRequired": "Raw request content is not protected yet; open AstrLink to set it up",
         "rawKeyReplaced": "Raw key replaced outside AstrLink; open AstrLink to review it"
       },
@@ -2039,7 +2041,12 @@
     },
     "window": {
       "trajectoryInspector": "AstrLink · Trajectory call",
-      "trajectoryInspectorPinned": "AstrLink · Trajectory call (Pinned)"
+      "trajectoryInspectorPinned": "AstrLink · Trajectory call (Pinned)",
+      "rawAccessApproval": "AstrLink · Raw access requests"
+    },
+    "rawAccess": {
+      "notificationTitle": "An agent asks to read raw content",
+      "notificationBody": "Approve or deny it in the AstrLink approval window."
     },
     "autostart": {
       "readFailed": "Unable to read the system login-item state: {{error}}",
@@ -2636,15 +2643,35 @@
     "expires": "Request expires",
     "reason": "Reason (written by the agent)",
     "providerWarning": "The raw content will be sent to the model provider this agent uses.",
-    "once": "Only this time",
-    "window": "This request for 15 minutes",
+    "queued": "{{count}} more waiting after this one",
+    "once": "Approve once",
+    "window5m": "Approve for 5 minutes",
+    "window1h": "Approve for 1 hour",
     "deny": "Deny",
+    "onceHint": "“Approve once” lets it read this one request's raw content, one time.",
+    "timedWarning": "“Approve for 5 minutes” and “Approve for 1 hour” let it read the raw content of all requests until the time is up, including requests made in that time, as often as it wants.",
+    "locked": "AstrLink is locked, so approving needs the raw password.",
+    "lockedMeanwhile": "AstrLink locked in the meantime. Enter the raw password to approve.",
+    "closeHint": "Closing this window decides nothing. The request waits until it expires, and you can reopen this window from the tray.",
     "approvedOnce": "“{{client}}” may read the raw content once",
-    "approvedWindow": "“{{client}}” may read this request's raw content for 15 minutes",
+    "approved5m": "“{{client}}” may read the raw content of all requests for 5 minutes",
+    "approved1h": "“{{client}}” may read the raw content of all requests for 1 hour",
     "denied": "Raw access request denied",
     "denyFailed": "Could not deny the raw access request: {{message}}",
     "notPending": "This request has expired or was already decided",
-    "proofUnavailable": "Raw protection is not set up, so this request cannot be approved. Deny it, and let the agent ask again once raw protection is set up."
+    "proofUnavailable": "Raw protection is not set up, so this request cannot be approved. Deny it, and let the agent ask again once raw protection is set up.",
+    "loadFailed": "Could not read raw access requests: {{message}}",
+    "emptyTitle": "No requests waiting",
+    "emptyDescription": "When an agent asks to read raw content, its request shows up here.",
+    "active": {
+      "title": "Agents that may read raw content",
+      "scopeAll": "All requests",
+      "scopeRequest": "This request",
+      "remaining": "{{time}} left",
+      "revoke": "Revoke",
+      "revoked": "“{{client}}” can no longer read raw content",
+      "revokeFailed": "Could not revoke: {{message}}"
+    }
   },
   "rawSealing": {
     "title": "Raw protection",
@@ -2750,6 +2777,7 @@
       "unknownType": "unknown type",
       "unknownStatus": "unknown status",
       "unknownDecision": "unknown decision",
+      "unknownScope": "unknown scope",
       "unknownOutcome": "unknown outcome",
       "unsupportedField": "unsupported field",
       "belowMinimumLength": "must not be less than the minimum length"

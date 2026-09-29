@@ -1,7 +1,8 @@
 //! Desktop side of raw audit content (plan §5.11.6, §5.11.9). The operator
-//! decides an agent's pending request, unlocks raw parts for their own
-//! reading, and manages the raw password here. Every proof is forwarded once
-//! and never kept.
+//! decides an agent's pending request in the approval window, revokes the
+//! timed grants still running, unlocks raw parts for their own reading, and
+//! manages the raw password here. Every proof is forwarded once and never
+//! kept.
 
 use std::time::Duration;
 
@@ -36,6 +37,9 @@ pub enum ProofOutcome {
     Sealing {
         status: serde_json::Value,
     },
+    /// Core's unlock session had closed, so the approval needs the raw
+    /// password after all.
+    ProofRequired,
     PasswordInvalid,
     Backoff {
         retry_after_seconds: u64,
@@ -71,6 +75,12 @@ pub fn validate_grant_id(id: &str) -> Result<(), String> {
 
 pub fn decision_path(grant_id: &str) -> String {
     format!("{RAW_ACCESS_PATH}/{grant_id}/decision")
+}
+
+/// DELETE revokes one running timed grant.
+pub fn grant_path(grant_id: &str) -> Result<String, String> {
+    validate_grant_id(grant_id)?;
+    Ok(format!("{RAW_ACCESS_PATH}/{grant_id}"))
 }
 
 /// Proof-carrying calls are sent once: a transport retry could spend a
@@ -126,7 +136,9 @@ struct DecisionBody<'a> {
     proof: Option<ProofBody<'a>>,
 }
 
-/// Encodes one decision. A denial needs no proof and never carries one.
+/// Encodes one decision. A denial never carries a proof; an approval
+/// carries one only when the window asked for the password, since Core
+/// approves without one while its unlock session lasts.
 pub fn decision_body(
     grant_id: &str,
     decision: &str,
@@ -135,10 +147,12 @@ pub fn decision_body(
     validate_grant_id(grant_id)?;
     let proof = match decision {
         "deny" => None,
-        "once" | "window_15m" => Some(
-            proof.ok_or_else(|| "approving raw access requires the raw password".to_string())?,
-        ),
-        _ => return Err("raw access decision must be once, window_15m, or deny".to_string()),
+        "once" | "window_5m" | "window_1h" => proof,
+        _ => {
+            return Err(
+                "raw access decision must be once, window_5m, window_1h, or deny".to_string(),
+            )
+        }
     };
     let secret_len = proof.map_or(0, Proof::secret_len);
     let proof = proof.map(Proof::body).transpose()?;
@@ -251,6 +265,9 @@ pub fn decision_outcome(status: StatusCode, body: &[u8]) -> Option<ProofOutcome>
         (StatusCode::CONFLICT, "raw_access_not_pending") | (StatusCode::NOT_FOUND, "not_found") => {
             Some(ProofOutcome::NotPending)
         }
+        (StatusCode::UNPROCESSABLE_ENTITY, "raw_proof_required") => {
+            Some(ProofOutcome::ProofRequired)
+        }
         _ => None,
     }
 }
@@ -278,11 +295,21 @@ pub fn parse_sealing_status(body: &[u8]) -> Result<serde_json::Value, String> {
     Ok(value)
 }
 
+/// The pending requests, the timed grants still running, and whether Core's
+/// unlock session lets an approval skip the password.
 pub fn parse_list(body: &[u8]) -> Result<serde_json::Value, String> {
     let value: serde_json::Value = serde_json::from_slice(body)
         .map_err(|error| format!("raw access list returned invalid JSON: {error}"))?;
-    if !value.get("items").is_some_and(serde_json::Value::is_array) {
-        return Err("raw access list omitted items".to_string());
+    for key in ["items", "active"] {
+        if !value.get(key).is_some_and(serde_json::Value::is_array) {
+            return Err(format!("raw access list omitted {key}"));
+        }
+    }
+    if !value
+        .get("unlocked")
+        .is_some_and(serde_json::Value::is_boolean)
+    {
+        return Err("raw access list omitted unlocked".to_string());
     }
     Ok(value)
 }
@@ -324,16 +351,19 @@ mod tests {
             json(&body),
             serde_json::json!({"decision":"once","proof":{"password":"pa\"ss"}})
         );
-        let body = decision_body(GRANT, "window_15m", Some(&password("secret"))).unwrap();
+        let body = decision_body(GRANT, "window_1h", Some(&password("secret"))).unwrap();
         assert_eq!(
             json(&body),
-            serde_json::json!({"decision":"window_15m","proof":{"password":"secret"}})
+            serde_json::json!({"decision":"window_1h","proof":{"password":"secret"}})
         );
         let body = decision_body(GRANT, "deny", Some(&password("ignored"))).unwrap();
         assert_eq!(json(&body), serde_json::json!({"decision":"deny"}));
+        // While Core is unlocked an approval is one click.
+        let body = decision_body(GRANT, "window_5m", None).unwrap();
+        assert_eq!(json(&body), serde_json::json!({"decision":"window_5m"}));
 
         assert!(decision_body(GRANT, "window_15m", None).is_err());
-        assert!(decision_body(GRANT, "window_15m", Some(&password(""))).is_err());
+        assert!(decision_body(GRANT, "window_5m", Some(&password(""))).is_err());
         assert!(decision_body(GRANT, "always", Some(&password("secret"))).is_err());
         assert!(decision_body("rawgrant_bad", "deny", None).is_err());
         let long = "x".repeat(MAX_PASSWORD_CHARS + 1);
@@ -471,6 +501,13 @@ mod tests {
         );
         assert_eq!(
             decision_outcome(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                br#"{"error":{"code":"raw_proof_required"}}"#
+            ),
+            Some(ProofOutcome::ProofRequired)
+        );
+        assert_eq!(
+            decision_outcome(
                 StatusCode::CONFLICT,
                 br#"{"error":{"code":"raw_access_unavailable"}}"#
             ),
@@ -504,9 +541,20 @@ mod tests {
     }
 
     #[test]
-    fn lists_must_carry_items() {
-        assert!(parse_list(br#"{"items":[]}"#).is_ok());
+    fn lists_must_carry_pending_active_and_unlocked() {
+        assert!(parse_list(br#"{"items":[],"active":[],"unlocked":false}"#).is_ok());
+        assert!(parse_list(br#"{"items":[],"unlocked":true}"#).is_err());
+        assert!(parse_list(br#"{"items":[],"active":[]}"#).is_err());
         assert!(parse_list(br#"{}"#).is_err());
         assert!(parse_list(b"not json").is_err());
+    }
+
+    #[test]
+    fn grant_paths_take_valid_ids_only() {
+        assert_eq!(
+            grant_path(GRANT).unwrap(),
+            format!("{RAW_ACCESS_PATH}/{GRANT}")
+        );
+        assert!(grant_path("rawgrant_bad/../x").is_err());
     }
 }

@@ -19,8 +19,10 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 
+import { ActiveRawGrants } from "./ActiveRawGrants";
 import {
   getTrayState,
+  listRawAccess,
   trayAction,
   trayPopoverHide,
   trayPopoverResize,
@@ -28,6 +30,7 @@ import {
 import type { CorePhase } from "./core-model";
 import { i18n, useT } from "./i18n";
 import type { TrayPreferences } from "./preferences-model";
+import type { RawAccessGrant } from "./raw-access-model";
 import { formatResetCountdown, windowLabel } from "./subscription-usage-model";
 import {
   cacheHitPercent,
@@ -214,7 +217,9 @@ export function TrayPopoverPanel({
   copyFeedback,
   onAction,
   onClose,
+  onRawGrantRevoked,
   preview = false,
+  rawGrants = [],
   className,
 }: {
   state: TrayState | null;
@@ -223,7 +228,11 @@ export function TrayPopoverPanel({
   copyFeedback?: string | null;
   onAction: (action: TrayAction) => void;
   onClose?: () => void;
+  /** A timed grant was revoked here; reread `rawGrants`. */
+  onRawGrantRevoked?: () => void;
   preview?: boolean;
+  /** Timed agent grants to raw content still running. */
+  rawGrants?: RawAccessGrant[];
   className?: string;
 }) {
   const t = useT();
@@ -398,15 +407,19 @@ export function TrayPopoverPanel({
             </div>
           ) : null}
           {view?.pending_raw_access ? (
-            <p
-              className="mt-0.5 text-micro text-warning-foreground"
+            // Requests are decided only in the approval window.
+            <Button
+              className="mt-0.5 h-auto p-0 text-micro text-warning-foreground"
               data-slot="tray-raw-pending"
+              onClick={() => onAction({ kind: "raw_access" })}
+              type="button"
+              variant="link"
             >
               {t("tray.rawAccessPending", { count: view.pending_raw_access })}
-            </p>
+            </Button>
           ) : null}
           {view?.raw_password_required ? (
-            // Only the main window asks for the raw password; take the user
+            // Only the main window sets up the raw password; take the user
             // there instead of leaving the tray silent about it.
             <Button
               className="mt-0.5 h-auto p-0 text-micro text-warning-foreground"
@@ -475,6 +488,13 @@ export function TrayPopoverPanel({
           </IconButton>
         </div>
       </header>
+
+      <ActiveRawGrants
+        className="border-t px-4 py-3"
+        grants={rawGrants}
+        onRevoked={() => onRawGrantRevoked?.()}
+        title={t("tray.rawGrantsTitle")}
+      />
 
       {/* Usage: the reason to open the panel. */}
       {ready && wantsUsage ? (
@@ -702,6 +722,7 @@ export function TrayPopoverWindow() {
   const [state, setState] = useState<TrayState | null>(null);
   const [now, setNow] = useState(() => new Date());
   const [copyFeedback, setCopyFeedback] = useState<string | null>(null);
+  const [rawGrants, setRawGrants] = useState<RawAccessGrant[]>([]);
   const rootRef = useRef<HTMLDivElement | null>(null);
   const feedbackTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const close = useCallback(() => {
@@ -740,6 +761,27 @@ export function TrayPopoverWindow() {
     const timer = window.setInterval(() => setNow(new Date()), CLOCK_TICK_MS);
     return () => window.clearInterval(timer);
   }, []);
+
+  // The host counts the running grants; who holds them is read on demand.
+  const activeRawGrants = state?.view?.active_raw_grants ?? 0;
+  const [rawGrantsGeneration, setRawGrantsGeneration] = useState(0);
+  useEffect(() => {
+    if (activeRawGrants === 0) {
+      setRawGrants([]);
+      return;
+    }
+    let cancelled = false;
+    void listRawAccess().then(
+      (list) => {
+        if (!cancelled) setRawGrants(list.active);
+      },
+      (error) =>
+        console.error("Unable to read AstrLink raw access grants", error),
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [activeRawGrants, rawGrantsGeneration]);
 
   useEffect(() => {
     const root = rootRef.current;
@@ -815,6 +857,10 @@ export function TrayPopoverWindow() {
           now={now}
           onAction={handleAction}
           onClose={close}
+          onRawGrantRevoked={() =>
+            setRawGrantsGeneration((generation) => generation + 1)
+          }
+          rawGrants={rawGrants}
           state={state}
           tray={tray}
         />

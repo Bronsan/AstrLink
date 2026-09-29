@@ -20,6 +20,7 @@ export type DataProblem =
   | "unknownType"
   | "unknownStatus"
   | "unknownDecision"
+  | "unknownScope"
   | "unknownOutcome"
   | "unsupportedField"
   | "belowMinimumLength";

@@ -457,6 +457,7 @@ struct CoreInner {
     observer_seen_at: Option<Instant>,
     observer_read_level: Option<ObserverReadLevel>,
     pending_raw_access: u32,
+    active_raw_grants: u32,
     raw_password_required: bool,
     raw_key_event: Option<RawKeyEvent>,
     /// The desktop's latest verdict on this Core's raw key pin.
@@ -497,6 +498,7 @@ impl Default for CoreInner {
             observer_seen_at: None,
             observer_read_level: None,
             pending_raw_access: 0,
+            active_raw_grants: 0,
             raw_password_required: false,
             raw_key_event: None,
             raw_key_replaced: false,
@@ -526,8 +528,10 @@ pub struct CoreView {
     pub observer_read_level: Option<ObserverReadLevel>,
     /// Agent requests for raw audit content awaiting the operator.
     pub pending_raw_access: u32,
+    /// Timed agent grants still running; the approval window lists them.
+    pub active_raw_grants: u32,
     /// No raw password is set yet; the tray points at the main window's
-    /// setup, which is the only place that asks for it.
+    /// setup, which is the only place that sets it.
     pub raw_password_required: bool,
     /// The latest raw password or key change this Core recorded, whoever
     /// made it.
@@ -570,6 +574,7 @@ struct ObserverState {
     age: Option<Duration>,
     read_level: Option<ObserverReadLevel>,
     pending_raw_access: u32,
+    active_raw_grants: u32,
     raw_password_required: bool,
     raw_key_event: Option<RawKeyEvent>,
 }
@@ -599,6 +604,10 @@ fn parse_observer_state(
         .get("pending_raw_access")
         .and_then(serde_json::Value::as_u64)
         .map_or(0, |count| count.min(u64::from(u32::MAX)) as u32);
+    let active_raw_grants = value
+        .get("active_raw_grants")
+        .and_then(serde_json::Value::as_u64)
+        .map_or(0, |count| count.min(u64::from(u32::MAX)) as u32);
     let raw_password_required = value
         .get("raw_password_required")
         .and_then(serde_json::Value::as_bool)
@@ -611,6 +620,7 @@ fn parse_observer_state(
         age,
         read_level,
         pending_raw_access,
+        active_raw_grants,
         raw_password_required,
         raw_key_event,
     })
@@ -648,6 +658,11 @@ impl CoreInner {
                 .flatten(),
             pending_raw_access: if self.phase == CorePhase::Ready {
                 self.pending_raw_access
+            } else {
+                0
+            },
+            active_raw_grants: if self.phase == CorePhase::Ready {
+                self.active_raw_grants
             } else {
                 0
             },
@@ -711,6 +726,7 @@ impl CoreInner {
         self.observer_seen_at = None;
         self.observer_read_level = None;
         self.pending_raw_access = 0;
+        self.active_raw_grants = 0;
         self.raw_password_required = false;
         self.raw_key_event = None;
         self.raw_key_replaced = false;
@@ -1540,12 +1556,15 @@ impl CoreManager {
         inner.observer_seen_at = state.age.and_then(|age| Instant::now().checked_sub(age));
         inner.observer_read_level = state.read_level;
         inner.pending_raw_access = state.pending_raw_access;
+        inner.active_raw_grants = state.active_raw_grants;
         inner.raw_password_required = state.raw_password_required;
         inner.raw_key_event = state.raw_key_event;
         Ok(())
     }
 
-    /// Agent requests for raw audit content awaiting the operator's decision.
+    /// Agent requests for raw audit content awaiting the operator's
+    /// decision, the timed grants still running, and whether an approval
+    /// needs the raw password.
     pub async fn list_raw_access(&self) -> Result<serde_json::Value, String> {
         let (_, body) = self
             .authenticated_control(Method::GET, crate::raw_access::RAW_ACCESS_PATH, None, None)
@@ -1553,9 +1572,9 @@ impl CoreManager {
         crate::raw_access::parse_list(&body)
     }
 
-    /// Decides one agent request for raw audit content. The proof goes into
-    /// one wiped buffer and is sent once; refusals the dialog recovers from
-    /// come back as outcomes.
+    /// Decides one agent request for raw audit content. A proof, when the
+    /// window asked for one, goes into one wiped buffer and is sent once;
+    /// refusals the window recovers from come back as outcomes.
     pub async fn decide_raw_access(
         &self,
         grant_id: &str,
@@ -1570,6 +1589,16 @@ impl CoreManager {
         let outcome = crate::raw_access::decision_outcome(status, &response)
             .ok_or_else(|| control_status_error(&Method::POST, &path, status, &response))?;
         serde_json::to_value(outcome).map_err(|error| error.to_string())
+    }
+
+    /// Revokes one running timed grant and zeroes the key it holds.
+    pub async fn revoke_raw_grant(&self, grant_id: &str) -> Result<serde_json::Value, String> {
+        let path = crate::raw_access::grant_path(grant_id)?;
+        let (_, body) = self
+            .authenticated_control(Method::DELETE, &path, None, None)
+            .await?;
+        serde_json::from_slice(&body)
+            .map_err(|error| format!("raw grant revoke returned invalid JSON: {error}"))
     }
 
     /// Raw sealing state: whether a raw password is set and whether the
@@ -1627,10 +1656,13 @@ impl CoreManager {
         serde_json::to_value(outcome).map_err(|error| error.to_string())
     }
 
-    /// Ends the operator's raw unlock session at once.
-    pub async fn lock_raw(&self) -> Result<serde_json::Value, String> {
+    /// Ends the operator's raw unlock session at once. The operator's own
+    /// lock also revokes every agent grant; the automatic lock when the main
+    /// window hides keeps them.
+    pub async fn lock_raw(&self, keep_agent_grants: bool) -> Result<serde_json::Value, String> {
+        let body = keep_agent_grants.then(|| serde_json::json!({"keep_agent_grants": true}));
         let (_, body) = self
-            .authenticated_control(Method::POST, crate::raw_access::RAW_LOCK_PATH, None, None)
+            .authenticated_control(Method::POST, crate::raw_access::RAW_LOCK_PATH, body, None)
             .await?;
         crate::raw_access::parse_sealing_status(&body)
     }
@@ -5366,7 +5398,7 @@ mod tests {
             .unwrap()
             .with_timezone(&chrono::Utc);
         let state = parse_observer_state(
-            br#"{"last_seen_at":"2026-09-28T10:00:00Z","read_level":"raw","pending_raw_access":3}"#,
+            br#"{"last_seen_at":"2026-09-28T10:00:00Z","read_level":"raw","pending_raw_access":3,"active_raw_grants":1}"#,
             now,
         )
         .unwrap();
@@ -5376,6 +5408,7 @@ mod tests {
                 age: Some(Duration::from_secs(5)),
                 read_level: Some(ObserverReadLevel::Raw),
                 pending_raw_access: 3,
+                active_raw_grants: 1,
                 ..ObserverState::default()
             }
         );
@@ -5431,6 +5464,7 @@ mod tests {
             observer_seen_at: Some(Instant::now()),
             observer_read_level: Some(ObserverReadLevel::Shareable),
             pending_raw_access: 2,
+            active_raw_grants: 1,
             raw_password_required: true,
             raw_key_event: Some(RawKeyEvent {
                 kind: RawKeyEventKind::PasswordChanged,
@@ -5446,6 +5480,7 @@ mod tests {
         assert!(view.raw_key_replaced);
         assert_eq!(view.observer_read_level, Some(ObserverReadLevel::Shareable));
         assert_eq!(view.pending_raw_access, 2);
+        assert_eq!(view.active_raw_grants, 1);
 
         inner.observer_seen_at = None;
         let view = inner.view();
@@ -5454,6 +5489,7 @@ mod tests {
 
         inner.phase = CorePhase::Stopped;
         assert_eq!(inner.view().pending_raw_access, 0);
+        assert_eq!(inner.view().active_raw_grants, 0);
         assert!(!inner.view().raw_password_required);
         assert_eq!(inner.view().raw_key_event, None);
         assert!(!inner.view().raw_key_replaced);
