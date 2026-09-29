@@ -137,13 +137,18 @@ func (engine *Engine) Inspect(ctx context.Context, policy Policy, protocol contr
 			}, ErrUnsafeRewrite
 		}
 		allocator := newPlaceholderAllocator(engine.derivationKey, policy.KindRule, body)
+		skillListed := placeholderSkillListed(protocol, body)
+		notice := ""
+		if policy.PlaceholderNotice && !skillListed {
+			notice = placeholderNoticeText(policy.ResponseRestore && policy.RestoreToolArguments)
+		}
 		outcome, err := rewriteDocument(
 			document,
 			extracted,
 			accepted,
 			allocator,
 			protocol,
-			policy.PlaceholderNotice,
+			notice,
 		)
 		if err != nil {
 			return Result{
@@ -158,6 +163,7 @@ func (engine *Engine) Inspect(ctx context.Context, policy Policy, protocol contr
 			SuppressedFindings: suppressed,
 			Redactions:         outcome.Redactions,
 			NoticeInjected:     outcome.NoticeInjected,
+			SkillListed:        skillListed,
 		}, nil
 	default:
 		return Result{}, ErrPolicyUnavailable

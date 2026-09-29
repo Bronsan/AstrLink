@@ -73,7 +73,8 @@ copying the socket, or reading `astrlink.db` or the control session file.
   Codex's auto-review model, which third-party providers rarely list; Codex then
   denies the pending action. Suggest the featured redirect in Routing → Model
   redirects (OpenAI serves it with `gpt-5.6-luna`)
-- Privacy policy `block` / `warn` / unexpected redaction
+- Privacy policy `block` / `warn` / unexpected redaction. For how a model should
+  handle the placeholders themselves, see the `redaction-placeholders` skill
 - Retry loops or a child attempt that failed after a root
 - `astrlink/auto` picked an unexpected category or fallback
 

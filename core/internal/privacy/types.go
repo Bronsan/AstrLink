@@ -217,6 +217,9 @@ type Result struct {
 	// NoticeInjected reports that a placeholder convention note was prepended
 	// to the upstream system prompt.
 	NoticeInjected bool
+	// SkillListed reports that the client's own system prompt already offered
+	// the placeholder skill, so no convention note was needed.
+	SkillListed bool
 }
 
 type Filter interface {

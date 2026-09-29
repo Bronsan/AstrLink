@@ -688,6 +688,21 @@ func TestPrivacyRetryDoesNotAccumulateNotice(t *testing.T) {
 	}
 }
 
+func TestPrivacyDecisionSummaryNamesTheExplanationPath(t *testing.T) {
+	for _, test := range []struct {
+		notice, skill bool
+		want          string
+	}{
+		{false, false, "redact · 3"},
+		{true, false, "redact · 3 · notice"},
+		{false, true, "redact · 3 · skill"},
+	} {
+		if got := privacyDecisionSummary(3, test.notice, test.skill); got != test.want {
+			t.Fatalf("summary(notice=%t, skill=%t) = %q, want %q", test.notice, test.skill, got, test.want)
+		}
+	}
+}
+
 func TestInspectedRetryBodyBorrowsOnePrivacyResidencyPermit(t *testing.T) {
 	filter := testPrivacyEngine(t, privacy.Policy{
 		Enabled: true,

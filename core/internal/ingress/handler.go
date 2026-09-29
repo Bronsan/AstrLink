@@ -507,7 +507,7 @@ func (handler *Handler) applyPrivacy(
 			privacyHitCounts(result.Redactions),
 		)
 		session.notePrivacyDecision(
-			privacyDecisionSummary(mappingCount, result.NoticeInjected),
+			privacyDecisionSummary(mappingCount, result.NoticeInjected, result.SkillListed),
 			contract.RequestStatusSucceeded,
 		)
 		if !policy.ResponseRestore || len(result.Redactions) == 0 {
@@ -571,11 +571,17 @@ func detectorFailure(err error) (detail, message string) {
 	}
 }
 
-func privacyDecisionSummary(mappingCount int, noticeInjected bool) string {
-	if noticeInjected {
+// privacyDecisionSummary records which path explained the placeholders: the
+// injected notice, or a placeholder skill the client already listed.
+func privacyDecisionSummary(mappingCount int, noticeInjected, skillListed bool) string {
+	switch {
+	case noticeInjected:
 		return fmt.Sprintf("redact · %d · notice", mappingCount)
+	case skillListed:
+		return fmt.Sprintf("redact · %d · skill", mappingCount)
+	default:
+		return fmt.Sprintf("redact · %d", mappingCount)
 	}
-	return fmt.Sprintf("redact · %d", mappingCount)
 }
 
 func (handler *Handler) writePrivacyError(writer http.ResponseWriter, request *http.Request, err error) {
