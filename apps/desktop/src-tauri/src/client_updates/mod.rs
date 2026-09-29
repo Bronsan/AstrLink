@@ -3,6 +3,7 @@ mod process;
 mod proxy;
 
 use std::{
+    cmp::Ordering,
     collections::HashSet,
     fs,
     path::{Path, PathBuf},
@@ -18,26 +19,105 @@ use tauri::{AppHandle, Emitter, Manager, State};
 const EVENT: &str = "local-client-status";
 const PROBE_TIMEOUT: Duration = Duration::from_secs(8);
 const UPDATE_TIMEOUT: Duration = Duration::from_secs(10 * 60);
+const CURSOR_LATEST_URL: &str =
+    "https://api2.cursor.sh/aiserver.v1.DashboardService/GetCliDownloadUrl";
+const PI_LATEST_URL: &str = "https://pi.dev/api/latest-version";
 
-#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "snake_case")]
 pub enum ClientId {
     Codex,
     Claude,
+    Cursor,
+    Pi,
 }
 
 impl ClientId {
+    const ALL: [Self; 4] = [Self::Codex, Self::Claude, Self::Cursor, Self::Pi];
+
     fn name(self) -> &'static str {
         match self {
             Self::Codex => "codex",
             Self::Claude => "claude",
+            Self::Cursor => "cursor-agent",
+            Self::Pi => "pi",
         }
     }
-    fn package(self) -> &'static str {
+    /// npm packages that provide the command, current name first.
+    fn packages(self) -> &'static [&'static str] {
         match self {
-            Self::Codex => "@openai/codex",
-            Self::Claude => "@anthropic-ai/claude-code",
+            Self::Codex => &["@openai/codex"],
+            Self::Claude => &["@anthropic-ai/claude-code"],
+            Self::Cursor => &[],
+            Self::Pi => &[
+                "@earendil-works/pi-coding-agent",
+                "@mariozechner/pi-coding-agent",
+            ],
         }
+    }
+    fn brew_packages(self) -> &'static [&'static str] {
+        match self {
+            Self::Codex => &["codex"],
+            Self::Claude => &["claude-code", "claude-code@latest"],
+            Self::Cursor => &["cursor-cli"],
+            Self::Pi => &["pi-coding-agent"],
+        }
+    }
+}
+
+/// A version as the client prints it, with the key used to order releases.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ClientVersion {
+    order: Version,
+    text: String,
+}
+
+impl ClientVersion {
+    fn parse(id: ClientId, raw: &str) -> Option<Self> {
+        let raw = raw.trim_matches(['(', ')']).trim_start_matches('v');
+        if id != ClientId::Cursor {
+            let order = Version::parse(raw).ok()?;
+            return Some(Self {
+                text: order.to_string(),
+                order,
+            });
+        }
+        // Cursor builds are dated: YYYY.MM.DD-<commit>. Only the date orders them.
+        let (date, commit) = raw.split_once('-').unwrap_or((raw, ""));
+        let bytes = date.as_bytes();
+        if bytes.len() != 10
+            || bytes[4] != b'.'
+            || bytes[7] != b'.'
+            || !bytes
+                .iter()
+                .enumerate()
+                .all(|(i, b)| i == 4 || i == 7 || b.is_ascii_digit())
+            || !commit.bytes().all(|b| b.is_ascii_alphanumeric())
+        {
+            return None;
+        }
+        Some(Self {
+            order: Version::new(
+                date[..4].parse().ok()?,
+                date[5..7].parse().ok()?,
+                date[8..].parse().ok()?,
+            ),
+            text: raw.into(),
+        })
+    }
+    /// Like Cursor's updater, a different build from the same day counts as newer.
+    fn newer_than(&self, other: &Self) -> bool {
+        match self.order.cmp(&other.order) {
+            Ordering::Greater => true,
+            Ordering::Equal => self.text != other.text,
+            Ordering::Less => false,
+        }
+    }
+}
+
+impl std::fmt::Display for ClientVersion {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.text)
     }
 }
 
@@ -92,9 +172,7 @@ impl Default for ClientSnapshot {
         Self {
             revision: 0,
             busy: false,
-            clients: [ClientId::Codex, ClientId::Claude]
-                .map(ClientStatus::new)
-                .to_vec(),
+            clients: ClientId::ALL.map(ClientStatus::new).to_vec(),
         }
     }
 }
@@ -141,6 +219,8 @@ enum InstallMethod {
     Npm {
         prefix: PathBuf,
     },
+    /// A Bun, pnpm, or Yarn global installation.
+    Package(&'static str),
     Brew {
         root: PathBuf,
         package: String,
@@ -154,6 +234,7 @@ impl InstallMethod {
         match self {
             Self::Native => "native",
             Self::Npm { .. } => "npm",
+            Self::Package(manager) => manager,
             Self::Brew { .. } => "homebrew",
             Self::Unknown => "unknown",
         }
@@ -207,9 +288,16 @@ fn find_programs(path: &std::ffi::OsStr, name: &str) -> Vec<PathBuf> {
     found
 }
 
+fn manifest_name(directory: &Path) -> Option<String> {
+    let raw = fs::read_to_string(directory.join("package.json")).ok()?;
+    let value: serde_json::Value = serde_json::from_str(&raw).ok()?;
+    value["name"].as_str().map(str::to_owned)
+}
+
 fn installation_method(id: ClientId, resolved: &Path, home: &Path) -> InstallMethod {
     // Check package-manager ownership before native layouts. Never replace a
-    // Homebrew or npm install with a second, unrelated installation.
+    // Homebrew or npm install with a second, unrelated installation. Homebrew
+    // comes first because its formulae may wrap an npm layout.
     for ancestor in resolved.ancestors() {
         if ancestor
             .file_name()
@@ -226,10 +314,7 @@ fn installation_method(id: ClientId, resolved: &Path, home: &Path) -> InstallMet
                 continue;
             };
             let package = package.as_os_str().to_string_lossy().into_owned();
-            if (id == ClientId::Codex && package == "codex")
-                || (id == ClientId::Claude
-                    && ["claude-code", "claude-code@latest"].contains(&package.as_str()))
-            {
+            if id.brew_packages().contains(&package.as_str()) {
                 return InstallMethod::Brew {
                     root: root.into(),
                     package,
@@ -237,54 +322,96 @@ fn installation_method(id: ClientId, resolved: &Path, home: &Path) -> InstallMet
                 };
             }
         }
-        if ancestor.ends_with(Path::new("node_modules").join(id.package())) {
-            let prefix = ancestor
-                .parent()
-                .and_then(Path::parent)
-                .and_then(Path::parent);
-            if let Some(prefix) = prefix {
-                if !cfg!(windows) && !prefix.ends_with("lib") {
-                    return InstallMethod::Unknown;
-                }
-                let prefix = if prefix.ends_with("lib") {
-                    prefix.parent().unwrap_or(prefix)
-                } else {
-                    prefix
-                };
-                // pnpm/Bun/Yarn stores are not npm global installations.
-                if resolved.components().any(|p| {
-                    [".pnpm", "pnpm", ".bun", "yarn", ".yarn"]
-                        .contains(&p.as_os_str().to_string_lossy().as_ref())
-                }) {
-                    return InstallMethod::Unknown;
-                }
-                let manifest = fs::read_to_string(ancestor.join("package.json"))
-                    .ok()
-                    .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok());
-                if manifest.as_ref().and_then(|v| v["name"].as_str()) == Some(id.package()) {
-                    return InstallMethod::Npm {
-                        prefix: prefix.into(),
-                    };
-                }
+    }
+    for ancestor in resolved.ancestors() {
+        let Some(package) = id
+            .packages()
+            .iter()
+            .find(|p| ancestor.ends_with(Path::new("node_modules").join(p)))
+        else {
+            continue;
+        };
+        if manifest_name(ancestor).as_deref() != Some(*package) {
+            continue;
+        }
+        // pnpm/Bun/Yarn stores are not npm global installations. Only Pi's own
+        // updater knows how to update them.
+        let manager =
+            resolved
+                .components()
+                .find_map(|p| match p.as_os_str().to_string_lossy().as_ref() {
+                    ".pnpm" | "pnpm" => Some("pnpm"),
+                    ".bun" => Some("bun"),
+                    "yarn" | ".yarn" => Some("yarn"),
+                    _ => None,
+                });
+        if let Some(manager) = manager {
+            return if id == ClientId::Pi {
+                InstallMethod::Package(manager)
+            } else {
+                InstallMethod::Unknown
+            };
+        }
+        let prefix = ancestor
+            .parent()
+            .and_then(Path::parent)
+            .and_then(Path::parent);
+        if let Some(prefix) = prefix {
+            if !cfg!(windows) && !prefix.ends_with("lib") {
+                return InstallMethod::Unknown;
             }
+            let prefix = if prefix.ends_with("lib") {
+                prefix.parent().unwrap_or(prefix)
+            } else {
+                prefix
+            };
+            return InstallMethod::Npm {
+                prefix: prefix.into(),
+            };
         }
     }
-    if id == ClientId::Claude && resolved.starts_with(home.join(".local/share/claude/versions")) {
-        return InstallMethod::Native;
-    }
-    if id == ClientId::Codex {
-        for directory in resolved.ancestors().skip(1).take(3) {
-            if let Ok(raw) = fs::read_to_string(directory.join("codex-package.json")) {
-                if let Ok(value) = serde_json::from_str::<serde_json::Value>(&raw) {
-                    if value["variant"] == "codex"
-                        && value["layoutVersion"] == 1
-                        && value["entrypoint"] == "bin/codex"
-                    {
-                        return InstallMethod::Native;
+    match id {
+        ClientId::Claude if resolved.starts_with(home.join(".local/share/claude/versions")) => {
+            return InstallMethod::Native;
+        }
+        ClientId::Cursor
+            if resolved.starts_with(home.join(".local/share/cursor-agent/versions")) =>
+        {
+            return InstallMethod::Native;
+        }
+        ClientId::Codex => {
+            for directory in resolved.ancestors().skip(1).take(3) {
+                if let Ok(raw) = fs::read_to_string(directory.join("codex-package.json")) {
+                    if let Ok(value) = serde_json::from_str::<serde_json::Value>(&raw) {
+                        if value["variant"] == "codex"
+                            && value["layoutVersion"] == 1
+                            && value["entrypoint"] == "bin/codex"
+                        {
+                            return InstallMethod::Native;
+                        }
                     }
                 }
             }
         }
+        ClientId::Pi => {
+            // The managed installer links <agent>/bin/pi, a launcher that runs
+            // the release selected under <agent>/install.
+            let marker = resolved
+                .parent()
+                .and_then(Path::parent)
+                .and_then(|agent| {
+                    fs::read_to_string(agent.join("install/managed-install.json")).ok()
+                })
+                .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok());
+            if marker.is_some_and(|v| {
+                v["kind"] == "pi-managed-install"
+                    && v["schemaVersion"] == 1
+                    && v["layout"] == "releases-v1"
+            }) {
+                return InstallMethod::Native;
+            }
+        }
+        _ => {}
     }
     InstallMethod::Unknown
 }
@@ -294,43 +421,57 @@ fn detect(environment: &Environment, id: ClientId) -> Option<Installation> {
     let executable = paths.next()?;
     let mut resolved = fs::canonicalize(&executable).ok()?;
     if cfg!(windows) && executable.extension().is_some_and(|s| s == "cmd") {
-        let entry = executable
-            .parent()?
-            .join("node_modules")
-            .join(id.package())
-            .join(match id {
-                ClientId::Codex => "bin/codex.js",
-                ClientId::Claude => "cli.js",
-            });
-        if entry.is_file() {
-            resolved = fs::canonicalize(entry).ok()?;
+        let entry = match id {
+            ClientId::Codex => Some("@openai/codex/bin/codex.js"),
+            ClientId::Claude => Some("@anthropic-ai/claude-code/cli.js"),
+            ClientId::Pi => Some("@earendil-works/pi-coding-agent/dist/bundle/cli.js"),
+            ClientId::Cursor => None,
+        };
+        if let Some(entry) = entry {
+            let entry = executable.parent()?.join("node_modules").join(entry);
+            if entry.is_file() {
+                resolved = fs::canonicalize(entry).ok()?;
+            }
         }
     }
+    let method = installation_method(id, &resolved, &environment.home);
+    // `pi` is a generic command name. Only report a launcher or package that is
+    // verifiably Pi; standalone binaries ship package.json beside themselves.
+    if id == ClientId::Pi
+        && method == InstallMethod::Unknown
+        && !resolved
+            .ancestors()
+            .skip(1)
+            .take(4)
+            .filter_map(manifest_name)
+            .any(|name| id.packages().contains(&name.as_str()))
+    {
+        return None;
+    }
     Some(Installation {
-        method: installation_method(id, &resolved, &environment.home),
+        method,
         executable,
         resolved,
         others: paths.map(|p| p.to_string_lossy().into_owned()).collect(),
     })
 }
 
-fn parse_version(raw: &str) -> Result<Version, ClientError> {
+fn parse_version(id: ClientId, raw: &str) -> Result<ClientVersion, ClientError> {
     raw.split_whitespace()
-        .find_map(|token| {
-            Version::parse(token.trim_matches(['(', ')']).trim_start_matches('v')).ok()
-        })
-        .ok_or_else(|| ClientError::new("version", "Could not read a semantic version"))
+        .find_map(|token| ClientVersion::parse(id, token))
+        .ok_or_else(|| ClientError::new("version", "Could not read a version"))
 }
 
 fn current_version(
     environment: &Environment,
+    id: ClientId,
     install: &Installation,
-) -> Result<Version, ClientError> {
+) -> Result<ClientVersion, ClientError> {
     // On Windows avoid passing a .cmd wrapper through cmd.exe; run the known
     // npm entry point through Node with a literal argument vector instead.
     let mut command = client_command(environment, install)?;
     command.args.push("--version".into());
-    parse_version(&process::run(environment, &command, PROBE_TIMEOUT)?)
+    parse_version(id, &process::run(environment, &command, PROBE_TIMEOUT)?)
 }
 
 fn node_program(environment: &Environment, prefix: &Path) -> Option<PathBuf> {
@@ -367,14 +508,41 @@ fn client_command(
     Ok(CommandSpec::new(&install.executable, &[]))
 }
 
+/// Cursor's `update` command reads its release channel from cli-config.json.
+fn cursor_channel(home: &Path) -> String {
+    let channel = fs::read_to_string(home.join(".cursor/cli-config.json"))
+        .ok()
+        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+        .and_then(|v| v["channel"].as_str().map(str::to_owned));
+    match channel.as_deref() {
+        None | Some("prod-stable-internal") => "prod".into(),
+        Some(channel) => channel.into(),
+    }
+}
+
 fn update_command(
     environment: &Environment,
     id: ClientId,
     install: &Installation,
-    latest: &Version,
+    latest: &ClientVersion,
 ) -> Result<CommandSpec, ClientError> {
     match &install.method {
+        // Pi's updater handles its npm, Bun, pnpm, Yarn, and managed layouts,
+        // including the move to the renamed package.
+        InstallMethod::Native | InstallMethod::Npm { .. } | InstallMethod::Package(_)
+            if id == ClientId::Pi =>
+        {
+            let mut command = client_command(environment, install)?;
+            command.args.extend(["update".into(), "--self".into()]);
+            Ok(command)
+        }
         InstallMethod::Native => {
+            if id == ClientId::Cursor && cursor_channel(&environment.home) == "static" {
+                return Err(ClientError::new(
+                    "unsupported",
+                    "Updates are disabled for the static channel",
+                ));
+            }
             let mut command = client_command(environment, install)?;
             command.args.push("update".into());
             Ok(command)
@@ -422,11 +590,11 @@ fn update_command(
                     "--global".into(),
                     "--prefix".into(),
                     prefix.as_os_str().into(),
-                    format!("{}@{latest}", id.package()).into(),
+                    format!("{}@{latest}", id.packages()[0]).into(),
                 ],
             })
         }
-        InstallMethod::Unknown => Err(ClientError::new(
+        InstallMethod::Package(_) | InstallMethod::Unknown => Err(ClientError::new(
             "unsupported",
             "Use the original installer or package manager",
         )),
@@ -498,13 +666,18 @@ fn load_environment(home: PathBuf, use_system_proxy: bool) -> Result<Environment
     Ok(environment)
 }
 
-fn latest_url(id: ClientId, install: &Installation, home: &Path) -> String {
-    match &install.method {
-        InstallMethod::Brew { package, cask, .. } => format!(
+struct LatestSource {
+    url: String,
+    body: Option<serde_json::Value>,
+}
+
+fn latest_source(id: ClientId, install: &Installation, home: &Path) -> LatestSource {
+    let url = match (&install.method, id) {
+        (InstallMethod::Brew { package, cask, .. }, _) => format!(
             "https://formulae.brew.sh/api/{}/{package}.json",
             if *cask { "cask" } else { "formula" }
         ),
-        InstallMethod::Native if id == ClientId::Claude => {
+        (InstallMethod::Native, ClientId::Claude) => {
             let stable = fs::read_to_string(home.join(".claude/settings.json"))
                 .ok()
                 .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
@@ -514,13 +687,29 @@ fn latest_url(id: ClientId, install: &Installation, home: &Path) -> String {
                 if stable { "stable" } else { "latest" }
             )
         }
-        _ => format!("https://registry.npmjs.org/{}/latest", id.package()),
-    }
+        // The same public endpoint `cursor-agent update` asks for its channel.
+        (_, ClientId::Cursor) => {
+            return LatestSource {
+                url: CURSOR_LATEST_URL.into(),
+                body: Some(serde_json::json!({ "channel": cursor_channel(home) })),
+            }
+        }
+        (_, ClientId::Pi) => PI_LATEST_URL.into(),
+        (_, ClientId::Codex | ClientId::Claude) => {
+            format!("https://registry.npmjs.org/{}/latest", id.packages()[0])
+        }
+    };
+    LatestSource { url, body: None }
 }
 
-fn parse_latest(body: &str, method: &InstallMethod, id: ClientId) -> Result<Version, ClientError> {
+fn parse_latest(
+    body: &str,
+    method: &InstallMethod,
+    id: ClientId,
+) -> Result<ClientVersion, ClientError> {
+    let invalid = || ClientError::new("version", "Invalid latest version");
     if method == &InstallMethod::Native && id == ClientId::Claude {
-        return Version::parse(body.trim()).map_err(|e| ClientError::new("version", e));
+        return ClientVersion::parse(id, body.trim()).ok_or_else(invalid);
     }
     let value: serde_json::Value =
         serde_json::from_str(body).map_err(|e| ClientError::new("version", e))?;
@@ -529,8 +718,8 @@ fn parse_latest(body: &str, method: &InstallMethod, id: ClientId) -> Result<Vers
         _ => value["version"].as_str(),
     }
     .ok_or_else(|| ClientError::new("version", "Missing latest version"))?;
-    let version = Version::parse(version).map_err(|e| ClientError::new("version", e))?;
-    if !version.pre.is_empty() {
+    let version = ClientVersion::parse(id, version).ok_or_else(invalid)?;
+    if !version.order.pre.is_empty() {
         return Err(ClientError::new(
             "version",
             "Latest endpoint returned a prerelease",
@@ -541,12 +730,18 @@ fn parse_latest(body: &str, method: &InstallMethod, id: ClientId) -> Result<Vers
 
 async fn fetch_latest(
     client: &reqwest::Client,
-    url: &str,
+    source: &LatestSource,
     install: &Installation,
     id: ClientId,
-) -> Result<Version, ClientError> {
-    let mut response = client
-        .get(url)
+) -> Result<ClientVersion, ClientError> {
+    let request = match &source.body {
+        Some(body) => client
+            .post(&source.url)
+            .header("connect-protocol-version", "1")
+            .json(body),
+        None => client.get(&source.url),
+    };
+    let mut response = request
         .send()
         .await
         .map_err(|e| ClientError::new("network", e))?;
@@ -574,7 +769,7 @@ async fn inspect(
     environment: &Environment,
     client: &reqwest::Client,
     id: ClientId,
-) -> (ClientStatus, Option<(Installation, Version)>) {
+) -> (ClientStatus, Option<(Installation, ClientVersion)>) {
     let mut status = ClientStatus::new(id);
     status.checked_at = Some(chrono::Utc::now().to_rfc3339());
     let Some(install) = detect(environment, id) else {
@@ -587,7 +782,7 @@ async fn inspect(
     let environment_copy = environment.clone();
     let install_copy = install.clone();
     let current = tauri::async_runtime::spawn_blocking(move || {
-        current_version(&environment_copy, &install_copy)
+        current_version(&environment_copy, id, &install_copy)
     })
     .await
     .unwrap_or_else(|e| Err(ClientError::new("command", e)));
@@ -601,7 +796,7 @@ async fn inspect(
     status.current_version = Some(current.to_string());
     let latest = match fetch_latest(
         client,
-        &latest_url(id, &install, &environment.home),
+        &latest_source(id, &install, &environment.home),
         &install,
         id,
     )
@@ -614,15 +809,10 @@ async fn inspect(
         }
     };
     status.latest_version = Some(latest.to_string());
-    status.phase = if latest > current {
-        "available"
-    } else {
-        "up_to_date"
-    }
-    .into();
-    status.can_update =
-        latest > current && update_command(environment, id, &install, &latest).is_ok();
-    if latest > current && !status.can_update {
+    let available = latest.newer_than(&current);
+    status.phase = if available { "available" } else { "up_to_date" }.into();
+    status.can_update = available && update_command(environment, id, &install, &latest).is_ok();
+    if available && !status.can_update {
         status.phase = "manual".into();
     }
     (status, Some((install, latest)))
@@ -632,8 +822,8 @@ fn perform_update(
     environment: &Environment,
     id: ClientId,
     install: &Installation,
-    latest: &Version,
-) -> Result<Version, ClientError> {
+    latest: &ClientVersion,
+) -> Result<ClientVersion, ClientError> {
     let fresh = detect(environment, id)
         .ok_or_else(|| ClientError::new("changed", "Client installation changed"))?;
     if fresh.executable != install.executable
@@ -642,17 +832,17 @@ fn perform_update(
     {
         return Err(ClientError::new("changed", "Client installation changed"));
     }
-    let current = current_version(environment, &fresh)?;
+    let current = current_version(environment, id, &fresh)?;
     // Another updater may have replaced this file in place since the check.
-    if current >= *latest {
+    if !latest.newer_than(&current) {
         return Ok(current);
     }
     let command = update_command(environment, id, &fresh, latest)?;
     let output = process::run(environment, &command, UPDATE_TIMEOUT)?;
     let after = detect(environment, id)
         .ok_or_else(|| ClientError::new("command", "Client disappeared after update"))?;
-    let version = current_version(environment, &after)?;
-    if version <= current {
+    let version = current_version(environment, id, &after)?;
+    if !version.newer_than(&current) {
         return Err(ClientError::new(
             "unchanged",
             format!(
@@ -734,7 +924,7 @@ impl ClientUpdateManager {
             .unwrap_or_else(|e| Err(ClientError::new("command", e)));
             match environment {
                 Ok(environment) => {
-                    for id in [ClientId::Codex, ClientId::Claude] {
+                    for id in ClientId::ALL {
                         if !update.is_empty() && !update.contains(&id) {
                             continue;
                         }
@@ -803,7 +993,7 @@ pub fn update_local_clients(
     manager: State<'_, Arc<ClientUpdateManager>>,
     ids: Vec<ClientId>,
 ) -> Result<ClientSnapshot, String> {
-    if ids.is_empty() || ids.len() > 2 || (ids.len() == 2 && ids[0] == ids[1]) {
+    if ids.is_empty() || ids.iter().collect::<HashSet<_>>().len() != ids.len() {
         return Err("Invalid client selection".into());
     }
     manager.start(app, ids)

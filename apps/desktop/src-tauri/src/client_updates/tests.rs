@@ -51,19 +51,43 @@ impl Drop for Fixture {
     }
 }
 
+fn version(id: ClientId, raw: &str) -> ClientVersion {
+    ClientVersion::parse(id, raw).unwrap()
+}
+
 #[test]
 fn reads_version_output_and_compares_semver_without_downgrading() {
     assert_eq!(
-        parse_version("codex-cli 0.153.4\n").unwrap(),
-        Version::new(0, 153, 4)
+        parse_version(ClientId::Codex, "codex-cli 0.153.4\n").unwrap(),
+        version(ClientId::Codex, "0.153.4")
     );
     assert_eq!(
-        parse_version("2.1.280 (Claude Code)\n").unwrap(),
+        parse_version(ClientId::Claude, "2.1.280 (Claude Code)\n")
+            .unwrap()
+            .order,
         Version::new(2, 1, 280)
     );
-    assert!(parse_version("v2.10.0").unwrap() > parse_version("2.9.9").unwrap());
-    assert!(parse_version("0.160.0-beta.1").unwrap() > parse_version("0.159.0").unwrap());
-    assert!(parse_version("not installed").is_err());
+    assert!(version(ClientId::Pi, "v2.10.0").newer_than(&version(ClientId::Pi, "2.9.9")));
+    assert!(!version(ClientId::Pi, "2.9.9").newer_than(&version(ClientId::Pi, "2.9.9")));
+    assert!(
+        version(ClientId::Codex, "0.160.0-beta.1").newer_than(&version(ClientId::Codex, "0.159.0"))
+    );
+    assert!(parse_version(ClientId::Codex, "not installed").is_err());
+}
+
+#[test]
+fn orders_dated_cursor_builds() {
+    let current = parse_version(ClientId::Cursor, "2026.08.11-e8db854\n").unwrap();
+    assert_eq!(current.to_string(), "2026.08.11-e8db854");
+    let latest = version(ClientId::Cursor, "2026.09.28-64d2043");
+    assert!(latest.newer_than(&current));
+    assert!(!current.newer_than(&latest));
+    assert!(!latest.newer_than(&latest.clone()));
+    // Like Cursor's updater, another build from the same day is an update.
+    assert!(version(ClientId::Cursor, "2026.09.28-1a2b3c4").newer_than(&latest));
+    for invalid in ["2026.9.28-64d2043", "1.2.3", "2026.09.28-$(touch)"] {
+        assert!(ClientVersion::parse(ClientId::Cursor, invalid).is_none());
+    }
 }
 
 #[test]
@@ -145,6 +169,105 @@ fn excludes_other_package_managers_and_project_node_modules() {
 }
 
 #[test]
+fn identifies_cursor_and_pi_installations() {
+    let fixture = Fixture::new();
+    assert_eq!(
+        installation_method(
+            ClientId::Cursor,
+            &fixture
+                .0
+                .join(".local/share/cursor-agent/versions/2026.09.28-64d2043/cursor-agent"),
+            &fixture.0
+        ),
+        InstallMethod::Native
+    );
+    assert_eq!(
+        installation_method(
+            ClientId::Cursor,
+            Path::new(
+                "/opt/homebrew/Caskroom/cursor-cli/2026.09.28-64d2043/dist-package/cursor-agent"
+            ),
+            &fixture.0
+        ),
+        InstallMethod::Brew {
+            root: "/opt/homebrew".into(),
+            package: "cursor-cli".into(),
+            cask: true
+        }
+    );
+    // The Homebrew formula wraps an npm layout inside the Cellar.
+    let formula = fixture.write(
+        "brew/Cellar/pi-coding-agent/0.87.1/libexec/lib/node_modules/@earendil-works/pi-coding-agent/package.json",
+        r#"{"name":"@earendil-works/pi-coding-agent"}"#,
+    );
+    assert_eq!(
+        installation_method(
+            ClientId::Pi,
+            &formula.parent().unwrap().join("dist/cli.js"),
+            &fixture.0
+        ),
+        InstallMethod::Brew {
+            root: fixture.0.join("brew"),
+            package: "pi-coding-agent".into(),
+            cask: false
+        }
+    );
+    let legacy = fixture.write(
+        "node/lib/node_modules/@mariozechner/pi-coding-agent/package.json",
+        r#"{"name":"@mariozechner/pi-coding-agent"}"#,
+    );
+    assert_eq!(
+        installation_method(
+            ClientId::Pi,
+            &legacy.parent().unwrap().join("dist/cli.js"),
+            &fixture.0
+        ),
+        InstallMethod::Npm {
+            prefix: fixture.0.join("node")
+        }
+    );
+    let bun = fixture.write(
+        ".bun/install/global/node_modules/@earendil-works/pi-coding-agent/package.json",
+        r#"{"name":"@earendil-works/pi-coding-agent"}"#,
+    );
+    assert_eq!(
+        installation_method(
+            ClientId::Pi,
+            &bun.parent().unwrap().join("dist/cli.js"),
+            &fixture.0
+        ),
+        InstallMethod::Package("bun")
+    );
+    fixture.write(
+        ".pi/agent/install/managed-install.json",
+        r#"{"kind":"pi-managed-install","schemaVersion":1,"layout":"releases-v1"}"#,
+    );
+    assert_eq!(
+        installation_method(
+            ClientId::Pi,
+            &fixture.0.join(".pi/agent/bin/pi"),
+            &fixture.0
+        ),
+        InstallMethod::Native
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn ignores_unrelated_pi_commands() {
+    let fixture = Fixture::new();
+    fixture.script("bin/pi", "#!/bin/sh\necho 3.14\n");
+    assert!(detect(&fixture.environment(), ClientId::Pi).is_none());
+    // Standalone builds ship their package.json beside the binary.
+    fixture.write(
+        "bin/package.json",
+        r#"{"name":"@earendil-works/pi-coding-agent"}"#,
+    );
+    let install = detect(&fixture.environment(), ClientId::Pi).unwrap();
+    assert_eq!(install.method, InstallMethod::Unknown);
+}
+
+#[test]
 fn parses_latest_sources_and_rejects_invalid_versions() {
     assert_eq!(
         parse_latest(
@@ -153,11 +276,21 @@ fn parses_latest_sources_and_rejects_invalid_versions() {
             ClientId::Codex
         )
         .unwrap(),
-        Version::new(0, 158, 0)
+        version(ClientId::Codex, "0.158.0")
     );
     assert_eq!(
         parse_latest("2.1.283\n", &InstallMethod::Native, ClientId::Claude).unwrap(),
-        Version::new(2, 1, 283)
+        version(ClientId::Claude, "2.1.283")
+    );
+    assert_eq!(
+        parse_latest(
+            r#"{"url":"https://downloads.cursor.com/x.tar.gz","version":"2026.09.28-64d2043"}"#,
+            &InstallMethod::Native,
+            ClientId::Cursor
+        )
+        .unwrap()
+        .to_string(),
+        "2026.09.28-64d2043"
     );
     let method = InstallMethod::Brew {
         root: "/opt/homebrew".into(),
@@ -171,7 +304,7 @@ fn parses_latest_sources_and_rejects_invalid_versions() {
             ClientId::Codex
         )
         .unwrap(),
-        Version::new(0, 158, 0)
+        version(ClientId::Codex, "0.158.0")
     );
     for invalid in [
         r#"{"version":"$(touch evil)"}"#,
@@ -191,12 +324,50 @@ fn claude_version_check_respects_the_selected_native_channel() {
         method: InstallMethod::Native,
         others: vec![],
     };
-    assert!(latest_url(ClientId::Claude, &install, &fixture.0).ends_with("/latest"));
+    assert!(latest_source(ClientId::Claude, &install, &fixture.0)
+        .url
+        .ends_with("/latest"));
     fixture.write(
         ".claude/settings.json",
         r#"{"autoUpdatesChannel":"stable"}"#,
     );
-    assert!(latest_url(ClientId::Claude, &install, &fixture.0).ends_with("/stable"));
+    assert!(latest_source(ClientId::Claude, &install, &fixture.0)
+        .url
+        .ends_with("/stable"));
+}
+
+#[test]
+fn cursor_and_pi_version_checks_use_their_release_services() {
+    let fixture = Fixture::new();
+    let install = Installation {
+        executable: "cursor-agent".into(),
+        resolved: "cursor-agent".into(),
+        method: InstallMethod::Native,
+        others: vec![],
+    };
+    let pi = latest_source(ClientId::Pi, &install, &fixture.0);
+    assert_eq!((pi.url.as_str(), pi.body), (PI_LATEST_URL, None));
+    let cursor = latest_source(ClientId::Cursor, &install, &fixture.0);
+    assert_eq!(cursor.url, CURSOR_LATEST_URL);
+    assert_eq!(cursor.body, Some(serde_json::json!({ "channel": "prod" })));
+    fixture.write(".cursor/cli-config.json", r#"{"channel":"lab"}"#);
+    assert_eq!(
+        latest_source(ClientId::Cursor, &install, &fixture.0).body,
+        Some(serde_json::json!({ "channel": "lab" }))
+    );
+    let cask = Installation {
+        method: InstallMethod::Brew {
+            root: "/opt/homebrew".into(),
+            package: "cursor-cli".into(),
+            cask: true,
+        },
+        ..install
+    };
+    let source = latest_source(ClientId::Cursor, &cask, &fixture.0);
+    assert_eq!(
+        (source.url.as_str(), source.body),
+        ("https://formulae.brew.sh/api/cask/cursor-cli.json", None)
+    );
 }
 
 #[test]
@@ -207,7 +378,7 @@ fn serializes_operations_and_rejects_unknown_client_ids() {
     drop(guard);
     assert!(manager.operation.try_lock().is_ok());
     assert!(serde_json::from_str::<ClientId>(r#""codex; rm -rf anything""#).is_err());
-    assert_eq!(manager.snapshot().clients.len(), 2);
+    assert_eq!(manager.snapshot().clients.len(), ClientId::ALL.len());
 }
 
 #[test]
@@ -294,19 +465,19 @@ fn updates_an_isolated_native_client_and_checks_the_result() {
         &fixture.environment(),
         ClientId::Codex,
         &install,
-        &Version::new(1, 1, 0),
+        &version(ClientId::Codex, "1.1.0"),
     )
     .unwrap();
-    assert_eq!(result, Version::new(1, 1, 0));
+    assert_eq!(result, version(ClientId::Codex, "1.1.0"));
     // Never downgrade even if the currently running check has stale metadata.
     let result = perform_update(
         &fixture.environment(),
         ClientId::Codex,
         &install,
-        &Version::new(1, 0, 0),
+        &version(ClientId::Codex, "1.0.0"),
     )
     .unwrap();
-    assert_eq!(result, Version::new(1, 1, 0));
+    assert_eq!(result, version(ClientId::Codex, "1.1.0"));
 }
 
 #[cfg(unix)]
@@ -322,7 +493,7 @@ fn reports_update_failure_and_success_without_version_change() {
             &fixture.environment(),
             ClientId::Codex,
             &install,
-            &Version::new(1, 1, 0),
+            &version(ClientId::Codex, "1.1.0"),
         )
         .unwrap_err();
         assert_eq!(error.code, code);
@@ -330,8 +501,8 @@ fn reports_update_failure_and_success_without_version_change() {
             assert!(error.detail.contains("download-failed"));
         }
         assert_eq!(
-            current_version(&fixture.environment(), &install).unwrap(),
-            Version::new(1, 0, 0)
+            current_version(&fixture.environment(), ClientId::Codex, &install).unwrap(),
+            version(ClientId::Codex, "1.0.0")
         );
     }
 }
@@ -348,7 +519,7 @@ fn refuses_to_update_when_the_selected_installation_changes() {
             &fixture.environment(),
             ClientId::Codex,
             &install,
-            &Version::new(1, 1, 0)
+            &version(ClientId::Codex, "1.1.0")
         )
         .unwrap_err()
         .code,
@@ -375,12 +546,58 @@ fn npm_update_targets_the_detected_prefix_and_pins_the_version() {
         &fixture.environment(),
         ClientId::Codex,
         &install,
-        &Version::new(0, 158, 0),
+        &version(ClientId::Codex, "0.158.0"),
     )
     .unwrap();
     assert_eq!(command.program, fixture.0.join("node/bin/node"));
     assert_eq!(command.args[4], fixture.0.join("node").as_os_str());
     assert_eq!(command.args[5], "@openai/codex@0.158.0");
+}
+
+#[cfg(unix)]
+#[test]
+fn pi_delegates_updates_and_cursor_respects_the_static_channel() {
+    let fixture = Fixture::new();
+    for method in [
+        InstallMethod::Native,
+        InstallMethod::Package("pnpm"),
+        InstallMethod::Npm {
+            prefix: fixture.0.join("node"),
+        },
+    ] {
+        let install = Installation {
+            executable: fixture.0.join("bin/pi"),
+            resolved: PathBuf::new(),
+            method,
+            others: vec![],
+        };
+        let command = update_command(
+            &fixture.environment(),
+            ClientId::Pi,
+            &install,
+            &version(ClientId::Pi, "0.87.1"),
+        )
+        .unwrap();
+        assert_eq!(command.program, install.executable);
+        assert_eq!(command.args, ["update", "--self"]);
+    }
+    let cursor = Installation {
+        executable: fixture.0.join("bin/cursor-agent"),
+        resolved: PathBuf::new(),
+        method: InstallMethod::Native,
+        others: vec![],
+    };
+    let latest = version(ClientId::Cursor, "2026.09.28-64d2043");
+    let command =
+        update_command(&fixture.environment(), ClientId::Cursor, &cursor, &latest).unwrap();
+    assert_eq!(command.args, ["update"]);
+    fixture.write(".cursor/cli-config.json", r#"{"channel":"static"}"#);
+    assert_eq!(
+        update_command(&fixture.environment(), ClientId::Cursor, &cursor, &latest)
+            .unwrap_err()
+            .code,
+        "unsupported"
+    );
 }
 
 #[tokio::test]
@@ -411,8 +628,9 @@ async fn handles_http_failure_rate_limit_and_invalid_metadata() {
             method: InstallMethod::Native,
             others: vec![],
         };
+        let source = LatestSource { url, body: None };
         assert_eq!(
-            fetch_latest(&client, &url, &install, ClientId::Codex)
+            fetch_latest(&client, &source, &install, ClientId::Codex)
                 .await
                 .unwrap_err()
                 .code,
@@ -420,4 +638,46 @@ async fn handles_http_failure_rate_limit_and_invalid_metadata() {
         );
         worker.join().unwrap();
     }
+}
+
+#[tokio::test]
+async fn posts_the_cursor_channel_to_the_release_service() {
+    let server = TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}/latest", server.local_addr().unwrap());
+    let worker = std::thread::spawn(move || {
+        let (mut stream, _) = server.accept().unwrap();
+        let mut request = Vec::new();
+        let mut chunk = [0; 2048];
+        while !String::from_utf8_lossy(&request).contains(r#"{"channel":"prod"}"#) {
+            let read = stream.read(&mut chunk).unwrap();
+            assert_ne!(read, 0, "request ended before the body");
+            request.extend_from_slice(&chunk[..read]);
+        }
+        let body = r#"{"url":"https://downloads.cursor.com/x","version":"2026.09.28-64d2043"}"#;
+        write!(
+            stream,
+            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        )
+        .unwrap();
+        String::from_utf8_lossy(&request).to_lowercase()
+    });
+    let client = reqwest::Client::builder().no_proxy().build().unwrap();
+    let install = Installation {
+        executable: "cursor-agent".into(),
+        resolved: "cursor-agent".into(),
+        method: InstallMethod::Native,
+        others: vec![],
+    };
+    let source = LatestSource {
+        url,
+        body: Some(serde_json::json!({ "channel": "prod" })),
+    };
+    let latest = fetch_latest(&client, &source, &install, ClientId::Cursor)
+        .await
+        .unwrap();
+    assert_eq!(latest.to_string(), "2026.09.28-64d2043");
+    let request = worker.join().unwrap();
+    assert!(request.starts_with("post /latest "));
+    assert!(request.contains("connect-protocol-version: 1\r\n"));
 }

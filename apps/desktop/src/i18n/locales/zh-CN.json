@@ -2613,6 +2613,9 @@
     "method": {
       "native": "独立安装包",
       "npm": "npm",
+      "bun": "Bun",
+      "pnpm": "pnpm",
+      "yarn": "Yarn",
       "homebrew": "Homebrew"
     },
     "errors": {
