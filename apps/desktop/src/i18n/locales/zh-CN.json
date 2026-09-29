@@ -2718,7 +2718,7 @@
     "unlock": "解锁",
     "lock": "锁定",
     "locked": "已锁定",
-    "lockedDetail": "原文已封存，解锁后才能查看。",
+    "lockedDetail": "原文已封存，输入原文口令解锁后才能查看。",
     "withheldDetail": "此部分已捕获，当前视图不显示。",
     "notKept": "未保存",
     "notKeptDetail": "记录时还没设置原文保护，这部分原文没有保存。",

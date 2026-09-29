@@ -365,7 +365,9 @@ describe("AuditReviewer sections", () => {
 
     const body = container.querySelector('[data-slot="audit-part-withheld"]');
     expect(body?.textContent).toContain("已锁定");
-    expect(body?.textContent).toContain("原文已封存，解锁后才能查看。");
+    expect(body?.textContent).toContain(
+      "原文已封存，输入原文口令解锁后才能查看。",
+    );
     const unlock = [...container.querySelectorAll("button")].find(
       (candidate) => candidate.textContent?.trim() === "解锁",
     );

@@ -2718,7 +2718,7 @@
     "unlock": "Unlock",
     "lock": "Lock",
     "locked": "Locked",
-    "lockedDetail": "This raw content is sealed. Unlock to view it.",
+    "lockedDetail": "This raw content is sealed. Unlock it with your raw password to view it.",
     "withheldDetail": "This part was captured but is not shown in this view.",
     "notKept": "Not saved",
     "notKeptDetail": "Raw protection was not set up when this was recorded, so this raw content was not saved.",

@@ -112,6 +112,7 @@ export function RequestTrajectory({
   auditError,
   copyFeedback,
   services = NO_SERVICES,
+  onUnlockRaw,
 }: {
   turns: RequestRecord[];
   childrenByRoot: Record<string, RequestRecord[]>;
@@ -122,6 +123,8 @@ export function RequestTrajectory({
   auditError: string | null;
   copyFeedback: CopyFeedback;
   services?: RequestServiceMap;
+  /** Opens the raw unlock from the overlay inspector. */
+  onUnlockRaw?: () => void;
 }) {
   const t = useT();
   const serviceByRequest = useMemo(
@@ -583,6 +586,7 @@ export function RequestTrajectory({
               }
               copyFeedback={copyFeedback}
               onClose={() => setOverlayOpen(false)}
+              onUnlockRaw={onUnlockRaw}
               record={selection.record}
               row={selection.row}
               service={selection.service}

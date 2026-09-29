@@ -2328,6 +2328,7 @@ function RecordDetail({
             childrenByRoot={childrenByRoot}
             copyFeedback={copyFeedback}
             onSelectRequest={onSelectTurn}
+            onUnlockRaw={onUnlockRaw}
             selectedRequestId={record.id}
             services={services}
             turns={turns}

@@ -2,6 +2,7 @@ import { RecoveryDetails } from "./components/RecoveryDetails";
 import { RoutingDecisionDetails } from "./components/RoutingDecisionDetails";
 import { useEffect, useMemo, useRef, useState } from "react";
 
+import { LockKeyhole } from "@/components/icons";
 import { Button } from "@/components/ui/button";
 import { ConversationIndicator } from "@/components/ConversationIndicator";
 import { ModelLabel } from "@/components/ModelLabel";
@@ -13,11 +14,12 @@ import { cn } from "@/lib/utils";
 import { AuditPartSection, withheldHint } from "./AuditReviewer";
 import type { CopyFeedback } from "./copy-feedback";
 import { i18n, useT } from "./i18n";
-import type {
-  AuditContent,
-  RequestModelRedirect,
-  RequestRecord,
-  RequestStatus,
+import {
+  holdsLockedPart,
+  type AuditContent,
+  type RequestModelRedirect,
+  type RequestRecord,
+  type RequestStatus,
 } from "./request-record-model";
 import {
   namedRouteSummary,
@@ -58,7 +60,8 @@ type BodyPart = Exclude<InspectorPart, "route" | "redirect">;
  *
  * `onClose` is set only where the host has no window controls of its own. A
  * detached window keeps its pin in the title bar and passes `pinned` in.
- * Clicking a chip here only switches the tab.
+ * Clicking a chip here only switches the tab. `onUnlockRaw` puts the unlock
+ * in the header while any part of this call is sealed away.
  */
 export function TrajectoryInspector({
   row,
@@ -71,6 +74,7 @@ export function TrajectoryInspector({
   copyFeedback,
   pinned = false,
   onClose,
+  onUnlockRaw,
 }: {
   row: TrajectoryRow;
   record: RequestRecord;
@@ -82,8 +86,10 @@ export function TrajectoryInspector({
   copyFeedback: CopyFeedback;
   pinned?: boolean;
   onClose?: () => void;
+  onUnlockRaw?: () => void;
 }) {
   const t = useT();
+  const locked = auditContent !== null && holdsLockedPart(auditContent);
   const chain = useMemo(() => inspectorChainRows(record), [record]);
   const tabs = useMemo(() => inspectorTabs(chain), [chain]);
   const requestedTab = tabChip(row.chip);
@@ -143,6 +149,19 @@ export function TrajectoryInspector({
             </span>
           ) : null}
         </div>
+        {locked && onUnlockRaw ? (
+          <Button
+            className="h-7"
+            data-testid="trajectory-inspector-unlock"
+            onClick={onUnlockRaw}
+            size="sm"
+            type="button"
+            variant="outline"
+          >
+            <LockKeyhole aria-hidden="true" className="size-3.5" />
+            {t("rawSealing.unlockTitle")}
+          </Button>
+        ) : null}
         {onClose ? (
           <Button
             className="h-7"

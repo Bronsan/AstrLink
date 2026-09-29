@@ -3128,7 +3128,9 @@ describe("RequestRecords", () => {
       '[data-slot="audit-part-withheld"]',
     );
     expect(withheld?.textContent).toContain("已锁定");
-    expect(withheld?.textContent).toContain("原文已封存，解锁后才能查看。");
+    expect(withheld?.textContent).toContain(
+      "原文已封存，输入原文口令解锁后才能查看。",
+    );
 
     await act(async () => {
       exactButton("解锁").click();

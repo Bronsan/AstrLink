@@ -11,10 +11,12 @@ import {
 } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 
-import { getRequestAuditContent } from "./bridge";
+import { getRawSealingStatus, getRequestAuditContent } from "./bridge";
 import { useCopyFeedback } from "./copy-feedback";
 import { i18n } from "./i18n";
 import { notify } from "./notify";
+import { rawPasswordUnset, type RawSealingState } from "./raw-sealing-model";
+import { RawSealingDialogs, type RawDialog } from "./RawSealingControls";
 import {
   holdsLockedPart,
   holdsRawPart,
@@ -44,8 +46,9 @@ import { WindowChromeAccessory } from "./WindowChrome";
  *
  * Audit content is decrypted here rather than forwarded, so captured bodies
  * never cross the channel and the main window's cache stays the main window's.
- * The main window owns the raw unlock; this one watches it, so raw parts go
- * when the unlock ends — pinned or not — and locked parts fill in after one.
+ * The unlock is shared with the main window: this one can open it for the
+ * parts on screen and watches it, so raw parts go when the unlock ends —
+ * pinned or not — and locked parts fill in after one, wherever it opened.
  */
 export function TrajectoryInspectorWindow() {
   const t = i18n.t.bind(i18n);
@@ -118,6 +121,23 @@ export function TrajectoryInspectorWindow() {
     refetchAudit,
   );
 
+  const [rawSealing, setRawSealing] = useState<RawSealingState | null>(null);
+  const [rawDialog, setRawDialog] = useState<RawDialog | null>(null);
+  const unlockRaw = useCallback(() => {
+    // Read fresh: the unlock may have opened in the main window meanwhile.
+    getRawSealingStatus().then(
+      (current) => {
+        setRawSealing(current);
+        if (current.unlocked) {
+          refetchAudit();
+          return;
+        }
+        setRawDialog({ kind: rawPasswordUnset(current) ? "set" : "unlock" });
+      },
+      () => notify.error(i18n.t("records.unlockSealingUnknown")),
+    );
+  }, [refetchAudit]);
+
   return (
     <main className="flex h-dvh min-h-0 flex-col overflow-hidden pt-[var(--window-chrome-height)]">
       {selection ? (
@@ -135,6 +155,7 @@ export function TrajectoryInspectorWindow() {
           auditError={audit.error}
           auditLoading={audit.loading}
           copyFeedback={copyFeedback}
+          onUnlockRaw={unlockRaw}
           pinned={pinned}
           record={selection.record}
           row={selection.row}
@@ -151,6 +172,15 @@ export function TrajectoryInspectorWindow() {
           </span>
         </div>
       )}
+      <RawSealingDialogs
+        dialog={rawDialog}
+        onClose={(done) => {
+          setRawDialog(null);
+          if (done) refetchAudit();
+        }}
+        onStatus={setRawSealing}
+        status={rawSealing}
+      />
     </main>
   );
 }

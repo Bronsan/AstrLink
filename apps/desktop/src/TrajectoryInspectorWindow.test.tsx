@@ -919,7 +919,23 @@ describe("TrajectoryInspectorWindow", () => {
       pushSelection({ row: laterRow, record: captured });
     });
     await flush();
-    expect(hint("inspector-client-body")).toBe("原文已封存，解锁后才能查看。");
+    expect(hint("inspector-client-body")).toBe(
+      "原文已封存，输入原文口令解锁后才能查看。",
+    );
+
+    // The unlock opens here, so the operator is not sent to the main window.
+    bridgeMocks.getRawSealingStatus.mockResolvedValue(sealing(false));
+    await act(async () => {
+      container
+        .querySelector<HTMLButtonElement>(
+          '[data-testid="trajectory-inspector-unlock"]',
+        )!
+        .click();
+    });
+    await flush();
+    expect(document.body.textContent).toContain(
+      "解锁后可在本机查看已封存的原文",
+    );
 
     await act(async () => {
       container
