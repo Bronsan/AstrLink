@@ -4223,6 +4223,15 @@ components:
           pattern: "^local://service/[a-z][a-z0-9_-]{2,95}$"
           readOnly: true
           description: Opaque local credential reference; never contains credential bytes.
+        credential_hint:
+          type: string
+          maxLength: 16
+          pattern: "^…"
+          readOnly: true
+          description: >
+            Last four characters of the saved API key, prefixed with an ellipsis.
+            Returned only on the operator's single-service read and never persisted;
+            keys shorter than twelve characters have no hint.
       additionalProperties: false
     SubscriptionServiceConnection:
       type: object

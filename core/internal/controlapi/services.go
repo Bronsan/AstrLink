@@ -14,10 +14,12 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/QuantumNous/astrlink/core/contract"
 	"github.com/QuantumNous/astrlink/core/internal/accountauth"
 	"github.com/QuantumNous/astrlink/core/internal/codingplan"
+	"github.com/QuantumNous/astrlink/core/internal/secretstore"
 	"github.com/QuantumNous/astrlink/core/internal/servicemodel"
 	"github.com/QuantumNous/astrlink/core/internal/storage"
 	"github.com/QuantumNous/astrlink/core/internal/subscription"
@@ -59,6 +61,58 @@ func (handler *Handler) publicService(service contract.Service) contract.Service
 	connection.AuthorizationBoundary = handler.subscriptions.AuthorizationBoundary()
 	service.Subscription = &connection
 	return service
+}
+
+// serviceDetail is the operator's single-service read. It adds the saved API
+// key's last characters so the editor can show which key is stored; the hint
+// is derived on each read and never persisted.
+type serviceDetail struct {
+	contract.Service
+	HTTP *serviceHTTPDetail `json:"http,omitempty"`
+}
+
+type serviceHTTPDetail struct {
+	contract.HTTPConnection
+	CredentialHint string `json:"credential_hint,omitempty"`
+}
+
+func (handler *Handler) serviceDetail(request *http.Request, service contract.Service) any {
+	service = handler.publicService(service)
+	if requestRole(request) < RoleOperator || service.HTTP == nil || service.HTTP.CredentialRef == "" {
+		return service
+	}
+	secrets, ok := handler.serviceStore.(secretstore.SecretStore)
+	if !ok {
+		return service
+	}
+	secret, err := secrets.Get(request.Context(), secretstore.Ref(service.HTTP.CredentialRef))
+	defer clear(secret)
+	if err != nil {
+		return service
+	}
+	hint := credentialHint(secret)
+	if hint == "" {
+		return service
+	}
+	return serviceDetail{
+		Service: service,
+		HTTP:    &serviceHTTPDetail{HTTPConnection: *service.HTTP, CredentialHint: hint},
+	}
+}
+
+// credentialHint shows the last characters of an API key, like "…a1b2". Short
+// keys get no hint so the suffix never reveals most of one.
+func credentialHint(secret []byte) string {
+	const visibleSuffix = 4
+	if utf8.RuneCount(secret) < 3*visibleSuffix {
+		return ""
+	}
+	start := len(secret)
+	for range visibleSuffix {
+		_, size := utf8.DecodeLastRune(secret[:start])
+		start -= size
+	}
+	return "…" + string(secret[start:])
 }
 
 type authorizationStartRequest struct {
@@ -319,7 +373,7 @@ func (handler *Handler) getService(writer http.ResponseWriter, request *http.Req
 		return
 	}
 	writer.Header().Set("ETag", record.ETag)
-	writeJSON(writer, http.StatusOK, handler.publicService(record.Service))
+	writeJSON(writer, http.StatusOK, handler.serviceDetail(request, record.Service))
 }
 
 func (handler *Handler) patchService(writer http.ResponseWriter, request *http.Request, id contract.ServiceID) {
