@@ -142,6 +142,7 @@ import {
   parseAgentInstallStatus,
   type AgentInstallReceipt,
   type AgentInstallStatus,
+  type AgentSkillId,
   type AgentToolId,
 } from "./agent-install-model";
 
@@ -940,11 +941,12 @@ export async function getAgentDebugStatus(): Promise<AgentInstallStatus> {
 }
 
 export async function installAgentDebug(
+  skillIds: AgentSkillId[],
   toolIds: AgentToolId[],
 ): Promise<AgentInstallReceipt> {
   requireNativeBridge();
   return parseAgentInstallReceipt(
-    await invoke<unknown>("install_agent_debug", { toolIds }),
+    await invoke<unknown>("install_agent_debug", { skillIds, toolIds }),
   );
 }
 

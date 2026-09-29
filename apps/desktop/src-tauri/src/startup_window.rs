@@ -1,7 +1,7 @@
 use tauri::{LogicalSize, Manager, PhysicalPosition, PhysicalRect, PhysicalSize, WebviewWindow};
 
 const WORK_AREA_FRACTION: f64 = 0.75;
-const ASPECT_RATIO: f64 = 3.0 / 2.0;
+const ASPECT_RATIO: f64 = 19.0 / 12.0;
 
 #[derive(Debug)]
 struct StartupGeometry {
@@ -98,8 +98,8 @@ mod tests {
             PhysicalSize::new(1520, 1200),
         )
         .unwrap();
-        assert_eq!(geometry.inner_size, PhysicalSize::new(2004, 1336));
-        assert_eq!(geometry.position, PhysicalPosition::new(510, 289));
+        assert_eq!(geometry.inner_size, PhysicalSize::new(2116, 1336));
+        assert_eq!(geometry.position, PhysicalPosition::new(454, 289));
         assert_eq!(geometry.minimum_size, PhysicalSize::new(1520, 1200));
     }
 
@@ -111,14 +111,18 @@ mod tests {
             PhysicalSize::new(760, 600),
         )
         .unwrap();
-        assert_eq!(geometry.inner_size, PhysicalSize::new(783, 522));
-        assert_eq!(geometry.minimum_size, PhysicalSize::new(760, 522));
-        assert_eq!(geometry.position, PhysicalPosition::new(248, 111));
+        assert_eq!(geometry.inner_size, PhysicalSize::new(826, 521));
+        assert_eq!(geometry.minimum_size, PhysicalSize::new(760, 521));
+        assert_eq!(geometry.position, PhysicalPosition::new(227, 111));
     }
 
     #[test]
     fn scales_with_the_display_and_centers_on_offset_monitors() {
-        for (scale, x) in [(1, -1523), (2, -3045), (3, -4568)] {
+        for (scale, width, height, x) in [
+            (1, 1187, 749, -1554),
+            (2, 2375, 1500, -3108),
+            (3, 3562, 2249, -4661),
+        ] {
             let area = work_area(-1920 * scale as i32, 40, 1920 * scale, 1000 * scale);
             let geometry = startup_geometry(
                 &area,
@@ -126,10 +130,7 @@ mod tests {
                 PhysicalSize::new(760 * scale, 600 * scale),
             )
             .unwrap();
-            assert_eq!(
-                geometry.inner_size,
-                PhysicalSize::new(1125 * scale, 750 * scale)
-            );
+            assert_eq!(geometry.inner_size, PhysicalSize::new(width, height));
             assert_eq!(
                 geometry.position,
                 PhysicalPosition::new(x, 40 + 125 * scale as i32)
@@ -145,9 +146,9 @@ mod tests {
             PhysicalSize::new(760, 600),
         )
         .unwrap();
-        assert_eq!(geometry.inner_size, PhysicalSize::new(734, 462));
-        assert_eq!(geometry.minimum_size, PhysicalSize::new(734, 462));
-        assert_eq!(geometry.position, PhysicalPosition::new(2045, 350));
+        assert_eq!(geometry.inner_size, PhysicalSize::new(734, 435));
+        assert_eq!(geometry.minimum_size, PhysicalSize::new(734, 435));
+        assert_eq!(geometry.position, PhysicalPosition::new(2045, 363));
     }
 
     #[test]

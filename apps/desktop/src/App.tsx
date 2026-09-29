@@ -51,6 +51,7 @@ import { RequestRecords } from "./RequestRecords";
 import { RouteManager } from "./RouteManager";
 import { SafetyPolicy } from "./SafetyPolicy";
 import { AgentDebugSettings } from "./AgentDebugSettings";
+import type { AgentSkillId } from "./agent-install-model";
 import { RawPasswordGate, useRawSetupNeeded } from "./RawSealingControls";
 import { useRawSealingStatus } from "./use-raw-sealing-status";
 import { LocalDataNotice } from "./LocalDataNotice";
@@ -74,7 +75,7 @@ type WorkspacePage =
   | { kind: "safety" }
   | { kind: "records"; tokenId?: string }
   | { kind: "routing" }
-  | { kind: "agentTools" }
+  | { kind: "agentTools"; preselectSkill?: AgentSkillId }
   | { kind: "settings" }
   | { kind: "about" }
   | ServiceManagerView;
@@ -848,7 +849,16 @@ export default function App() {
                 onTokenDeleted={handleTokenDeleted}
               />
             ) : page.kind === "safety" ? (
-              <SafetyPolicy coreSessionKey={coreSessionKey} isReady={isReady} />
+              <SafetyPolicy
+                coreSessionKey={coreSessionKey}
+                isReady={isReady}
+                onInstallPlaceholderSkill={() =>
+                  navigate({
+                    kind: "agentTools",
+                    preselectSkill: "redaction-placeholders",
+                  })
+                }
+              />
             ) : page.kind === "records" ? (
               <RequestRecords
                 accessTokens={tokenCatalog.items}
@@ -865,7 +875,7 @@ export default function App() {
                 onDirtyChange={handleEditorDirtyChange}
               />
             ) : page.kind === "agentTools" ? (
-              <AgentDebugSettings />
+              <AgentDebugSettings preselectSkill={page.preselectSkill} />
             ) : page.kind === "about" ? (
               <About
                 snapshot={updates.snapshot}

@@ -2336,7 +2336,7 @@ function RecordDetail({
         </TabsContent>
 
         <TabsContent
-          className="min-h-0 min-w-0 flex-1 space-y-3 overflow-auto overscroll-contain py-4"
+          className="min-h-0 min-w-0 flex-1 space-y-3 overflow-auto overscroll-contain py-4 [scrollbar-gutter:stable]"
           value="overview"
         >
           <DetailSection title={t("records.identity")}>
@@ -2549,7 +2549,7 @@ function RecordDetail({
         </TabsContent>
 
         <TabsContent
-          className="min-h-0 min-w-0 flex-1 space-y-3 overflow-auto overscroll-contain py-4"
+          className="min-h-0 min-w-0 flex-1 space-y-3 overflow-auto overscroll-contain py-4 [scrollbar-gutter:stable]"
           value="content"
         >
           {auditError ? (
@@ -2644,7 +2644,7 @@ function RecordDetail({
         </TabsContent>
 
         <TabsContent
-          className="min-h-0 min-w-0 flex-1 space-y-3 overflow-auto overscroll-contain py-4"
+          className="min-h-0 min-w-0 flex-1 space-y-3 overflow-auto overscroll-contain py-4 [scrollbar-gutter:stable]"
           value="audit"
         >
           <div className="grid grid-cols-2 gap-2.5 @max-[720px]:grid-cols-1">

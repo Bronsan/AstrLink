@@ -101,6 +101,29 @@ const gatewayService: Service = {
   updated_at: timestamp,
 };
 
+async function chooseServiceKind(option: string): Promise<void> {
+  const trigger = document.querySelector<HTMLButtonElement>(
+    'button[aria-label="API 提供商类型"]',
+  );
+  if (!trigger) throw new Error("Missing API provider type picker");
+  await act(async () => {
+    trigger.click();
+    await Promise.resolve();
+  });
+  const card = [
+    ...document.querySelectorAll<HTMLButtonElement>('[role="dialog"] button'),
+  ].find(
+    (candidate) =>
+      candidate.querySelector('[data-slot="dialog-picker-label"]')
+        ?.textContent === option,
+  );
+  if (!card) throw new Error(`Missing API provider type: ${option}`);
+  await act(async () => {
+    card.click();
+    await Promise.resolve();
+  });
+}
+
 async function chooseOption(label: string, option: string): Promise<void> {
   const trigger = document.querySelector<HTMLButtonElement>(
     `button[role="combobox"][aria-label="${label}"]`,
@@ -183,6 +206,32 @@ async function togglePreviewModel(model: string): Promise<void> {
   const checkbox = previewModelCheckbox(model);
   await act(async () => {
     checkbox.click();
+    await Promise.resolve();
+  });
+}
+
+function previewModelRow(model: string): HTMLElement {
+  const checkbox = previewModelCheckbox(model);
+  const row = checkbox.closest("label");
+  if (!row) throw new Error(`Missing preview row: ${model}`);
+  return row;
+}
+
+function previewModelIds(): string[] {
+  const dialog = document.querySelector<HTMLElement>('[role="dialog"]');
+  if (!dialog) throw new Error("Missing model preview dialog");
+  return [...dialog.querySelectorAll("label code")].map(
+    (code) => code.textContent ?? "",
+  );
+}
+
+async function clickButton(label: string): Promise<void> {
+  const button = [...document.querySelectorAll("button")].find(
+    (candidate) => candidate.textContent === label,
+  );
+  if (!button) throw new Error(`Missing button: ${label}`);
+  await act(async () => {
+    button.click();
     await Promise.resolve();
   });
 }
@@ -667,7 +716,7 @@ describe("ServiceManager", () => {
         />,
       ),
     );
-    await chooseOption("API 提供商类型", "Claude Code 订阅");
+    await chooseServiceKind("Claude Code 订阅");
     await chooseOption("代理模式", "自定义代理");
     for (const [label, value] of [
       ["代理地址", "socks5://127.0.0.1:1080"],
@@ -900,7 +949,7 @@ describe("ServiceManager", () => {
         />,
       ),
     );
-    await chooseOption("API 提供商类型", "Claude Code 订阅");
+    await chooseServiceKind("Claude Code 订阅");
     expect(
       container.querySelector<HTMLInputElement>("#service-name")?.value,
     ).toBe("Claude Code");
@@ -990,7 +1039,7 @@ describe("ServiceManager", () => {
         />,
       ),
     );
-    await chooseOption("API 提供商类型", "Grok 订阅（xAI OAuth）");
+    await chooseServiceKind("Grok 订阅");
     expect(
       container.querySelector<HTMLInputElement>("#service-name")?.value,
     ).toBe("Grok 订阅");
@@ -2234,7 +2283,7 @@ describe("ServiceManager", () => {
           />,
         ),
       );
-      await chooseOption("API 提供商类型", label);
+      await chooseServiceKind(label);
       expect(
         container.querySelector<HTMLInputElement>("#service-name")?.value,
       ).toBe(preset.defaultName);
@@ -2434,7 +2483,7 @@ describe("ServiceManager", () => {
       );
 
     await act(async () => render([]));
-    await chooseOption("API 提供商类型", "Anthropic API");
+    await chooseServiceKind("Anthropic API");
     const kind = container.querySelector<HTMLButtonElement>(
       '[aria-label="API 提供商类型"]',
     );
@@ -2458,6 +2507,40 @@ describe("ServiceManager", () => {
     expect(
       container.querySelector<HTMLInputElement>("#service-name")?.value,
     ).toBe("Anthropic API");
+  });
+
+  it("shows the saved key's last characters when editing a provider", async () => {
+    bridgeMocks.getService.mockResolvedValue({
+      service: {
+        ...gatewayService,
+        http: { ...gatewayService.http!, credential_hint: "…wxyz" },
+      },
+      etag,
+    });
+    await act(async () => {
+      root.render(
+        <ServiceManager
+          catalogError={null}
+          catalogStatus="ready"
+          isReady
+          onDirtyChange={() => {}}
+          onRefresh={() => {}}
+          onServiceRemoved={() => {}}
+          onServiceSaved={() => {}}
+          onViewChange={() => {}}
+          protocols={[]}
+          services={[gatewayService]}
+          view={{ kind: "edit", serviceId: gatewayService.id }}
+        />,
+      );
+      await Promise.resolve();
+    });
+    await openEditorTab("connection");
+    const secret = container.querySelector<HTMLInputElement>(
+      'input[aria-label="API Key（留空保留）"]',
+    );
+    expect(secret?.value).toBe("");
+    expect(secret?.placeholder).toBe("已保存密钥 …wxyz，留空则继续使用");
   });
 
   it("previews upstream models and reuses the saved credential for an edited service", async () => {
@@ -2621,6 +2704,14 @@ describe("ServiceManager", () => {
     expect(document.body.textContent).toContain("部分协议获取失败");
     expect(document.body.textContent).toContain("current-model");
     expect(document.body.textContent).toContain("openai-model");
+    // A failed protocol may still serve the model, so absence is inconclusive.
+    expect(
+      document.querySelector('[data-testid="model-preview-missing"]')
+        ?.textContent,
+    ).toContain("部分协议获取失败，它们可能仍可用");
+    expect(previewModelRow("current-model").textContent).toContain(
+      "上游未返回",
+    );
     expect(
       previewModelCheckbox("current-model").getAttribute("aria-checked"),
     ).toBe("true");
@@ -2630,6 +2721,160 @@ describe("ServiceManager", () => {
     const apply = applySelectedButton();
     await act(async () => apply.click());
     expect(container.textContent).toContain("1 个模型");
+  });
+
+  it("flags allow-listed models the upstream no longer returns", async () => {
+    const listed: Service = {
+      ...gatewayService,
+      models: ["gpt-5", "retired-model"],
+    };
+    bridgeMocks.getService.mockResolvedValue({ service: listed, etag });
+    bridgeMocks.probeDraftServiceModels.mockResolvedValue({
+      service_id: listed.id,
+      protocol: "openai.models",
+      model_ids: ["gpt-5", "gpt-5.1"],
+    });
+    await act(async () => {
+      root.render(
+        <ServiceManager
+          catalogError={null}
+          catalogStatus="ready"
+          isReady
+          onDirtyChange={() => {}}
+          onRefresh={() => {}}
+          onServiceRemoved={() => {}}
+          onServiceSaved={() => {}}
+          onViewChange={() => {}}
+          protocols={[]}
+          services={[listed]}
+          view={{ kind: "edit", serviceId: listed.id }}
+        />,
+      );
+      await Promise.resolve();
+    });
+    await openEditorTab("models");
+    await clickButton("获取模型列表");
+
+    expect(
+      document.querySelector('[data-testid="model-preview-missing"]')
+        ?.textContent,
+    ).toContain("1 个已配置模型不在上游列表中");
+    expect(previewModelRow("retired-model").textContent).toContain(
+      "上游未返回",
+    );
+    expect(previewModelRow("gpt-5").textContent).not.toContain("上游未返回");
+    expect(previewModelRow("gpt-5.1").textContent).not.toContain("上游未返回");
+    // Kept by default so fetching never silently drops a configured model.
+    expect(
+      previewModelCheckbox("retired-model").getAttribute("aria-checked"),
+    ).toBe("true");
+
+    await clickButton("只看这些");
+    expect(previewModelIds()).toEqual(["retired-model"]);
+    await clickButton("取消勾选这些");
+    expect(
+      previewModelCheckbox("retired-model").getAttribute("aria-checked"),
+    ).toBe("false");
+    await clickButton("显示全部");
+    expect(previewModelIds()).toEqual(["gpt-5", "gpt-5.1", "retired-model"]);
+    expect(previewModelCheckbox("gpt-5").getAttribute("aria-checked")).toBe(
+      "true",
+    );
+
+    const apply = applySelectedButton();
+    expect(apply.textContent).toBe("应用所选模型（1）");
+    await act(async () => apply.click());
+    expect(container.textContent).toContain("1 个模型");
+    expect(
+      container.querySelector('[data-testid="service-models-missing"]'),
+    ).toBeNull();
+  });
+
+  it("keeps marking a retained model the upstream did not return", async () => {
+    const listed: Service = {
+      ...gatewayService,
+      models: ["gpt-5", "retired-model"],
+    };
+    bridgeMocks.getService.mockResolvedValue({ service: listed, etag });
+    bridgeMocks.probeDraftServiceModels.mockResolvedValue({
+      service_id: listed.id,
+      protocol: "openai.models",
+      model_ids: ["gpt-5"],
+    });
+    await act(async () => {
+      root.render(
+        <ServiceManager
+          catalogError={null}
+          catalogStatus="ready"
+          isReady
+          onDirtyChange={() => {}}
+          onRefresh={() => {}}
+          onServiceRemoved={() => {}}
+          onServiceSaved={() => {}}
+          onViewChange={() => {}}
+          protocols={[]}
+          services={[listed]}
+          view={{ kind: "edit", serviceId: listed.id }}
+        />,
+      );
+      await Promise.resolve();
+    });
+    await openEditorTab("models");
+    expect(
+      container.querySelector('[data-testid="service-models-missing"]'),
+    ).toBeNull();
+    await clickButton("获取模型列表");
+    await act(async () => applySelectedButton().click());
+
+    expect(container.textContent).toContain("2 个模型");
+    expect(
+      container.querySelector('[data-testid="service-models-missing"]')
+        ?.textContent,
+    ).toContain("1 个模型不在最近一次获取的上游列表中");
+    const rows = [
+      ...container.querySelectorAll<HTMLElement>(
+        '[data-testid="service-model-row"]',
+      ),
+    ];
+    const rowText = (model: string) =>
+      rows.find((row) => row.querySelector("code")?.textContent === model)
+        ?.textContent;
+    expect(rowText("retired-model")).toContain("上游未返回");
+    expect(rowText("gpt-5")).not.toContain("上游未返回");
+
+    // The marker describes the fetched connection, not a new address.
+    const valueSetter = Object.getOwnPropertyDescriptor(
+      HTMLInputElement.prototype,
+      "value",
+    )?.set;
+    if (!valueSetter) throw new Error("missing input value setter");
+    const setBaseURL = async (value: string) => {
+      await openEditorTab("connection");
+      const baseURL =
+        container.querySelector<HTMLInputElement>('input[type="url"]');
+      if (!baseURL) throw new Error("missing base URL input");
+      await act(async () => {
+        valueSetter.call(baseURL, value);
+        baseURL.dispatchEvent(new Event("input", { bubbles: true }));
+      });
+      await openEditorTab("models");
+    };
+    await setBaseURL("https://other.example/v1");
+    expect(
+      container.querySelector('[data-testid="service-models-missing"]'),
+    ).toBeNull();
+    await setBaseURL(gatewayService.http!.base_url);
+    expect(
+      container.querySelector('[data-testid="service-models-missing"]'),
+    ).not.toBeNull();
+
+    await clickButton("删除这些（1）");
+    expect(document.body.textContent).toContain("删除上游未返回的模型？");
+    await clickButton("确认删除");
+    expect(container.textContent).toContain("1 个模型");
+    expect(
+      container.querySelector('[data-testid="service-models-missing"]'),
+    ).toBeNull();
   });
 
   it("groups allow-listed models and supports search plus clear", async () => {
@@ -3742,7 +3987,7 @@ describe("ServiceManager", () => {
 
     expect(
       container.querySelector('[data-testid="service-form"]')?.className,
-    ).toContain("overflow-hidden");
+    ).toContain("overflow-y-clip");
 
     await openEditorTab("models");
     expect(
@@ -4157,7 +4402,7 @@ describe("ServiceManager", () => {
     await act(async () => toggle.click());
     expect(
       container.querySelector('[data-testid="service-form"]')?.className,
-    ).toContain("overflow-hidden");
+    ).toContain("overflow-y-clip");
     await openEditorTab("models");
     await openEditorTab("failure");
     expect(

@@ -622,6 +622,46 @@ describe("TrajectoryInspectorWindow", () => {
     expect(inspector(container)?.textContent).toContain('"ok": true');
   });
 
+  it("keeps the chosen tab when a poll pushes the same phase again", async () => {
+    await render();
+    await act(async () => {
+      pushSelection({ row, record });
+    });
+    await flush();
+
+    await act(async () => {
+      inspector(container)
+        ?.querySelector<HTMLButtonElement>(
+          '[data-testid="inspector-tab"][data-chip="RESULT"]',
+        )
+        ?.click();
+    });
+
+    // A new turn in the list hands down fresh copies of every record.
+    await act(async () => {
+      pushSelection(structuredClone({ row, record }));
+    });
+    await flush();
+
+    expect(
+      inspector(container)
+        ?.querySelector('[data-testid="inspector-section"]')
+        ?.getAttribute("data-chip"),
+    ).toBe("RESULT");
+    expect(bridgeMocks.getRequestAuditContent).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      pushSelection({ row: laterRow, record });
+    });
+    await flush();
+
+    expect(
+      inspector(container)
+        ?.querySelector('[data-testid="inspector-section"]')
+        ?.getAttribute("data-chip"),
+    ).toBe("CLIENT");
+  });
+
   it("freezes on its call once pinned and thaws when unpinned", async () => {
     await render();
     await act(async () => {

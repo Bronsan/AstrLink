@@ -519,6 +519,60 @@ export function trajectoryRows(
   return rows;
 }
 
+/** The event list once turns fold under their TURN headers. */
+export interface TrajectoryListLayout {
+  /** Every header, and the phases of the turns that are open. */
+  rows: TrajectoryRow[];
+  /** Header ids of the open turns. */
+  openTurns: Set<string>;
+  /** The header each row sits under, a header mapping to itself. */
+  turnByRowId: Map<string, string>;
+  /** A call folded into a closed header, to the request id the header carries. */
+  anchorByRequestId: Map<string, string>;
+}
+
+/**
+ * Folds finished turns so a long conversation reads as one line per turn.
+ * A turn is open when the operator said so, and otherwise when it is the
+ * latest turn or holds the row the operator picked, so a new turn landing
+ * never folds away the call being read. Without headers nothing folds.
+ */
+export function trajectoryListLayout(
+  rows: TrajectoryRow[],
+  overrides: ReadonlyMap<string, boolean>,
+  selectedRowId: string | null,
+): TrajectoryListLayout {
+  const turnByRowId = new Map<string, string>();
+  let latestTurn: string | null = null;
+  for (const row of rows) {
+    if (row.chip === "TURN") latestTurn = row.id;
+    if (latestTurn !== null) turnByRowId.set(row.id, latestTurn);
+  }
+  const selectedTurn =
+    selectedRowId === null ? null : (turnByRowId.get(selectedRowId) ?? null);
+
+  const visible: TrajectoryRow[] = [];
+  const openTurns = new Set<string>();
+  const anchorByRequestId = new Map<string, string>();
+  let header: TrajectoryRow | null = null;
+  let open = true;
+  for (const row of rows) {
+    if (row.chip === "TURN") {
+      header = row;
+      open =
+        overrides.get(row.id) ??
+        (row.id === latestTurn || row.id === selectedTurn);
+      if (open) openTurns.add(row.id);
+      visible.push(row);
+    } else if (open) {
+      visible.push(row);
+    } else if (header) {
+      anchorByRequestId.set(row.requestId, header.requestId);
+    }
+  }
+  return { rows: visible, openTurns, turnByRowId, anchorByRequestId };
+}
+
 /** Compact list text; full event summaries remain available to the inspector. */
 export function trajectoryListSummaries(
   rows: TrajectoryRow[],
@@ -1177,6 +1231,30 @@ export function listScrollForTimeline(
     1,
   );
   return (position / rows.length) * listMaxScroll;
+}
+
+/**
+ * Timeline columns as the list sees them. The calls folded into a closed turn
+ * have no rows of their own, only the header's, so they become one column
+ * spanning the whole turn. Scrolling either pane then still lands the other
+ * on the same turn, and keeps moving the same way through it.
+ */
+export function foldTimelineColumns(
+  columns: readonly TrajectoryCallColumn[],
+  anchorByRequestId: ReadonlyMap<string, string>,
+): TrajectoryCallColumn[] {
+  const folded: TrajectoryCallColumn[] = [];
+  for (const column of columns) {
+    const requestId =
+      anchorByRequestId.get(column.requestId) ?? column.requestId;
+    const last = folded[folded.length - 1];
+    if (last && last.requestId === requestId) {
+      last.width = column.offset + column.width - last.offset;
+      continue;
+    }
+    folded.push({ requestId, offset: column.offset, width: column.width });
+  }
+  return folded;
 }
 
 function callRowSpan(

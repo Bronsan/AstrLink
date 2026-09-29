@@ -157,6 +157,8 @@ type PendingModelAction =
 export interface SafetyPolicyProps {
   coreSessionKey: string | null;
   isReady: boolean;
+  /** Opens the agent tools page to install the placeholder skill. */
+  onInstallPlaceholderSkill?: () => void;
 }
 
 function actionLabel(action: PrivacyAction): string {
@@ -910,14 +912,7 @@ function StreamingRestoreDemoDialog({
           </DialogDescription>
         </DialogHeader>
         <p className="rounded-lg bg-muted px-3 py-2.5 text-sm leading-relaxed text-text-secondary">
-          {t("safety.demoEmailLead")}
-          <code>alice@example.com</code>
-          {t("safety.demoEmailTail")}
-        </p>
-        <p className="rounded-lg bg-muted px-3 py-2.5 text-sm leading-relaxed text-text-secondary">
-          {t("safety.demoTokenNote")}
-          <code>&lt;PRIVATE_EMAIL_7f3a91c04d28be56&gt;</code>
-          {t("safety.demoTokenNoteEnd")}
+          {t("safety.demoFixedNote")}
         </p>
         <div
           aria-label={t("safety.flowTitle")}
@@ -1059,17 +1054,18 @@ function PolicySection({
     >
       <PanelHeader
         actions={actions}
-        className="shrink-0 flex-wrap items-center gap-2 px-4 py-3"
+        className="shrink-0 flex-wrap gap-2"
+        size="sm"
       >
-        <h2 className="flex items-center gap-2 text-sm font-semibold">
-          <Icon aria-hidden="true" className="size-4 shrink-0 text-primary" />
-          {title}
-        </h2>
-        {description ? (
-          <p className="mt-1.5 text-xs leading-relaxed text-muted-foreground">
-            {description}
-          </p>
-        ) : null}
+        <div className="flex min-w-0 items-center gap-1">
+          <h2 className="flex items-center gap-2 text-sm font-semibold">
+            <Icon aria-hidden="true" className="size-4 shrink-0 text-primary" />
+            {title}
+          </h2>
+          {description ? (
+            <HelpPopover label={title}>{description}</HelpPopover>
+          ) : null}
+        </div>
       </PanelHeader>
       <PanelBody className="flex flex-col gap-4 overflow-visible @[720px]/privacy:overflow-y-auto [&>fieldset]:shrink-0 [&>div]:shrink-0">
         {children}
@@ -1078,7 +1074,11 @@ function PolicySection({
   );
 }
 
-export function SafetyPolicy({ coreSessionKey, isReady }: SafetyPolicyProps) {
+export function SafetyPolicy({
+  coreSessionKey,
+  isReady,
+  onInstallPlaceholderSkill,
+}: SafetyPolicyProps) {
   const t = useT();
   const [savedRecord, cacheRecord] =
     useWorkspaceSnapshot<PrivacyPolicyRecord | null>(
@@ -2294,7 +2294,7 @@ export function SafetyPolicy({ coreSessionKey, isReady }: SafetyPolicyProps) {
 
   if (status === "blocked") {
     return (
-      <div className="flex h-full min-h-0 w-full min-w-0 flex-col">
+      <div className="gutter-frame flex h-full min-h-0 w-full min-w-0 flex-col">
         <PageHeader
           description={t("safety.description")}
           title={t("safety.title")}
@@ -2364,7 +2364,7 @@ export function SafetyPolicy({ coreSessionKey, isReady }: SafetyPolicyProps) {
 
   return (
     <div
-      className="@container/privacy flex h-full min-h-0 w-full min-w-0 flex-col overflow-hidden"
+      className="@container/privacy gutter-frame flex h-full min-h-0 w-full min-w-0 flex-col overflow-hidden"
       data-testid="safety-policy"
     >
       <PageHeader
@@ -2513,12 +2513,12 @@ export function SafetyPolicy({ coreSessionKey, isReady }: SafetyPolicyProps) {
           </TabsList>
 
           <TabsContent
-            className="min-h-0 min-w-0 flex-1 overflow-hidden"
+            className="min-h-0 min-w-0 flex-1 overflow-y-clip"
             forceMount
             hidden={workspace !== "detection"}
             value="detection"
           >
-            <SplitWorkspace className="auto-rows-max items-start @[720px]:grid-cols-[minmax(0,1.1fr)_minmax(0,1fr)]">
+            <SplitWorkspace className="gutter-scroller auto-rows-max items-start @[720px]:grid-cols-[minmax(0,1.1fr)_minmax(0,1fr)]">
               <PolicySection
                 title={t("safety.detector")}
                 description={t("safety.description")}
@@ -2914,27 +2914,45 @@ export function SafetyPolicy({ coreSessionKey, isReady }: SafetyPolicyProps) {
                         }
                       />
                     </Label>
-                    <Label className="flex min-w-0 cursor-pointer items-center justify-between gap-3 py-4 font-normal last:pb-0">
-                      <span className="flex min-w-0 flex-col gap-0.5">
-                        <strong className="text-sm font-medium leading-snug">
-                          {t("safety.injectNotice")}
-                        </strong>
-                        <small className="text-xs leading-relaxed text-muted-foreground">
-                          {t("safety.injectNoticeHint", {
-                            style: placeholderStyleLabel("token"),
-                          })}
-                        </small>
-                      </span>
-                      <Switch
-                        aria-label={t("safety.injectNotice")}
-                        checked={policy.placeholder_notice}
-                        disabled={saving}
-                        onCheckedChange={(checked) =>
-                          void patchPolicy({ placeholder_notice: checked })
-                        }
-                        size="sm"
-                      />
-                    </Label>
+                    <div className="grid min-w-0 gap-2 py-4 last:pb-0">
+                      <Label className="flex min-w-0 cursor-pointer items-center justify-between gap-3 font-normal">
+                        <span className="flex min-w-0 flex-col gap-0.5">
+                          <strong className="text-sm font-medium leading-snug">
+                            {t("safety.injectNotice")}
+                          </strong>
+                          <small className="text-xs leading-relaxed text-muted-foreground">
+                            {t("safety.injectNoticeHint", {
+                              style: placeholderStyleLabel("token"),
+                            })}
+                          </small>
+                        </span>
+                        <Switch
+                          aria-label={t("safety.injectNotice")}
+                          checked={policy.placeholder_notice}
+                          disabled={saving}
+                          onCheckedChange={(checked) =>
+                            void patchPolicy({ placeholder_notice: checked })
+                          }
+                          size="sm"
+                        />
+                      </Label>
+                      {onInstallPlaceholderSkill ? (
+                        <div className="flex min-w-0 items-center justify-between gap-3">
+                          <small className="text-xs leading-relaxed text-muted-foreground">
+                            {t("safety.placeholderSkillHint")}
+                          </small>
+                          <Button
+                            className="shrink-0"
+                            onClick={onInstallPlaceholderSkill}
+                            size="xs"
+                            type="button"
+                            variant="outline"
+                          >
+                            {t("safety.placeholderSkillInstall")}
+                          </Button>
+                        </div>
+                      ) : null}
+                    </div>
                   </div>
                 </fieldset>
                 <div className="grid min-w-0 divide-y border-t">
@@ -2987,13 +3005,13 @@ export function SafetyPolicy({ coreSessionKey, isReady }: SafetyPolicyProps) {
             </SplitWorkspace>
           </TabsContent>
           <TabsContent
-            className="min-h-0 min-w-0 flex-1 overflow-hidden"
+            className="min-h-0 min-w-0 flex-1 overflow-y-clip"
             data-tab-scroller
             forceMount
             hidden={workspace !== "redaction"}
             value="redaction"
           >
-            <SplitWorkspace className="@[720px]:grid-cols-[minmax(0,0.95fr)_minmax(0,1.15fr)]">
+            <SplitWorkspace className="gutter-scroller @[720px]:grid-cols-[minmax(0,0.95fr)_minmax(0,1.15fr)]">
               <Panel className="@container flex min-h-0 flex-col">
                 <PanelHeader
                   className="shrink-0 items-center px-3 py-2"
@@ -3290,7 +3308,7 @@ export function SafetyPolicy({ coreSessionKey, isReady }: SafetyPolicyProps) {
           </TabsContent>
 
           <TabsContent
-            className="min-h-0 min-w-0 flex-1 overflow-hidden"
+            className="min-h-0 min-w-0 flex-1 overflow-y-clip"
             forceMount
             hidden={workspace !== "dryRun"}
             onKeyDown={(event) => {
@@ -3305,7 +3323,10 @@ export function SafetyPolicy({ coreSessionKey, isReady }: SafetyPolicyProps) {
             }}
             value="dryRun"
           >
-            <SplitWorkspace ref={dryRunWorkspaceRef}>
+            <SplitWorkspace
+              className="gutter-scroller"
+              ref={dryRunWorkspaceRef}
+            >
               <Panel
                 className="flex min-h-0 flex-col"
                 data-testid="dry-run-input-panel"
@@ -3587,14 +3608,14 @@ export function SafetyPolicy({ coreSessionKey, isReady }: SafetyPolicyProps) {
           </TabsContent>
 
           <TabsContent
-            className="@container/models flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden"
+            className="@container/models flex min-h-0 min-w-0 flex-1 flex-col overflow-y-clip"
             forceMount
             hidden={workspace !== "models"}
             value="models"
           >
             <h3 className="sr-only">{t("safety.localPrivacyModels")}</h3>
             <Tabs
-              className="flex min-h-0 min-w-0 flex-1 flex-col gap-3 overflow-hidden"
+              className="flex min-h-0 min-w-0 flex-1 flex-col gap-3 overflow-y-clip"
               onValueChange={(value) => setView(value as ModelView)}
               value={view}
             >
@@ -3637,7 +3658,7 @@ export function SafetyPolicy({ coreSessionKey, isReady }: SafetyPolicyProps) {
                 </HelpPopover>
               </div>
               <TabsContent
-                className="min-h-0 min-w-0 flex-1 overflow-y-auto"
+                className="gutter-scroller min-h-0 min-w-0 flex-1 overflow-y-auto"
                 value="catalog"
               >
                 <div className="grid items-stretch gap-3 pb-3 pr-1 @[760px]/models:grid-cols-2">
@@ -3822,7 +3843,7 @@ export function SafetyPolicy({ coreSessionKey, isReady }: SafetyPolicyProps) {
               </TabsContent>
 
               <TabsContent
-                className="min-h-0 min-w-0 flex-1 overflow-y-auto"
+                className="gutter-scroller min-h-0 min-w-0 flex-1 overflow-y-auto"
                 value="installed"
               >
                 <div className="grid items-start gap-3 pb-3 pr-1 @[760px]/models:grid-cols-2">
@@ -4045,7 +4066,7 @@ export function SafetyPolicy({ coreSessionKey, isReady }: SafetyPolicyProps) {
               </TabsContent>
 
               <TabsContent
-                className="min-h-0 min-w-0 flex-1 overflow-y-auto"
+                className="gutter-scroller min-h-0 min-w-0 flex-1 overflow-y-auto"
                 value="local"
               >
                 <Panel className="grid max-w-3xl gap-4 p-4">
@@ -4210,7 +4231,7 @@ export function SafetyPolicy({ coreSessionKey, isReady }: SafetyPolicyProps) {
               </TabsContent>
 
               <TabsContent
-                className="min-h-0 min-w-0 flex-1 overflow-y-auto"
+                className="gutter-scroller min-h-0 min-w-0 flex-1 overflow-y-auto"
                 value="custom"
               >
                 <Panel className="grid max-w-3xl gap-4 p-4">

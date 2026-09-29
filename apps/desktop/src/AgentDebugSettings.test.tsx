@@ -21,63 +21,101 @@ vi.mock("./notify", () => ({ notify: notifyMocks }));
 import { applyLocale } from "./i18n";
 import { AgentDebugSettings } from "./AgentDebugSettings";
 
+type SkillFlags = { debug?: boolean; placeholder?: boolean };
+
+// Mirrors the Rust status: the debug skill previews the CLI and the host
+// files it writes, the placeholder skill only its own directory.
+function skills(
+  root: string,
+  { debug = false, placeholder = false }: SkillFlags,
+  hostFiles: string[] = [],
+) {
+  return [
+    {
+      id: "astrlink-debug" as const,
+      installed: debug,
+      preview_paths: [
+        `${root}/astrlink-debug`,
+        "/tmp/.astrlink/bin/astrlink",
+        ...hostFiles,
+      ],
+    },
+    {
+      id: "redaction-placeholders" as const,
+      installed: placeholder,
+      preview_paths: [`${root}/redaction-placeholders`],
+    },
+  ];
+}
+
 const status = {
-  canonical_skill: false,
   cli_binary: false,
   tools: [
     {
       id: "cursor" as const,
       detected: true,
-      skill_installed: false,
+      skills: skills("/tmp/.cursor/skills", {}),
       cli_access: "prompt" as const,
       cli_access_installed: false,
       guard: "skill_only" as const,
       guard_installed: false,
-      preview_paths: ["/tmp/.cursor/skills/astrlink-debug"],
     },
     {
       id: "claude" as const,
       detected: false,
-      skill_installed: false,
+      skills: skills("/tmp/.claude/skills", {}, ["/tmp/.claude/settings.json"]),
       cli_access: "allow_rules" as const,
       cli_access_installed: false,
       guard: "deny_rules" as const,
       guard_installed: false,
-      preview_paths: [
-        "/tmp/.claude/skills/astrlink-debug",
-        "/tmp/.claude/settings.json",
-      ],
     },
     {
       id: "codex" as const,
       detected: true,
-      skill_installed: true,
+      skills: skills("/tmp/.agents/skills", { debug: true }, [
+        "/tmp/.codex/rules/astrlink.rules",
+        "/tmp/.codex/AGENTS.md",
+      ]),
       cli_access: "exec_policy" as const,
       cli_access_installed: true,
       guard: "instructions" as const,
       guard_installed: true,
-      preview_paths: [
-        "/tmp/.agents/skills/astrlink-debug",
-        "/tmp/.codex/rules/astrlink.rules",
-        "/tmp/.codex/AGENTS.md",
-      ],
     },
     {
       id: "grok" as const,
       detected: true,
-      skill_installed: false,
+      skills: skills("/tmp/.grok/skills", {}),
       cli_access: "prompt" as const,
       cli_access_installed: false,
       guard: "skill_only" as const,
       guard_installed: false,
-      preview_paths: ["/tmp/.grok/skills/astrlink-debug"],
+    },
+    {
+      id: "pi" as const,
+      detected: false,
+      skills: skills("/tmp/.agents/skills", { debug: true }),
+      cli_access: "unrestricted" as const,
+      cli_access_installed: false,
+      guard: "skill_only" as const,
+      guard_installed: false,
     },
   ],
-  shared_paths: [
-    "/tmp/.astrlink/bin/astrlink",
-    "/tmp/.astrlink/agent-installs.json",
-  ],
+  shared_paths: ["/tmp/.astrlink/agent-installs.json"],
 };
+
+type ToolFixture = (typeof status.tools)[number];
+
+function withSkills(tool: ToolFixture, flags: SkillFlags): ToolFixture {
+  return {
+    ...tool,
+    skills: tool.skills.map((skill) => ({
+      ...skill,
+      installed:
+        (skill.id === "astrlink-debug" ? flags.debug : flags.placeholder) ??
+        false,
+    })),
+  };
+}
 
 describe("AgentDebugSettings", () => {
   let container: HTMLDivElement;
@@ -90,8 +128,7 @@ describe("AgentDebugSettings", () => {
     bridge.getAgentDebugStatus.mockReset().mockResolvedValue(status);
     bridge.installAgentDebug.mockReset().mockResolvedValue({
       version: 2,
-      bundle: "astrlink-debug",
-      bundle_version: "0.3.0",
+      skills: [{ id: "astrlink-debug", version: "0.3.0" }],
       installed_at_unix: 1,
       cli_binary: "/tmp/.astrlink/bin/astrlink",
       files: status.shared_paths,
@@ -123,9 +160,13 @@ describe("AgentDebugSettings", () => {
       container.querySelector("[role='img'][aria-label='未检测到']"),
     ).not.toBeNull();
     expect(container.textContent).toContain("Codex");
-    expect(container.textContent).toContain("已安装");
+    expect(
+      [...container.querySelectorAll("tbody tr")]
+        .find((row) => row.textContent?.includes("Codex"))
+        ?.querySelectorAll("td")[1]?.textContent,
+    ).toBe("缺少隐私脱敏部分安装");
     expect(container.textContent).toContain("Grok Build");
-    expect(container.textContent).toContain("1 / 3");
+    expect(container.textContent).toContain("0 / 3");
     expect(container.textContent).toContain(
       "AstrLink 命令行工具缺失，请重新安装后再使用。",
     );
@@ -154,7 +195,10 @@ describe("AgentDebugSettings", () => {
       await Promise.resolve();
       await Promise.resolve();
     });
-    expect(bridge.installAgentDebug).toHaveBeenCalledWith(["codex"]);
+    expect(bridge.installAgentDebug).toHaveBeenCalledWith(
+      ["astrlink-debug", "redaction-placeholders"],
+      ["codex"],
+    );
     expect(notifyMocks.success).toHaveBeenCalled();
   });
 
@@ -162,7 +206,12 @@ describe("AgentDebugSettings", () => {
     const partial = {
       ...status,
       cli_binary: true,
-      tools: [{ ...status.tools[2], cli_access_installed: false }],
+      tools: [
+        {
+          ...withSkills(status.tools[2], { debug: true, placeholder: true }),
+          cli_access_installed: false,
+        },
+      ],
     };
     bridge.getAgentDebugStatus
       .mockResolvedValueOnce(partial)
@@ -174,8 +223,9 @@ describe("AgentDebugSettings", () => {
     const row = [...container.querySelectorAll("tbody tr")].find((row) =>
       row.textContent?.includes("Codex"),
     );
-    expect(row?.querySelectorAll("td")[1]?.textContent).toBe("已安装");
-    expect(row?.querySelectorAll("td")[2]?.textContent).toBe("未写入");
+    expect(row?.querySelectorAll("td")[1]?.textContent).toBe(
+      "缺少命令放行规则部分安装",
+    );
     expect(container.textContent).toContain("0 / 1");
     await act(async () => button("安装 / 更新").click());
     await act(async () =>
@@ -186,68 +236,48 @@ describe("AgentDebugSettings", () => {
     );
     expect(bridge.installAgentDebug).toHaveBeenCalledTimes(1);
     expect(button("安装 / 更新").disabled).toBe(false);
+    expect(row?.querySelectorAll("td")[1]?.textContent).toBe("已安装");
     expect(container.textContent).toContain("1 / 1");
   });
 
-  it("reports how each tool may run the CLI", async () => {
+  it("folds the host rules into each tool's status", async () => {
+    const both = { debug: true, placeholder: true };
     bridge.getAgentDebugStatus.mockResolvedValue({
       ...status,
       cli_binary: true,
       tools: [
-        { ...status.tools[0], skill_installed: true },
-        { ...status.tools[1], detected: true, cli_access_installed: true },
-        status.tools[2],
+        withSkills(status.tools[0], { debug: true }),
+        {
+          ...withSkills({ ...status.tools[1], detected: true }, both),
+          cli_access_installed: true,
+        },
+        withSkills(status.tools[2], both),
         { ...status.tools[3], detected: false },
+        withSkills({ ...status.tools[4], detected: true }, both),
       ],
     });
     await act(async () => root.render(<AgentDebugSettings />));
-    const accessCell = (name: string) =>
+    const statusCell = (name: string) =>
       [...container.querySelectorAll("tbody tr")]
         .find((row) => row.textContent?.includes(name))
-        ?.querySelectorAll("td")[2];
-    expect(accessCell("Cursor")?.textContent).toBe("首次询问");
-    expect(accessCell("Claude")?.textContent).toBe("已放行");
-    expect(accessCell("Codex")?.textContent).toBe("已放行");
-    expect(accessCell("Grok")?.textContent).toBe("—");
-    expect(container.querySelector("thead")?.textContent).toContain("命令权限");
-    // A tool that asks on first run is configured once its skill is there.
-    expect(container.textContent).toContain("2 / 3");
+        ?.querySelectorAll("td")[1]?.textContent;
+    const header = container.querySelector("thead")?.textContent;
+    expect(header).toBe("工具状态");
+    // Hosts that ask on first run, never ask, or have no guard location need
+    // no rule of their own.
+    expect(statusCell("Cursor")).toBe("缺少隐私脱敏部分安装");
+    expect(statusCell("Claude")).toBe("缺少文件访问限制部分安装");
+    expect(statusCell("Codex")).toBe("已安装");
+    expect(statusCell("Grok")).toBe("—");
+    expect(statusCell("Pi")).toBe("已安装");
+    expect(container.textContent).toContain("2 / 4");
 
     bridge.getAgentDebugStatus.mockResolvedValue({
       ...status,
-      tools: [{ ...status.tools[1], detected: true }],
+      tools: [withSkills({ ...status.tools[1], detected: true }, both)],
     });
     await act(async () => button("重新检测").click());
-    expect(accessCell("Claude")?.textContent).toBe("未写入");
-  });
-
-  it("reports each tool's host guard with its strength", async () => {
-    bridge.getAgentDebugStatus.mockResolvedValue({
-      ...status,
-      tools: [
-        status.tools[0],
-        { ...status.tools[1], detected: true, guard_installed: true },
-        status.tools[2],
-        { ...status.tools[3], detected: false },
-      ],
-    });
-    await act(async () => root.render(<AgentDebugSettings />));
-    const guardCell = (name: string) =>
-      [...container.querySelectorAll("tbody tr")]
-        .find((row) => row.textContent?.includes(name))
-        ?.querySelectorAll("td")[3];
-    expect(guardCell("Cursor")?.textContent).toBe("仅 Skill");
-    expect(guardCell("Claude")?.textContent).toBe("已拦截");
-    expect(guardCell("Codex")?.textContent).toBe("仅提示词");
-    expect(guardCell("Grok")?.textContent).toBe("—");
-    expect(container.querySelector("thead")?.textContent).toContain("文件访问");
-
-    bridge.getAgentDebugStatus.mockResolvedValue({
-      ...status,
-      tools: [{ ...status.tools[1], detected: true }],
-    });
-    await act(async () => button("重新检测").click());
-    expect(guardCell("Claude")?.textContent).toBe("未写入");
+    expect(statusCell("Claude")).toBe("缺少命令放行规则、文件访问限制部分安装");
   });
 
   it("installs only Grok and previews only its paths and the shared runtime", async () => {
@@ -256,6 +286,9 @@ describe("AgentDebugSettings", () => {
     const dialog = document.querySelector("[role='alertdialog']")!;
     expect(checkbox("codex").getAttribute("aria-checked")).toBe("true");
     expect(checkbox("claude").disabled).toBe(true);
+    // Pi is not detected, so Codex installs alone.
+    expect(dialog.textContent).not.toContain("一起安装");
+    await act(async () => skillCheckbox("redaction-placeholders").click());
     await act(async () => checkbox("codex").click());
     expect(button("安装所选工具（0）", dialog).disabled).toBe(true);
     expect(button("取消", dialog).disabled).toBe(false);
@@ -264,33 +297,176 @@ describe("AgentDebugSettings", () => {
     expect(button("安装所选工具（1）", dialog).disabled).toBe(false);
     expect(dialog.textContent).toContain("/tmp/.grok/skills/astrlink-debug");
     expect(dialog.textContent).toContain("/tmp/.astrlink/bin/astrlink");
+    expect(dialog.textContent).toContain("/tmp/.astrlink/agent-installs.json");
+    expect(dialog.textContent).not.toContain("redaction-placeholders");
     expect(dialog.textContent).not.toContain("/tmp/.agents");
     expect(dialog.textContent).not.toContain("/tmp/.codex");
     expect(dialog.textContent).not.toContain("/tmp/.cursor");
     await act(async () => button("安装所选工具（1）", dialog).click());
-    expect(bridge.installAgentDebug).toHaveBeenCalledExactlyOnceWith(["grok"]);
+    expect(bridge.installAgentDebug).toHaveBeenCalledExactlyOnceWith(
+      ["astrlink-debug"],
+      ["grok"],
+    );
   });
 
   it("requires an explicit first selection and supports multiple tools", async () => {
     bridge.getAgentDebugStatus.mockResolvedValue({
       ...status,
       tools: status.tools.map((tool) => ({
-        ...tool,
-        skill_installed: false,
+        ...withSkills(tool, {}),
         cli_access_installed: false,
       })),
     });
     await act(async () => root.render(<AgentDebugSettings />));
     await act(async () => button("安装工具").click());
     const dialog = document.querySelector("[role='alertdialog']")!;
+    expect(skillCheckbox("astrlink-debug").getAttribute("aria-checked")).toBe(
+      "true",
+    );
+    expect(
+      skillCheckbox("redaction-placeholders").getAttribute("aria-checked"),
+    ).toBe("true");
     expect(button("安装所选工具（0）", dialog).disabled).toBe(true);
     await act(async () => checkbox("cursor").click());
     await act(async () => checkbox("grok").click());
     await act(async () => button("安装所选工具（2）", dialog).click());
-    expect(bridge.installAgentDebug).toHaveBeenCalledExactlyOnceWith([
-      "cursor",
-      "grok",
-    ]);
+    expect(bridge.installAgentDebug).toHaveBeenCalledExactlyOnceWith(
+      ["astrlink-debug", "redaction-placeholders"],
+      ["cursor", "grok"],
+    );
+  });
+
+  it("merges both skills into one status without requiring CLI rules for redaction alone", async () => {
+    bridge.getAgentDebugStatus.mockResolvedValue({
+      ...status,
+      tools: [
+        status.tools[0],
+        withSkills(
+          { ...status.tools[1], detected: true },
+          { placeholder: true },
+        ),
+        withSkills(status.tools[2], { placeholder: true }),
+        status.tools[3],
+        withSkills(
+          { ...status.tools[4], detected: true },
+          { placeholder: true },
+        ),
+      ],
+    });
+    await act(async () => root.render(<AgentDebugSettings />));
+    const statusCell = (name: string) =>
+      [...container.querySelectorAll("tbody tr")]
+        .find((row) => row.textContent?.includes(name))
+        ?.querySelectorAll("td")[1]?.textContent;
+    expect(statusCell("Cursor")).toBe("未安装");
+    expect(statusCell("Claude")).toBe("缺少调试部分安装");
+    expect(statusCell("Pi")).toBe("缺少调试部分安装");
+    // No skill that runs the CLI is installed, so neither the missing CLI
+    // access nor the missing CLI is a problem.
+    expect(container.textContent).toContain("0 / 5");
+    expect(container.textContent).not.toContain("命令行工具缺失");
+  });
+
+  it("installs the placeholder skill alone and previews only its files", async () => {
+    await act(async () => root.render(<AgentDebugSettings />));
+    await act(async () => button("安装 / 更新").click());
+    const dialog = document.querySelector("[role='alertdialog']")!;
+    expect(dialog.textContent).toContain("仅 Skill，不含命令行工具和命令权限");
+    await act(async () => skillCheckbox("redaction-placeholders").click());
+    await act(async () => skillCheckbox("astrlink-debug").click());
+    expect(button("安装所选工具（1）", dialog).disabled).toBe(true);
+    expect(dialog.querySelector("details")).toBeNull();
+    await act(async () => skillCheckbox("redaction-placeholders").click());
+    expect(button("安装所选工具（1）", dialog).disabled).toBe(false);
+    expect(dialog.textContent).toContain(
+      "/tmp/.agents/skills/redaction-placeholders",
+    );
+    expect(dialog.textContent).not.toContain(
+      "/tmp/.agents/skills/astrlink-debug",
+    );
+    expect(dialog.textContent).not.toContain("/tmp/.astrlink/bin/astrlink");
+    expect(dialog.textContent).not.toContain("/tmp/.codex");
+    await act(async () => button("安装所选工具（1）", dialog).click());
+    expect(bridge.installAgentDebug).toHaveBeenCalledExactlyOnceWith(
+      ["redaction-placeholders"],
+      ["codex"],
+    );
+  });
+
+  it("selects Codex and Pi together and installs skills in a fixed order", async () => {
+    bridge.getAgentDebugStatus.mockResolvedValue({
+      ...status,
+      tools: [
+        ...status.tools.slice(0, 4),
+        withSkills({ ...status.tools[4], detected: true }, {}),
+      ],
+    });
+    await act(async () => root.render(<AgentDebugSettings />));
+    await act(async () => button("安装 / 更新").click());
+    const dialog = document.querySelector("[role='alertdialog']")!;
+    // Codex already has a skill in the directory Pi reads too.
+    expect(checkbox("pi").getAttribute("aria-checked")).toBe("true");
+    expect(dialog.textContent).toContain(
+      "Codex 和 Pi 读取同一个 Skill 目录（~/.agents/skills），勾选其中一个会一起安装。",
+    );
+    await act(async () => checkbox("pi").click());
+    expect(checkbox("codex").getAttribute("aria-checked")).toBe("false");
+    expect(button("安装所选工具（0）", dialog).disabled).toBe(true);
+    await act(async () => checkbox("pi").click());
+    expect(checkbox("codex").getAttribute("aria-checked")).toBe("true");
+    await act(async () => skillCheckbox("astrlink-debug").click());
+    await act(async () => skillCheckbox("astrlink-debug").click());
+    await act(async () => button("安装所选工具（2）", dialog).click());
+    expect(bridge.installAgentDebug).toHaveBeenCalledExactlyOnceWith(
+      ["astrlink-debug", "redaction-placeholders"],
+      ["pi", "codex"],
+    );
+  });
+
+  it("opens the install dialog with a preselected skill", async () => {
+    await act(async () =>
+      root.render(
+        <AgentDebugSettings preselectSkill="redaction-placeholders" />,
+      ),
+    );
+    const dialog = document.querySelector("[role='alertdialog']");
+    if (!dialog) throw new Error("dialog did not open");
+    expect(skillCheckbox("astrlink-debug").getAttribute("aria-checked")).toBe(
+      "false",
+    );
+    expect(
+      skillCheckbox("redaction-placeholders").getAttribute("aria-checked"),
+    ).toBe("true");
+    // The tools that already have a skill stay selected.
+    await act(async () => button("安装所选工具（1）", dialog).click());
+    expect(bridge.installAgentDebug).toHaveBeenCalledExactlyOnceWith(
+      ["redaction-placeholders"],
+      ["codex"],
+    );
+    // Only the first status opens the dialog.
+    await act(async () => button("重新检测").click());
+    expect(document.querySelector("[role='alertdialog']")).toBeNull();
+  });
+
+  it("preselects every detected tool when nothing is installed yet", async () => {
+    bridge.getAgentDebugStatus.mockResolvedValue({
+      ...status,
+      tools: status.tools.map((tool) => ({
+        ...withSkills(tool, {}),
+        cli_access_installed: false,
+      })),
+    });
+    await act(async () =>
+      root.render(
+        <AgentDebugSettings preselectSkill="redaction-placeholders" />,
+      ),
+    );
+    const dialog = document.querySelector("[role='alertdialog']")!;
+    await act(async () => button("安装所选工具（3）", dialog).click());
+    expect(bridge.installAgentDebug).toHaveBeenCalledExactlyOnceWith(
+      ["redaction-placeholders"],
+      ["cursor", "codex", "grok"],
+    );
   });
 
   it("cancels an empty selection without installing", async () => {
@@ -316,7 +492,6 @@ describe("AgentDebugSettings", () => {
     expect(container.textContent).not.toContain("检查中");
     bridge.getAgentDebugStatus.mockResolvedValue({
       ...status,
-      canonical_skill: false,
       cli_binary: false,
       tools: [],
     });
@@ -341,6 +516,14 @@ describe("AgentDebugSettings", () => {
     expect(bridge.uninstallAgentDebug).toHaveBeenCalledTimes(1);
     copy.mockRestore();
   });
+
+  function skillCheckbox(id: string): HTMLButtonElement {
+    const found = document.querySelector<HTMLButtonElement>(
+      `#agent-skill-${id}`,
+    );
+    if (!found) throw new Error(`Missing skill checkbox: ${id}`);
+    return found;
+  }
 
   function checkbox(id: string): HTMLButtonElement {
     const found = document.querySelector<HTMLButtonElement>(

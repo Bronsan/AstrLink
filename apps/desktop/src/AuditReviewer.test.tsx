@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   AuditPartSection,
   AuditResultSection,
+  AuditWireView,
   HTTPMetaSection,
 } from "./AuditReviewer";
 import type { CopyFeedback } from "./copy-feedback";
@@ -256,9 +257,9 @@ describe("AuditReviewer sections", () => {
     expect(marks).toHaveLength(1);
     expect(marks[0]?.textContent).toBe("<PRIVATE_EMAIL_aaaaaaaaaaaaaaaa>");
     expect(marks[0]?.getAttribute("data-kind")).toBe("email");
-    expect(marks[0]?.closest("pre")?.textContent).toContain(
-      "alice@example.com",
-    );
+    expect(
+      marks[0]?.closest('[data-testid="json-tree"]')?.textContent,
+    ).toContain("alice@example.com");
     expect(marks[0]?.textContent).not.toContain("alice@");
 
     const copyButton = [...container.querySelectorAll("button")].find(
@@ -303,6 +304,58 @@ describe("AuditReviewer sections", () => {
     expect(
       container.querySelectorAll('[data-testid="audit-raw-segment"]'),
     ).toHaveLength(2);
+  });
+
+  it("parses a large truncated JSON body in slices into a folded tree", async () => {
+    const prompt = `${"long prompt ".repeat(40_000)}prompt-tail`;
+    const content = JSON.stringify({
+      model: "gpt-4.1",
+      input: [{ role: "user", content: prompt }],
+      metadata: { note: "cut-before-this" },
+    }).slice(0, -30);
+    const part: AuditContentPart = {
+      media_type: "application/json",
+      content,
+      truncated: true,
+      captured_bytes: content.length,
+    };
+    await act(async () => {
+      root.render(<AuditWireView mode="structured" part={part} />);
+    });
+    // Past the one-shot size the parse runs in slices off the render.
+    for (let round = 0; round < 50; round += 1) {
+      // eslint-disable-next-line no-await-in-loop
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      });
+      if (container.querySelector('[data-testid="json-tree"]')) break;
+    }
+    const tree = container.querySelector('[data-testid="json-tree"]');
+    expect(tree?.textContent).toContain('"model": "gpt-4.1"');
+    expect(tree?.textContent).toContain(
+      `${prompt.length.toLocaleString()} 字符`,
+    );
+    expect(tree?.textContent).not.toContain("prompt-tail");
+    expect(tree?.textContent).toContain("此处截断");
+    expect(container.querySelector('[data-testid="audit-raw"]')).toBeNull();
+  });
+
+  it("falls back to the original text for malformed JSON", async () => {
+    const content = '{"model": "gpt-4.1",, "input": []}';
+    const part: AuditContentPart = {
+      media_type: "application/json",
+      content,
+      truncated: false,
+      captured_bytes: content.length,
+    };
+    await act(async () => {
+      root.render(<AuditWireView mode="structured" part={part} />);
+    });
+    expect(container.textContent).toContain("JSON 无效");
+    expect(container.querySelector('[data-testid="json-tree"]')).toBeNull();
+    expect(
+      container.querySelector('[data-testid="audit-raw"] pre')?.textContent,
+    ).toBe(content);
   });
 
   it("renders redacted headers distinctly and reports missing capture", async () => {

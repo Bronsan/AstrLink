@@ -163,6 +163,43 @@ describe("service model", () => {
     ).toThrow(/disabled_models: unexpected field/);
   });
 
+  it("accepts a saved-key hint only next to a stored credential", () => {
+    const service = (http: Record<string, unknown>) => ({
+      id: "service_gateway",
+      name: "new-api",
+      kind: "newapi",
+      enabled: true,
+      models: [],
+      capabilities: [],
+      http: {
+        base_url: "https://gateway.example/v1",
+        auth: { scheme: "bearer" },
+        ...http,
+      },
+      created_at: createdAt,
+      updated_at: createdAt,
+    });
+    expect(
+      parseService(
+        service({
+          credential_ref: "local://service/service_gateway",
+          credential_hint: "…wxyz",
+        }),
+      ).http?.credential_hint,
+    ).toBe("…wxyz");
+    expect(() => parseService(service({ credential_hint: "…wxyz" }))).toThrow(
+      /credential_hint/,
+    );
+    expect(() =>
+      parseService(
+        service({
+          credential_ref: "local://service/service_gateway",
+          credential_hint: "sk-test-0123456789wxyz",
+        }),
+      ),
+    ).toThrow(/credential_hint/);
+  });
+
   it("requires the connection variant selected by kind", () => {
     expect(() =>
       parseService({

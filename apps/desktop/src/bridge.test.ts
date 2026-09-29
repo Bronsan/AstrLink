@@ -1276,21 +1276,33 @@ describe("desktop bridge contract", () => {
 
   it("parses agent debug install status and receipt", async () => {
     const status = {
-      canonical_skill: false,
       cli_binary: false,
       tools: [
         {
           id: "cursor",
           detected: true,
-          skill_installed: false,
+          skills: [
+            {
+              id: "astrlink-debug",
+              installed: false,
+              preview_paths: [
+                "/tmp/.cursor/skills/astrlink-debug",
+                "/tmp/.astrlink/bin/astrlink",
+              ],
+            },
+            {
+              id: "redaction-placeholders",
+              installed: false,
+              preview_paths: ["/tmp/.cursor/skills/redaction-placeholders"],
+            },
+          ],
           cli_access: "prompt",
           cli_access_installed: false,
           guard: "skill_only",
           guard_installed: false,
-          preview_paths: ["/tmp/.cursor/skills/astrlink-debug"],
         },
       ],
-      shared_paths: ["/tmp/.astrlink/bin/astrlink"],
+      shared_paths: ["/tmp/.astrlink/agent-installs.json"],
     };
     invokeMock.mockResolvedValueOnce(status);
     await expect(getAgentDebugStatus()).resolves.toEqual(status);
@@ -1298,15 +1310,17 @@ describe("desktop bridge contract", () => {
 
     const receipt = {
       version: 2,
-      bundle: "astrlink-debug",
-      bundle_version: "0.3.0",
+      skills: [{ id: "redaction-placeholders", version: "0.1.0" }],
       installed_at_unix: 1,
-      cli_binary: "/tmp/.astrlink/bin/astrlink",
+      cli_binary: null,
       files: ["/tmp/a"],
     };
     invokeMock.mockResolvedValueOnce(receipt);
-    await expect(installAgentDebug(["grok"])).resolves.toEqual(receipt);
+    await expect(
+      installAgentDebug(["redaction-placeholders"], ["grok"]),
+    ).resolves.toEqual(receipt);
     expect(invokeMock).toHaveBeenLastCalledWith("install_agent_debug", {
+      skillIds: ["redaction-placeholders"],
       toolIds: ["grok"],
     });
 

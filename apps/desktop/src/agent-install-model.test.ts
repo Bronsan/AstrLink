@@ -6,25 +6,46 @@ import {
 } from "./agent-install-model";
 
 const status = {
-  canonical_skill: true,
   cli_binary: true,
   tools: [
     {
       id: "codex",
       detected: true,
-      skill_installed: true,
+      skills: [
+        {
+          id: "astrlink-debug",
+          installed: true,
+          preview_paths: [
+            "/tmp/.agents/skills/astrlink-debug",
+            "/tmp/.astrlink/bin/astrlink",
+            "/tmp/.codex/rules/astrlink.rules",
+            "/tmp/.codex/AGENTS.md",
+          ],
+        },
+        {
+          id: "redaction-placeholders",
+          installed: false,
+          preview_paths: ["/tmp/.agents/skills/redaction-placeholders"],
+        },
+      ],
       cli_access: "exec_policy",
       cli_access_installed: false,
       guard: "instructions",
       guard_installed: false,
-      preview_paths: [
-        "/tmp/.agents/skills/astrlink-debug",
-        "/tmp/.codex/rules/astrlink.rules",
-        "/tmp/.codex/AGENTS.md",
-      ],
     },
   ],
-  shared_paths: ["/tmp/.astrlink/bin/astrlink"],
+  shared_paths: ["/tmp/.astrlink/agent-installs.json"],
+};
+
+const receipt = {
+  version: 2,
+  skills: [
+    { id: "astrlink-debug", version: "0.3.0" },
+    { id: "redaction-placeholders", version: "0.1.0" },
+  ],
+  installed_at_unix: 1,
+  cli_binary: "/tmp/.astrlink/bin/astrlink",
+  files: ["/tmp/a"],
 };
 
 describe("agent-install-model", () => {
@@ -38,19 +59,66 @@ describe("agent-install-model", () => {
     );
   });
 
-  it("validates shared and per-tool installation paths", () => {
-    expect(parseAgentInstallStatus(status).tools[0]?.preview_paths).toEqual(
-      status.tools[0].preview_paths,
+  it("validates shared and per-skill installation paths", () => {
+    expect(parseAgentInstallStatus(status).tools[0]?.skills).toEqual(
+      status.tools[0].skills,
     );
     expect(() =>
       parseAgentInstallStatus({ ...status, shared_paths: [null] }),
     ).toThrow(/shared_paths/);
+    const [debug, placeholder] = status.tools[0].skills;
     expect(() =>
       parseAgentInstallStatus({
         ...status,
-        tools: [{ ...status.tools[0], preview_paths: "not an array" }],
+        tools: [
+          {
+            ...status.tools[0],
+            skills: [{ ...debug, preview_paths: "not an array" }, placeholder],
+          },
+        ],
       }),
-    ).toThrow(/preview_paths/);
+    ).toThrow(/skills\[0\]\.preview_paths/);
+  });
+
+  it("validates the per-skill status", () => {
+    const [debug, placeholder] = status.tools[0].skills;
+    const withSkills = (skills: unknown[]) => ({
+      ...status,
+      tools: [{ ...status.tools[0], skills }],
+    });
+    expect(() =>
+      parseAgentInstallStatus(
+        withSkills([debug, { ...placeholder, id: "other-skill" }]),
+      ),
+    ).toThrow(/skills\[1\]\.id/);
+    expect(() =>
+      parseAgentInstallStatus(
+        withSkills([{ ...debug, installed: "yes" }, placeholder]),
+      ),
+    ).toThrow(/skills\[0\]\.installed/);
+    // A status from the single-skill installer is rejected, not half-read.
+    const { skills: _skills, ...current } = status.tools[0];
+    expect(() =>
+      parseAgentInstallStatus({
+        ...status,
+        tools: [{ ...current, skill_installed: true }],
+      }),
+    ).toThrow(/unexpected field/);
+    expect(() =>
+      parseAgentInstallStatus({ ...status, canonical_skill: true }),
+    ).toThrow(/unexpected field/);
+  });
+
+  it("accepts Pi, which runs commands without asking", () => {
+    const pi = {
+      ...status.tools[0],
+      id: "pi",
+      cli_access: "unrestricted",
+      guard: "skill_only",
+    };
+    expect(
+      parseAgentInstallStatus({ ...status, tools: [pi] }).tools[0],
+    ).toMatchObject({ id: "pi", cli_access: "unrestricted" });
   });
 
   it("validates the CLI access fields", () => {
@@ -106,14 +174,42 @@ describe("agent-install-model", () => {
   });
 
   it("parses an install receipt", () => {
-    const receipt = parseAgentInstallReceipt({
-      version: 2,
-      bundle: "astrlink-debug",
-      bundle_version: "0.3.0",
-      installed_at_unix: 1,
-      cli_binary: "/tmp/.astrlink/bin/astrlink",
-      files: ["/tmp/a"],
+    expect(parseAgentInstallReceipt(receipt).skills).toEqual(receipt.skills);
+  });
+
+  it("parses a skill-only receipt without a CLI", () => {
+    const skillOnly = parseAgentInstallReceipt({
+      ...receipt,
+      skills: [{ id: "redaction-placeholders", version: "0.1.0" }],
+      cli_binary: null,
     });
-    expect(receipt.bundle).toBe("astrlink-debug");
+    expect(skillOnly.cli_binary).toBeNull();
+    expect(() =>
+      parseAgentInstallReceipt({ ...receipt, cli_binary: "" }),
+    ).toThrow(/cli_binary/);
+  });
+
+  it("rejects receipt skills it does not know", () => {
+    expect(() =>
+      parseAgentInstallReceipt({
+        ...receipt,
+        skills: [{ id: "other-skill", version: "1.0.0" }],
+      }),
+    ).toThrow(/skills\[0\]\.id/);
+    expect(() =>
+      parseAgentInstallReceipt({
+        ...receipt,
+        skills: [{ id: "astrlink-debug" }],
+      }),
+    ).toThrow(/missing field/);
+    // The single-bundle receipt shape is not read.
+    const { skills: _skills, ...rest } = receipt;
+    expect(() =>
+      parseAgentInstallReceipt({
+        ...rest,
+        bundle: "astrlink-debug",
+        bundle_version: "0.3.0",
+      }),
+    ).toThrow(/unexpected field/);
   });
 });

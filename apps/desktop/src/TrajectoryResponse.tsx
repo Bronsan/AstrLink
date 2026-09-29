@@ -254,6 +254,7 @@ export function CapturePane({
   missingHint,
   testId,
   scrollerRef,
+  revealPrivacy,
 }: {
   label: string;
   /** Names the view switch; defaults to the pane's label. */
@@ -265,6 +266,8 @@ export function CapturePane({
   missingHint: string | null;
   testId: string;
   scrollerRef?: Ref<HTMLDivElement>;
+  /** Unfolds JSON strings that carry privacy placeholders, for finding them. */
+  revealPrivacy?: boolean;
 }) {
   const t = useT();
   const [value, setValue] = useState(views[0]?.value ?? "");
@@ -347,6 +350,7 @@ export function CapturePane({
             key={`${view.value}:${mode}`}
             mode={structuredLabel ? mode : "raw"}
             part={body}
+            revealPrivacy={revealPrivacy}
           />
         ) : hint ? (
           <p

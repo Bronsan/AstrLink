@@ -143,6 +143,8 @@ export interface HTTPServiceConnection {
   base_url: string;
   auth: ServiceAuth;
   credential_ref?: string;
+  /** Saved key's last characters ("…a1b2"); only on a single-service read. */
+  credential_hint?: string;
 }
 
 export interface SubscriptionServiceConnection {
@@ -469,7 +471,12 @@ function parseHTTPConnection(
   path: string,
 ): HTTPServiceConnection {
   const connection = objectAt(value, path);
-  keysAt(connection, ["base_url", "auth"], ["credential_ref"], path);
+  keysAt(
+    connection,
+    ["base_url", "auth"],
+    ["credential_ref", "credential_hint"],
+    path,
+  );
   const baseURL = stringAt(connection.base_url, `${path}.base_url`, 1, 2048);
   let parsed: URL;
   try {
@@ -498,10 +505,23 @@ function parseHTTPConnection(
       invalid(`${path}.credential_ref`, "must use local://service/<id>");
     }
   }
+  let credentialHint: string | undefined;
+  if (Object.hasOwn(connection, "credential_hint")) {
+    credentialHint = stringAt(
+      connection.credential_hint,
+      `${path}.credential_hint`,
+      2,
+      16,
+    );
+    if (!credentialRef || !credentialHint.startsWith("…")) {
+      invalid(`${path}.credential_hint`, "must be a saved-key display hint");
+    }
+  }
   return {
     base_url: baseURL,
     auth: parseAuth(connection.auth, `${path}.auth`),
     ...(credentialRef ? { credential_ref: credentialRef } : {}),
+    ...(credentialHint ? { credential_hint: credentialHint } : {}),
   };
 }
 

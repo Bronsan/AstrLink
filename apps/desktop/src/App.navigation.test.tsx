@@ -194,33 +194,25 @@ async function setInput(selector: string, value: string): Promise<void> {
   });
 }
 
-async function chooseOption(label: string, option: string): Promise<void> {
+async function chooseServiceKind(option: string): Promise<void> {
   const trigger = document.querySelector<HTMLButtonElement>(
-    `button[role="combobox"][aria-label="${label}"]`,
+    'button[aria-label="API 提供商类型"]',
   );
-  if (!trigger) throw new Error(`Missing select trigger: ${label}`);
+  if (!trigger) throw new Error("Missing API provider type picker");
   await act(async () => {
-    trigger.dispatchEvent(
-      new PointerEvent("pointerdown", {
-        bubbles: true,
-        button: 0,
-        pointerType: "mouse",
-      }),
-    );
+    trigger.click();
     await Promise.resolve();
   });
-  const item = [
-    ...document.querySelectorAll<HTMLElement>('[role="option"]'),
-  ].find((candidate) => {
-    const label = candidate.cloneNode(true) as HTMLElement;
-    label
-      .querySelectorAll('[aria-hidden="true"]')
-      .forEach((icon) => icon.remove());
-    return label.textContent?.trim() === option;
-  });
-  if (!item) throw new Error(`Missing select option: ${option}`);
+  const card = [
+    ...document.querySelectorAll<HTMLButtonElement>('[role="dialog"] button'),
+  ].find(
+    (candidate) =>
+      candidate.querySelector('[data-slot="dialog-picker-label"]')
+        ?.textContent === option,
+  );
+  if (!card) throw new Error(`Missing API provider type: ${option}`);
   await act(async () => {
-    item.click();
+    card.click();
     await Promise.resolve();
   });
 }
@@ -470,39 +462,39 @@ describe("App workspace navigation", () => {
       content_retention_days: 7,
       agent_raw_access_enabled: true,
     });
+    const agentSkills = (debug: boolean) => [
+      { id: "astrlink-debug", installed: debug, preview_paths: [] },
+      { id: "redaction-placeholders", installed: false, preview_paths: [] },
+    ];
     bridgeMocks.getAgentDebugStatus.mockResolvedValue({
-      canonical_skill: false,
       cli_binary: false,
       tools: [
         {
           id: "cursor",
           detected: true,
-          skill_installed: false,
+          skills: agentSkills(false),
           cli_access: "prompt",
           cli_access_installed: false,
           guard: "skill_only",
           guard_installed: false,
-          preview_paths: [],
         },
         {
           id: "claude",
           detected: false,
-          skill_installed: false,
+          skills: agentSkills(false),
           cli_access: "allow_rules",
           cli_access_installed: false,
           guard: "deny_rules",
           guard_installed: false,
-          preview_paths: [],
         },
         {
           id: "codex",
           detected: true,
-          skill_installed: true,
+          skills: agentSkills(true),
           cli_access: "exec_policy",
           cli_access_installed: true,
           guard: "instructions",
           guard_installed: true,
-          preview_paths: [],
         },
       ],
       shared_paths: [],
@@ -1467,7 +1459,7 @@ describe("App workspace navigation", () => {
 
     await act(async () => button("提供商").click());
     await act(async () => button("添加 API 提供商").click());
-    await chooseOption("API 提供商类型", "New API");
+    await chooseServiceKind("New API");
     await setInput(
       '[data-testid="service-form"] input[type="url"]',
       "https://saved.example",

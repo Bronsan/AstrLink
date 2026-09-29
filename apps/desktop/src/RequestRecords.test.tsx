@@ -1076,17 +1076,18 @@ describe("RequestRecords", () => {
     const mounted = container.querySelectorAll(
       '[data-testid="trajectory-row"]',
     );
-    // 90 turns × (1 header + 6 phases) is 630 rows; a 600px viewport of 32px
-    // rows plus overscan is well under a hundred.
+    // Past turns fold, so 90 headers and the latest turn's 6 phases are
+    // listed: 96 rows. A 600px viewport of 32px rows plus overscan mounts
+    // fewer than that.
     expect(mounted.length).toBeGreaterThan(10);
-    expect(mounted.length).toBeLessThan(100);
+    expect(mounted.length).toBeLessThan(96);
 
-    // The scroll range still covers every row, so the scrollbar and the
-    // call-aligned strip sync keep telling the truth.
+    // The scroll range still covers every listed row, so the scrollbar and
+    // the call-aligned strip sync keep telling the truth.
     const spacer = container.querySelector(
       '[data-testid="trajectory-list"] > ol',
     ) as HTMLElement;
-    expect(Number.parseFloat(spacer.style.height)).toBeGreaterThan(630 * 30);
+    expect(Number.parseFloat(spacer.style.height)).toBeGreaterThan(96 * 30);
 
     // happy-dom reports clientHeight 0, so the open-to-latest scroll stays
     // put. Selection is still resolved from the row model, and the inspector
@@ -1095,6 +1096,15 @@ describe("RequestRecords", () => {
       container.querySelector('[data-testid="trajectory-inspector"]'),
     ).not.toBeNull();
 
+    // The first turn is folded and at the top of the window; opening it
+    // mounts its phases there.
+    await act(async () => {
+      (
+        container.querySelector(
+          '[data-testid="trajectory-row"][data-chip="TURN"]',
+        ) as HTMLButtonElement
+      ).click();
+    });
     await act(async () => {
       (
         container.querySelector(

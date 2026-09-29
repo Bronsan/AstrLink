@@ -13,8 +13,6 @@ use sha2::{Digest, Sha256};
 
 use crate::control_session::astrlink_home;
 
-pub const BUNDLE_NAME: &str = "astrlink-debug";
-pub const BUNDLE_VERSION: &str = "0.3.0";
 const RECEIPT_VERSION: u32 = 2;
 const HOST_GUARDS_VERSION: u32 = 2;
 const MANAGED_FILES_NAME: &str = ".astrlink-managed-files.json";
@@ -27,30 +25,86 @@ const CLI_PLACEHOLDER: &str = "{{ASTRLINK_CLI}}";
 /// that removes it still looks for it.
 const LEGACY_MCP_SERVER_NAME: &str = "astrlink";
 
-const SKILL_MD: &str = include_str!("../../../../agent-bundle/astrlink-debug/SKILL.md");
-const TRAJECTORY_MD: &str =
-    include_str!("../../../../agent-bundle/astrlink-debug/references/trajectory.md");
-const MANIFEST_JSON: &str = include_str!("../../../../agent-bundle/astrlink-debug/manifest.json");
-
 struct SkillFile {
     relative: &'static str,
     contents: &'static str,
 }
 
-const SKILL_FILES: &[SkillFile] = &[
-    SkillFile {
-        relative: "SKILL.md",
-        contents: SKILL_MD,
-    },
-    SkillFile {
-        relative: "references/trajectory.md",
-        contents: TRAJECTORY_MD,
-    },
-    SkillFile {
-        relative: "manifest.json",
-        contents: MANIFEST_JSON,
-    },
-];
+/// A skill AstrLink can install. Only a skill that drives the CLI brings the
+/// CLI, its host access rules, and the host guards with it.
+struct SkillBundle {
+    name: &'static str,
+    version: &'static str,
+    files: &'static [SkillFile],
+    needs_cli: bool,
+}
+
+const DEBUG_BUNDLE: SkillBundle = SkillBundle {
+    name: "astrlink-debug",
+    version: "0.3.0",
+    files: &[
+        SkillFile {
+            relative: "SKILL.md",
+            contents: include_str!("../../../../agent-bundle/astrlink-debug/SKILL.md"),
+        },
+        SkillFile {
+            relative: "references/trajectory.md",
+            contents: include_str!(
+                "../../../../agent-bundle/astrlink-debug/references/trajectory.md"
+            ),
+        },
+        SkillFile {
+            relative: "manifest.json",
+            contents: include_str!("../../../../agent-bundle/astrlink-debug/manifest.json"),
+        },
+    ],
+    needs_cli: true,
+};
+
+// Hosts may send skill names and descriptions upstream with every request, so
+// this bundle stays free of AstrLink branding and of the CLI placeholder.
+const PLACEHOLDER_BUNDLE: SkillBundle = SkillBundle {
+    name: "redaction-placeholders",
+    version: "0.1.0",
+    files: &[
+        SkillFile {
+            relative: "SKILL.md",
+            contents: include_str!("../../../../agent-bundle/redaction-placeholders/SKILL.md"),
+        },
+        SkillFile {
+            relative: "references/shapes.md",
+            contents: include_str!(
+                "../../../../agent-bundle/redaction-placeholders/references/shapes.md"
+            ),
+        },
+        SkillFile {
+            relative: "manifest.json",
+            contents: include_str!("../../../../agent-bundle/redaction-placeholders/manifest.json"),
+        },
+    ],
+    needs_cli: false,
+};
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+pub enum AgentSkillId {
+    #[serde(rename = "astrlink-debug")]
+    AstrlinkDebug,
+    #[serde(rename = "redaction-placeholders")]
+    RedactionPlaceholders,
+}
+
+impl AgentSkillId {
+    fn all() -> [Self; 2] {
+        [Self::AstrlinkDebug, Self::RedactionPlaceholders]
+    }
+
+    fn bundle(self) -> &'static SkillBundle {
+        match self {
+            Self::AstrlinkDebug => &DEBUG_BUNDLE,
+            Self::RedactionPlaceholders => &PLACEHOLDER_BUNDLE,
+        }
+    }
+}
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -59,6 +113,7 @@ pub enum AgentToolId {
     Claude,
     Codex,
     Grok,
+    Pi,
 }
 
 /// How a host can be kept away from AstrLink's local files. Only Claude Code
@@ -85,35 +140,53 @@ pub enum AgentCliAccessKind {
     ExecPolicy,
     /// No verified host mechanism; the host asks the user on first use.
     Prompt,
+    /// The host runs commands without asking, so there is nothing to allow.
+    Unrestricted,
 }
 
+#[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AgentSkillStatus {
+    pub id: AgentSkillId,
+    pub installed: bool,
+    /// What installing this skill for the tool writes, apart from the
+    /// status-wide shared paths.
+    pub preview_paths: Vec<String>,
+}
+
+/// CLI access and guards come with `astrlink-debug`; a skill-only install
+/// leaves them untouched.
 #[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AgentToolStatus {
     pub id: AgentToolId,
     pub detected: bool,
-    pub skill_installed: bool,
+    pub skills: Vec<AgentSkillStatus>,
     pub cli_access: AgentCliAccessKind,
     pub cli_access_installed: bool,
     pub guard: AgentGuardKind,
     pub guard_installed: bool,
-    pub preview_paths: Vec<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AgentInstallStatus {
-    pub canonical_skill: bool,
     pub cli_binary: bool,
     pub tools: Vec<AgentToolStatus>,
     pub shared_paths: Vec<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ReceiptSkill {
+    pub id: AgentSkillId,
+    pub version: String,
+}
+
+/// What the latest install wrote.
+#[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct InstallReceipt {
     pub version: u32,
-    pub bundle: String,
-    pub bundle_version: String,
+    pub skills: Vec<ReceiptSkill>,
     pub installed_at_unix: u64,
-    pub cli_binary: String,
+    /// `None` when no selected skill drives the CLI.
+    pub cli_binary: Option<String>,
     pub files: Vec<String>,
 }
 
@@ -165,33 +238,42 @@ struct CodexInstructionsRecord {
 }
 
 impl AgentToolId {
-    fn all() -> [Self; 4] {
-        [Self::Cursor, Self::Claude, Self::Codex, Self::Grok]
+    fn all() -> [Self; 5] {
+        [
+            Self::Cursor,
+            Self::Claude,
+            Self::Codex,
+            Self::Grok,
+            Self::Pi,
+        ]
+    }
+
+    /// Codex and Pi both discover the shared `~/.agents/skills` directory.
+    fn uses_shared_skills(self) -> bool {
+        matches!(self, Self::Codex | Self::Pi)
     }
 }
 
 pub fn status(context: &InstallContext) -> AgentInstallStatus {
-    let canonical = canonical_skill_dir(&context.home);
-    let cli_dest = cli_binary_dest(&context.home);
     let tools = AgentToolId::all()
         .into_iter()
         .map(|id| tool_status(context, id))
         .collect::<Vec<_>>();
     AgentInstallStatus {
-        shared_paths: vec![
-            display_path(&cli_dest).unwrap_or_default(),
-            display_path(&receipt_path(&context.home)).unwrap_or_default(),
-        ],
-        canonical_skill: canonical.join("SKILL.md").is_file(),
-        cli_binary: cli_dest.is_file(),
+        shared_paths: vec![display_path(&receipt_path(&context.home)).unwrap_or_default()],
+        cli_binary: cli_binary_dest(&context.home).is_file(),
         tools,
     }
 }
 
 pub fn install(
     context: &InstallContext,
+    skill_ids: &[AgentSkillId],
     tool_ids: &[AgentToolId],
 ) -> Result<InstallReceipt, String> {
+    if skill_ids.is_empty() {
+        return Err("select at least one skill to install".to_string());
+    }
     if tool_ids.is_empty() {
         return Err("select at least one agent tool to install".to_string());
     }
@@ -200,32 +282,50 @@ pub fn install(
             return Err(format!("selected agent tool {id:?} is no longer detected"));
         }
     }
-    if !context.cli_source.is_file() {
+    let needs_cli = skill_ids.iter().any(|id| id.bundle().needs_cli);
+    if needs_cli && !context.cli_source.is_file() {
         return Err(
             "unable to locate astrlink-cli. Build desktop sidecars first (bun run sidecar:build)."
                 .to_string(),
         );
     }
     let mut files = Vec::new();
-    let cli_dest = cli_binary_dest(&context.home);
-    copy_cli_binary(&context.cli_source, &cli_dest)?;
-    let cli_binary = display_path(&cli_dest)?;
-    files.push(cli_binary.clone());
-    remove_legacy_mcp(&context.home)?;
+    let mut cli_binary = None;
+    if needs_cli {
+        let cli_dest = cli_binary_dest(&context.home);
+        copy_cli_binary(&context.cli_source, &cli_dest)?;
+        let path = display_path(&cli_dest)?;
+        files.push(path.clone());
+        cli_binary = Some(path);
+        remove_legacy_mcp(&context.home)?;
+    }
 
+    let skills = AgentSkillId::all()
+        .into_iter()
+        .filter(|id| skill_ids.contains(id))
+        .collect::<Vec<_>>();
     for id in AgentToolId::all() {
         if !tool_ids.contains(&id) {
             continue;
         }
-        files.push(install_tool(&context.home, id)?);
+        for skill in &skills {
+            files.push(install_tool(&context.home, skill.bundle(), id)?);
+        }
     }
-    files.extend(install_host_guards(context, tool_ids)?);
+    if needs_cli {
+        files.extend(install_host_guards(context, tool_ids)?);
+    }
     deduplicate_paths(&mut files);
 
     let receipt = InstallReceipt {
         version: RECEIPT_VERSION,
-        bundle: BUNDLE_NAME.to_string(),
-        bundle_version: BUNDLE_VERSION.to_string(),
+        skills: skills
+            .into_iter()
+            .map(|id| ReceiptSkill {
+                id,
+                version: id.bundle().version.to_string(),
+            })
+            .collect(),
         installed_at_unix: unix_now(),
         cli_binary,
         files: files.clone(),
@@ -240,14 +340,19 @@ pub fn install(
 }
 
 pub fn uninstall(context: &InstallContext) -> Result<(), String> {
-    for id in AgentToolId::all() {
-        uninstall_tool(&context.home, id)?;
+    for skill in AgentSkillId::all() {
+        for id in AgentToolId::all() {
+            uninstall_tool(&context.home, skill.bundle(), id)?;
+        }
     }
     uninstall_host_guards(&context.home)?;
     remove_legacy_mcp(&context.home)?;
-    let canonical = canonical_skill_dir(&context.home);
-    if is_ours_skill(&canonical, &canonical) {
-        remove_path(&canonical)?;
+    for skill in AgentSkillId::all() {
+        let bundle = skill.bundle();
+        let canonical = canonical_skill_dir(&context.home, bundle);
+        if is_ours_skill(&canonical, &canonical, bundle) {
+            remove_path(&canonical)?;
+        }
     }
     remove_path(&cli_binary_dest(&context.home))?;
     remove_path(&receipt_path(&context.home))?;
@@ -258,18 +363,21 @@ pub fn sync_installed_skills(home: &Path) -> Result<(), String> {
     if !receipt_path(home).is_file() {
         return Ok(());
     }
-    migrate_legacy_codex_skill(home)?;
-    let canonical = canonical_skill_dir(home);
-    if is_ours_skill(&canonical, &canonical) {
-        write_skill_tree(home, &canonical)?;
-    }
-    for id in AgentToolId::all() {
-        if id == AgentToolId::Codex {
-            continue;
+    for skill in AgentSkillId::all() {
+        let bundle = skill.bundle();
+        migrate_legacy_codex_skill(home, bundle)?;
+        let canonical = canonical_skill_dir(home, bundle);
+        if is_ours_skill(&canonical, &canonical, bundle) {
+            write_skill_tree(home, bundle, &canonical)?;
         }
-        let dest = tool_skill_dir(home, id);
-        if is_ours_skill(&dest, &canonical) {
-            write_skill_tree(home, &dest)?;
+        for id in AgentToolId::all() {
+            if id.uses_shared_skills() {
+                continue;
+            }
+            let dest = tool_skill_dir(home, bundle, id);
+            if is_ours_skill(&dest, &canonical, bundle) {
+                write_skill_tree(home, bundle, &dest)?;
+            }
         }
     }
     Ok(())
@@ -277,14 +385,15 @@ pub fn sync_installed_skills(home: &Path) -> Result<(), String> {
 
 /// Keeps an existing install's CLI current and retires what the MCP-based
 /// installer wrote. A missing sidecar (a dev build without one) only skips
-/// the copy, and defers upgrading an MCP-era receipt until a CLI exists.
+/// the copy, and defers upgrading an MCP-era receipt until a CLI exists. A
+/// skill-only install never gains a CLI here.
 pub fn sync_installed_cli(context: &InstallContext) -> Result<(), String> {
     let Some(receipt) = read_optional(&receipt_path(&context.home))? else {
         return Ok(());
     };
     let migrated = remove_legacy_mcp(&context.home);
     let cli_dest = cli_binary_dest(&context.home);
-    if context.cli_source.is_file() {
+    if context.cli_source.is_file() && (cli_dest.is_file() || receipt_wants_cli(&receipt)) {
         copy_cli_binary(&context.cli_source, &cli_dest)?;
     }
     migrated?;
@@ -292,6 +401,15 @@ pub fn sync_installed_cli(context: &InstallContext) -> Result<(), String> {
         upgrade_legacy_receipt(context, &receipt)?;
     }
     Ok(())
+}
+
+/// Every MCP-era receipt came with a CLI-driven skill; a current receipt
+/// names the CLI only when the install copied it.
+fn receipt_wants_cli(raw: &str) -> bool {
+    serde_json::from_str::<Value>(raw).is_ok_and(|receipt| {
+        receipt.get("version").and_then(Value::as_u64) < Some(u64::from(RECEIPT_VERSION))
+            || receipt.get("cli_binary").is_some_and(Value::is_string)
+    })
 }
 
 /// Rewrites a receipt the MCP-based installer wrote. The hosts it
@@ -314,18 +432,25 @@ fn upgrade_legacy_receipt(context: &InstallContext, raw: &str) -> Result<(), Str
         .filter_map(Value::as_str)
         .map(str::to_string)
         .collect::<Vec<_>>();
-    let legacy_config = |id| display_path(&legacy_mcp_config_path(home, id));
-    let tools = [AgentToolId::Claude, AgentToolId::Codex]
+    let legacy_configs = AgentToolId::all()
         .into_iter()
-        .filter(|id| {
-            tool_detected(home, *id) && legacy_config(*id).is_ok_and(|path| listed.contains(&path))
+        .filter_map(|id| Some((id, legacy_mcp_config_path(home, id)?)))
+        .map(|(id, path)| Ok((id, display_path(&path)?)))
+        .collect::<Result<Vec<_>, String>>()?;
+    let tools = legacy_configs
+        .iter()
+        .filter(|(id, path)| {
+            matches!(id, AgentToolId::Claude | AgentToolId::Codex)
+                && tool_detected(home, *id)
+                && listed.contains(path)
         })
+        .map(|(id, _)| *id)
         .collect::<Vec<_>>();
     let receipt_path = receipt_path(home);
-    let mut retired = AgentToolId::all()
+    let mut retired = legacy_configs
         .into_iter()
-        .map(legacy_config)
-        .collect::<Result<BTreeSet<_>, _>>()?;
+        .map(|(_, path)| path)
+        .collect::<BTreeSet<_>>();
     retired.insert(display_path(&legacy_mcp_binary_dest(home))?);
     retired.insert(display_path(&receipt_path)?);
 
@@ -343,13 +468,15 @@ fn upgrade_legacy_receipt(context: &InstallContext, raw: &str) -> Result<(), Str
         &receipt_path,
         &InstallReceipt {
             version: RECEIPT_VERSION,
-            bundle: BUNDLE_NAME.to_string(),
-            bundle_version: BUNDLE_VERSION.to_string(),
+            skills: vec![ReceiptSkill {
+                id: AgentSkillId::AstrlinkDebug,
+                version: DEBUG_BUNDLE.version.to_string(),
+            }],
             installed_at_unix: legacy
                 .get("installed_at_unix")
                 .and_then(Value::as_u64)
                 .unwrap_or_else(unix_now),
-            cli_binary,
+            cli_binary: Some(cli_binary),
             files,
         },
     )
@@ -405,22 +532,22 @@ fn host_target_triple() -> &'static str {
     }
 }
 
-fn canonical_skill_dir(home: &Path) -> PathBuf {
-    home.join(".agents").join("skills").join(BUNDLE_NAME)
+fn canonical_skill_dir(home: &Path, bundle: &SkillBundle) -> PathBuf {
+    home.join(".agents").join("skills").join(bundle.name)
 }
 
-fn legacy_codex_skill_dir(home: &Path) -> PathBuf {
-    home.join(".codex").join("skills").join(BUNDLE_NAME)
+fn legacy_codex_skill_dir(home: &Path, bundle: &SkillBundle) -> PathBuf {
+    home.join(".codex").join("skills").join(bundle.name)
 }
 
 // Codex discovers the shared .agents directory itself. Older installers also
 // wrote a .codex copy, causing both descriptions to enter the prompt. Keep the
 // shared copy active and archive the owned duplicate outside skill search roots
 // so local edits and extra files remain recoverable.
-fn migrate_legacy_codex_skill(home: &Path) -> Result<(), String> {
-    let legacy = legacy_codex_skill_dir(home);
-    let canonical = canonical_skill_dir(home);
-    if !is_ours_skill(&legacy, &canonical) {
+fn migrate_legacy_codex_skill(home: &Path, bundle: &SkillBundle) -> Result<(), String> {
+    let legacy = legacy_codex_skill_dir(home, bundle);
+    let canonical = canonical_skill_dir(home, bundle);
+    if !is_ours_skill(&legacy, &canonical, bundle) {
         return Ok(());
     }
     let is_link = points_at_canonical(&legacy, &canonical);
@@ -443,7 +570,7 @@ fn migrate_legacy_codex_skill(home: &Path) -> Result<(), String> {
     }
     // Refuse a foreign shared directory and ensure a usable replacement exists
     // before removing either a real duplicate or an old (possibly broken) link.
-    write_canonical_skill(home)?;
+    write_canonical_skill(home, bundle)?;
     if is_link {
         return remove_path(&legacy);
     }
@@ -456,7 +583,7 @@ fn migrate_legacy_codex_skill(home: &Path) -> Result<(), String> {
         let backup = backups.join(format!("codex-{}-{index}", unix_now()));
         match fs::create_dir(&backup) {
             Ok(()) => {
-                let dest = backup.join(BUNDLE_NAME);
+                let dest = backup.join(bundle.name);
                 fs::rename(&legacy, &dest).map_err(|error| {
                     format!(
                         "unable to archive {} to {}: {error}",
@@ -506,48 +633,67 @@ fn tool_detected(home: &Path, id: AgentToolId) -> bool {
         AgentToolId::Claude => home.join(".claude").is_dir() || home.join(".claude.json").is_file(),
         AgentToolId::Codex => home.join(".codex").is_dir(),
         AgentToolId::Grok => home.join(".grok").is_dir(),
+        AgentToolId::Pi => home.join(".pi").is_dir(),
     }
 }
 
-fn tool_skill_dir(home: &Path, id: AgentToolId) -> PathBuf {
+fn tool_skill_dir(home: &Path, bundle: &SkillBundle, id: AgentToolId) -> PathBuf {
     match id {
-        AgentToolId::Cursor => home.join(".cursor").join("skills").join(BUNDLE_NAME),
-        AgentToolId::Claude => home.join(".claude").join("skills").join(BUNDLE_NAME),
-        AgentToolId::Codex => canonical_skill_dir(home),
-        AgentToolId::Grok => home.join(".grok").join("skills").join(BUNDLE_NAME),
+        AgentToolId::Cursor => home.join(".cursor").join("skills").join(bundle.name),
+        AgentToolId::Claude => home.join(".claude").join("skills").join(bundle.name),
+        AgentToolId::Grok => home.join(".grok").join("skills").join(bundle.name),
+        // Pi's own skill directory moves with PI_CODING_AGENT_DIR, which the
+        // desktop cannot see; the shared one does not.
+        AgentToolId::Codex | AgentToolId::Pi => canonical_skill_dir(home, bundle),
     }
 }
 
-/// Where the MCP-based installer registered its server for each host.
-fn legacy_mcp_config_path(home: &Path, id: AgentToolId) -> PathBuf {
+/// Where the MCP-based installer registered its server for each host. It
+/// never supported Pi.
+fn legacy_mcp_config_path(home: &Path, id: AgentToolId) -> Option<PathBuf> {
     match id {
-        AgentToolId::Cursor => home.join(".cursor").join("mcp.json"),
-        AgentToolId::Claude => home.join(".claude.json"),
-        AgentToolId::Codex => home.join(".codex").join("config.toml"),
-        AgentToolId::Grok => home.join(".grok").join("config.toml"),
+        AgentToolId::Cursor => Some(home.join(".cursor").join("mcp.json")),
+        AgentToolId::Claude => Some(home.join(".claude.json")),
+        AgentToolId::Codex => Some(home.join(".codex").join("config.toml")),
+        AgentToolId::Grok => Some(home.join(".grok").join("config.toml")),
+        AgentToolId::Pi => None,
     }
 }
 
 fn tool_status(context: &InstallContext, id: AgentToolId) -> AgentToolStatus {
     let home = context.home.as_path();
-    let skill = tool_skill_dir(home, id);
-    let mut preview_paths = vec![display_path(&skill).unwrap_or_default()];
-    if let Some(access) = tool_cli_access_path(home, id) {
-        preview_paths.push(display_path(&access).unwrap_or_default());
-    }
-    if let Some(guard) = tool_guard_path(home, id) {
-        preview_paths.push(display_path(&guard).unwrap_or_default());
-        preview_paths.push(display_path(&host_guards_path(home)).unwrap_or_default());
-    }
-    deduplicate_paths(&mut preview_paths);
     AgentToolStatus {
         id,
         detected: tool_detected(home, id),
-        skill_installed: skill_present(&skill, &canonical_skill_dir(home)),
+        skills: AgentSkillId::all()
+            .into_iter()
+            .map(|skill| skill_status(home, skill, id))
+            .collect(),
         cli_access: tool_cli_access_kind(id),
         cli_access_installed: cli_access_present(home, id),
         guard: tool_guard_kind(id),
         guard_installed: guard_present(context, id),
+    }
+}
+
+fn skill_status(home: &Path, skill: AgentSkillId, id: AgentToolId) -> AgentSkillStatus {
+    let bundle = skill.bundle();
+    let dir = tool_skill_dir(home, bundle, id);
+    let mut preview_paths = vec![display_path(&dir).unwrap_or_default()];
+    if bundle.needs_cli {
+        preview_paths.push(display_path(&cli_binary_dest(home)).unwrap_or_default());
+        if let Some(access) = tool_cli_access_path(home, id) {
+            preview_paths.push(display_path(&access).unwrap_or_default());
+        }
+        if let Some(guard) = tool_guard_path(home, id) {
+            preview_paths.push(display_path(&guard).unwrap_or_default());
+            preview_paths.push(display_path(&host_guards_path(home)).unwrap_or_default());
+        }
+    }
+    deduplicate_paths(&mut preview_paths);
+    AgentSkillStatus {
+        id: skill,
+        installed: skill_present(&dir, &canonical_skill_dir(home, bundle)),
         preview_paths,
     }
 }
@@ -584,65 +730,69 @@ fn deduplicate_paths(paths: &mut Vec<String>) {
     paths.retain(|path| !path.is_empty() && seen.insert(path.clone()));
 }
 
-fn write_canonical_skill(home: &Path) -> Result<PathBuf, String> {
-    let dest = canonical_skill_dir(home);
-    write_skill_tree(home, &dest)?;
+fn write_canonical_skill(home: &Path, bundle: &SkillBundle) -> Result<PathBuf, String> {
+    let dest = canonical_skill_dir(home, bundle);
+    write_skill_tree(home, bundle, &dest)?;
     Ok(dest)
 }
 
-fn install_tool(home: &Path, id: AgentToolId) -> Result<String, String> {
-    let skill = tool_skill_dir(home, id);
-    // The shared directory is discovered by Codex, so only write it when selected.
-    if id == AgentToolId::Codex {
-        migrate_legacy_codex_skill(home)?;
+fn install_tool(home: &Path, bundle: &SkillBundle, id: AgentToolId) -> Result<String, String> {
+    let skill = tool_skill_dir(home, bundle, id);
+    // Codex and Pi discover the shared directory, so only write it when one
+    // of them is selected, and never next to a duplicate Codex copy.
+    if id.uses_shared_skills() {
+        migrate_legacy_codex_skill(home, bundle)?;
     }
-    write_skill_tree(home, &skill)?;
+    write_skill_tree(home, bundle, &skill)?;
     display_path(&skill)
 }
 
-fn uninstall_tool(home: &Path, id: AgentToolId) -> Result<(), String> {
+fn uninstall_tool(home: &Path, bundle: &SkillBundle, id: AgentToolId) -> Result<(), String> {
     // The shared skill is removed once, after all tool-specific installations.
-    let skill = if id == AgentToolId::Codex {
-        legacy_codex_skill_dir(home)
-    } else {
-        tool_skill_dir(home, id)
+    let skill = match id {
+        AgentToolId::Codex => legacy_codex_skill_dir(home, bundle),
+        AgentToolId::Pi => return Ok(()),
+        _ => tool_skill_dir(home, bundle, id),
     };
-    if is_ours_skill(&skill, &canonical_skill_dir(home)) {
+    if is_ours_skill(&skill, &canonical_skill_dir(home, bundle), bundle) {
         remove_path(&skill)?;
     }
     Ok(())
 }
 
-fn write_skill_tree(home: &Path, dest: &Path) -> Result<(), String> {
+fn write_skill_tree(home: &Path, bundle: &SkillBundle, dest: &Path) -> Result<(), String> {
     let cli = cli_command(home);
     match dest.symlink_metadata() {
         Err(error) if error.kind() == io::ErrorKind::NotFound => {
-            write_skill_files(dest, None, &cli)
+            write_skill_files(dest, bundle, None, &cli)
         }
         Err(error) => Err(format!("unable to inspect {}: {error}", dest.display())),
         Ok(metadata) if metadata.file_type().is_symlink() => {
-            if !points_at_canonical(dest, &canonical_skill_dir(home)) {
-                return refuse_overwrite(dest);
+            if !points_at_canonical(dest, &canonical_skill_dir(home, bundle)) {
+                return refuse_overwrite(bundle, dest);
             }
             remove_path(dest)?;
-            write_skill_files(dest, None, &cli)
+            write_skill_files(dest, bundle, None, &cli)
         }
         Ok(_) => match read_managed_manifest(dest) {
-            Some(managed) if managed.is_ours() => write_skill_files(dest, Some(&managed), &cli),
-            _ => refuse_overwrite(dest),
+            Some(managed) if managed.is_ours(bundle) => {
+                write_skill_files(dest, bundle, Some(&managed), &cli)
+            }
+            _ => refuse_overwrite(bundle, dest),
         },
     }
 }
 
 fn write_skill_files(
     dest: &Path,
+    bundle: &SkillBundle,
     existing: Option<&ManagedManifest>,
     cli: &str,
 ) -> Result<(), String> {
     fs::create_dir_all(dest)
         .map_err(|error| format!("unable to create {}: {error}", dest.display()))?;
     let mut next_hashes = BTreeMap::new();
-    for file in SKILL_FILES {
+    for file in bundle.files {
         let path = dest.join(file.relative);
         let contents = file.contents.replace(CLI_PLACEHOLDER, cli);
         let desired_hash = sha256_hex(contents.as_bytes());
@@ -674,36 +824,40 @@ fn write_skill_files(
             next_hashes.insert(file.relative.to_string(), recorded.to_string());
         }
     }
-    write_managed_manifest(dest, &next_hashes)
+    write_managed_manifest(dest, bundle, &next_hashes)
 }
 
-fn write_managed_manifest(dest: &Path, files: &BTreeMap<String, String>) -> Result<(), String> {
+fn write_managed_manifest(
+    dest: &Path,
+    bundle: &SkillBundle,
+    files: &BTreeMap<String, String>,
+) -> Result<(), String> {
     write_json_file(
         &managed_files_path(dest),
         &json!({
             "manager": "astrlink",
-            "bundle": BUNDLE_NAME,
-            "version": BUNDLE_VERSION,
+            "bundle": bundle.name,
+            "version": bundle.version,
             "files": files,
         }),
     )
 }
 
-fn refuse_overwrite(dest: &Path) -> Result<(), String> {
+fn refuse_overwrite(bundle: &SkillBundle, dest: &Path) -> Result<(), String> {
     Err(format!(
         "refusing to overwrite existing {} skill at {}",
-        BUNDLE_NAME,
+        bundle.name,
         dest.display()
     ))
 }
 
-fn is_ours_skill(path: &Path, canonical: &Path) -> bool {
+fn is_ours_skill(path: &Path, canonical: &Path, bundle: &SkillBundle) -> bool {
     if points_at_canonical(path, canonical) {
         return true;
     }
     match fs::symlink_metadata(path) {
         Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {
-            read_managed_manifest(path).is_some_and(|managed| managed.is_ours())
+            read_managed_manifest(path).is_some_and(|managed| managed.is_ours(bundle))
         }
         _ => false,
     }
@@ -760,8 +914,8 @@ enum ManagedFiles {
 }
 
 impl ManagedManifest {
-    fn is_ours(&self) -> bool {
-        self.manager == "astrlink" && self.bundle == BUNDLE_NAME
+    fn is_ours(&self, bundle: &SkillBundle) -> bool {
+        self.manager == "astrlink" && self.bundle == bundle.name
     }
 
     fn hashes_known(&self) -> bool {
@@ -879,7 +1033,9 @@ fn remove_legacy_mcp(home: &Path) -> Result<(), String> {
     let binary = legacy_mcp_binary_dest(home);
     let command = display_path(&binary)?;
     for id in AgentToolId::all() {
-        let path = legacy_mcp_config_path(home, id);
+        let Some(path) = legacy_mcp_config_path(home, id) else {
+            continue;
+        };
         let Some(raw) = read_optional(&path)? else {
             continue;
         };
@@ -896,6 +1052,7 @@ fn remove_legacy_mcp(home: &Path) -> Result<(), String> {
                 }
                 remove_toml_mcp(&raw)?
             }
+            AgentToolId::Pi => continue,
         };
         write_text(&path, &next)?;
     }
@@ -938,6 +1095,9 @@ fn tool_cli_access_kind(id: AgentToolId) -> AgentCliAccessKind {
         // Cursor keeps its command allowlist in app settings, and Grok Build
         // documents no rule file, so both ask the user on first use.
         AgentToolId::Cursor | AgentToolId::Grok => AgentCliAccessKind::Prompt,
+        // Pi has no permission prompts: every enabled tool runs with the
+        // process's own permissions.
+        AgentToolId::Pi => AgentCliAccessKind::Unrestricted,
     }
 }
 
@@ -945,7 +1105,7 @@ fn tool_cli_access_path(home: &Path, id: AgentToolId) -> Option<PathBuf> {
     match tool_cli_access_kind(id) {
         AgentCliAccessKind::AllowRules => Some(claude_settings_path(home)),
         AgentCliAccessKind::ExecPolicy => Some(codex_rules_path(home)),
-        AgentCliAccessKind::Prompt => None,
+        AgentCliAccessKind::Prompt | AgentCliAccessKind::Unrestricted => None,
     }
 }
 
@@ -959,7 +1119,7 @@ fn cli_access_present(home: &Path, id: AgentToolId) -> bool {
         AgentCliAccessKind::ExecPolicy => {
             fs::read_to_string(codex_rules_path(home)).is_ok_and(|raw| raw == codex_rules(home))
         }
-        AgentCliAccessKind::Prompt => false,
+        AgentCliAccessKind::Prompt | AgentCliAccessKind::Unrestricted => false,
     }
 }
 
@@ -1010,6 +1170,9 @@ fn tool_guard_kind(id: AgentToolId) -> AgentGuardKind {
         // documented file, and Grok Build documents no global instructions
         // file, so neither is written.
         AgentToolId::Cursor | AgentToolId::Grok => AgentGuardKind::SkillOnly,
+        // Pi's global AGENTS.md moves with PI_CODING_AGENT_DIR, which the
+        // desktop cannot see, so it is not written either.
+        AgentToolId::Pi => AgentGuardKind::SkillOnly,
     }
 }
 
@@ -1586,13 +1749,21 @@ fn unix_now() -> u64 {
 mod tests {
     use super::*;
 
+    const DEBUG: &SkillBundle = &DEBUG_BUNDLE;
+    const DEBUG_ONLY: &[AgentSkillId] = &[AgentSkillId::AstrlinkDebug];
+
+    impl AgentToolStatus {
+        fn skill(&self, id: AgentSkillId) -> &AgentSkillStatus {
+            self.skills.iter().find(|skill| skill.id == id).unwrap()
+        }
+    }
+
     #[test]
     fn install_and_uninstall_detected_tools() {
         let home = unique_temp("agent-install");
-        fs::create_dir_all(home.join(".cursor")).unwrap();
-        fs::create_dir_all(home.join(".claude")).unwrap();
-        fs::create_dir_all(home.join(".codex")).unwrap();
-        fs::create_dir_all(home.join(".grok")).unwrap();
+        for dir in [".cursor", ".claude", ".codex", ".grok", ".pi"] {
+            fs::create_dir_all(home.join(dir)).unwrap();
+        }
         let cursor_mcp = r#"{"mcpServers":{"keep":{"command":"x"}}}"#;
         fs::write(home.join(".cursor").join("mcp.json"), cursor_mcp).unwrap();
         let grok_config =
@@ -1608,64 +1779,84 @@ mod tests {
             raw_key_pins: None,
         };
         let before = status(&context);
-        assert!(before
-            .tools
-            .iter()
-            .all(|tool| tool.detected && !tool.skill_installed && !tool.cli_access_installed));
+        assert!(before.tools.iter().all(|tool| tool.detected
+            && tool.skills.iter().all(|skill| !skill.installed)
+            && !tool.cli_access_installed));
 
-        let receipt = install(&context, &AgentToolId::all()).unwrap();
+        let receipt = install(&context, &AgentSkillId::all(), &AgentToolId::all()).unwrap();
+        assert_eq!(
+            receipt.skills,
+            AgentSkillId::all().map(|id| ReceiptSkill {
+                id,
+                version: id.bundle().version.to_string(),
+            })
+        );
         assert_eq!(
             receipt.cli_binary,
-            display_path(&cli_binary_dest(&home)).unwrap()
+            Some(display_path(&cli_binary_dest(&home)).unwrap())
         );
         assert_eq!(fs::read(cli_binary_dest(&home)).unwrap(), b"cli");
-        assert_real_skill_copy(&home, &canonical_skill_dir(&home));
-        assert_real_skill_copy(&home, &tool_skill_dir(&home, AgentToolId::Cursor));
-        assert_real_skill_copy(&home, &tool_skill_dir(&home, AgentToolId::Claude));
-        assert_real_skill_copy(&home, &tool_skill_dir(&home, AgentToolId::Codex));
-        assert_real_skill_copy(&home, &tool_skill_dir(&home, AgentToolId::Grok));
-        assert!(!legacy_codex_skill_dir(&home).exists());
-        let shared_path = display_path(&canonical_skill_dir(&home)).unwrap();
-        assert_eq!(
-            receipt
+        for skill in AgentSkillId::all() {
+            let bundle = skill.bundle();
+            for id in AgentToolId::all() {
+                assert_real_skill_copy(&home, bundle, &tool_skill_dir(&home, bundle, id));
+            }
+            assert!(!legacy_codex_skill_dir(&home, bundle).exists());
+            let shared_path = display_path(&canonical_skill_dir(&home, bundle)).unwrap();
+            assert_eq!(
+                receipt
+                    .files
+                    .iter()
+                    .filter(|path| **path == shared_path)
+                    .count(),
+                1
+            );
+            assert!(!receipt
                 .files
-                .iter()
-                .filter(|path| **path == shared_path)
-                .count(),
-            1
-        );
-        assert!(!receipt
-            .files
-            .contains(&display_path(&legacy_codex_skill_dir(&home)).unwrap()));
+                .contains(&display_path(&legacy_codex_skill_dir(&home, bundle)).unwrap()));
+        }
 
         let after = status(&context);
+        let shared_path = display_path(&canonical_skill_dir(&home, DEBUG)).unwrap();
+        // Codex and Pi both read the one shared copy.
         assert_eq!(
             after
                 .tools
                 .iter()
-                .flat_map(|tool| &tool.preview_paths)
-                .filter(|path| **path == shared_path)
-                .count(),
-            1
+                .filter(|tool| tool
+                    .skill(AgentSkillId::AstrlinkDebug)
+                    .preview_paths
+                    .contains(&shared_path))
+                .map(|tool| tool.id)
+                .collect::<Vec<_>>(),
+            [AgentToolId::Codex, AgentToolId::Pi]
         );
         assert!(!after
             .tools
             .iter()
-            .flat_map(|tool| &tool.preview_paths)
-            .any(|path| *path == display_path(&legacy_codex_skill_dir(&home)).unwrap()));
-        assert!(after.canonical_skill);
+            .flat_map(|tool| &tool.skills)
+            .flat_map(|skill| &skill.preview_paths)
+            .any(|path| *path == display_path(&legacy_codex_skill_dir(&home, DEBUG)).unwrap()));
         assert!(after.cli_binary);
         for tool in &after.tools {
             let access = match tool.id {
                 AgentToolId::Claude => AgentCliAccessKind::AllowRules,
                 AgentToolId::Codex => AgentCliAccessKind::ExecPolicy,
-                _ => AgentCliAccessKind::Prompt,
+                AgentToolId::Pi => AgentCliAccessKind::Unrestricted,
+                AgentToolId::Cursor | AgentToolId::Grok => AgentCliAccessKind::Prompt,
             };
-            assert!(tool.detected && tool.skill_installed, "{:?}", tool.id);
+            assert!(
+                tool.detected && tool.skills.iter().all(|skill| skill.installed),
+                "{:?}",
+                tool.id
+            );
             assert_eq!(tool.cli_access, access, "{:?}", tool.id);
             assert_eq!(
                 tool.cli_access_installed,
-                access != AgentCliAccessKind::Prompt,
+                matches!(
+                    access,
+                    AgentCliAccessKind::AllowRules | AgentCliAccessKind::ExecPolicy
+                ),
                 "{:?}",
                 tool.id
             );
@@ -1682,19 +1873,20 @@ mod tests {
 
         uninstall(&context).unwrap();
         let gone = status(&context);
-        assert!(!gone.canonical_skill);
         assert!(!gone.cli_binary);
         for tool in &gone.tools {
-            assert!(!tool.skill_installed);
+            assert!(tool.skills.iter().all(|skill| !skill.installed));
             assert!(!tool.cli_access_installed);
         }
-        assert!(!canonical_skill_dir(&home).exists());
-        assert!(!tool_skill_dir(&home, AgentToolId::Cursor).exists());
-        assert!(!tool_skill_dir(&home, AgentToolId::Claude).exists());
-        assert!(!tool_skill_dir(&home, AgentToolId::Codex).exists());
-        assert!(!tool_skill_dir(&home, AgentToolId::Grok).exists());
+        for skill in AgentSkillId::all() {
+            let bundle = skill.bundle();
+            for id in AgentToolId::all() {
+                assert!(!tool_skill_dir(&home, bundle, id).exists(), "{id:?}");
+            }
+        }
         assert!(!codex_rules_path(&home).exists());
         assert!(!claude_settings_path(&home).exists());
+        assert!(!receipt_path(&home).exists());
         assert_eq!(
             fs::read_to_string(home.join(".cursor").join("mcp.json")).unwrap(),
             cursor_mcp
@@ -1707,7 +1899,7 @@ mod tests {
         let home = unique_temp("agent-cli-command");
         let cli = cli_command(&home);
         assert_eq!(cli, display_path(&cli_binary_dest(&home)).unwrap());
-        assert!(SKILL_MD.contains(CLI_PLACEHOLDER));
+        assert!(bundle_file(DEBUG, "SKILL.md").contains(CLI_PLACEHOLDER));
         let rendered = rendered_skill(&home);
         assert!(!rendered.contains(CLI_PLACEHOLDER));
         assert!(rendered.contains(&format!("{cli} sessions")));
@@ -1760,8 +1952,9 @@ mod tests {
                 let config = match id {
                     AgentToolId::Cursor | AgentToolId::Claude => &json_config,
                     AgentToolId::Codex | AgentToolId::Grok => &toml_config,
+                    AgentToolId::Pi => continue,
                 };
-                fs::write(legacy_mcp_config_path(&home, id), config).unwrap();
+                fs::write(legacy_mcp_config_path(&home, id).unwrap(), config).unwrap();
             }
             let cli_source = home.join("src-astrlink-cli");
             fs::write(&cli_source, b"cli").unwrap();
@@ -1777,30 +1970,35 @@ mod tests {
                 assert!(legacy.is_file());
                 write_json_file(
                     &receipt_path(&home),
-                    &json!({"version": 1, "bundle": BUNDLE_NAME, "mcp_binary": command}),
+                    &json!({"version": 1, "bundle": DEBUG.name, "mcp_binary": command}),
                 )
                 .unwrap();
                 sync_installed_cli(&context).unwrap();
             } else {
-                install(&context, &[AgentToolId::Cursor]).unwrap();
+                install(&context, DEBUG_ONLY, &[AgentToolId::Cursor]).unwrap();
             }
 
             assert!(!legacy.exists());
             assert_eq!(fs::read(cli_binary_dest(&home)).unwrap(), b"cli");
             for id in AgentToolId::all() {
-                let raw = fs::read_to_string(legacy_mcp_config_path(&home, id)).unwrap();
+                let Some(path) = legacy_mcp_config_path(&home, id) else {
+                    continue;
+                };
+                let raw = fs::read_to_string(path).unwrap();
                 assert!(!raw.contains("astrlink"), "{id:?}: {raw}");
                 assert!(raw.contains("keep"), "{id:?}");
             }
             let cursor: Value = serde_json::from_str(
-                &fs::read_to_string(legacy_mcp_config_path(&home, AgentToolId::Cursor)).unwrap(),
+                &fs::read_to_string(legacy_mcp_config_path(&home, AgentToolId::Cursor).unwrap())
+                    .unwrap(),
             )
             .unwrap();
             assert_eq!(cursor["theme"], "dark");
-            let grok = fs::read_to_string(legacy_mcp_config_path(&home, AgentToolId::Grok))
-                .unwrap()
-                .parse::<toml_edit::DocumentMut>()
-                .unwrap();
+            let grok =
+                fs::read_to_string(legacy_mcp_config_path(&home, AgentToolId::Grok).unwrap())
+                    .unwrap()
+                    .parse::<toml_edit::DocumentMut>()
+                    .unwrap();
             assert_eq!(grok["model"].as_str(), Some("keep-model"));
             let _ = fs::remove_dir_all(&home);
         }
@@ -1823,18 +2021,18 @@ mod tests {
         let mut listed = vec![path(&legacy), path(&receipt_file)];
         // Grok was installed too; its host has no rule file to write.
         for id in [AgentToolId::Claude, AgentToolId::Codex, AgentToolId::Grok] {
-            fs::write(legacy_mcp_config_path(&home, id), "").unwrap();
-            listed.push(path(&legacy_mcp_config_path(&home, id)));
+            fs::write(legacy_mcp_config_path(&home, id).unwrap(), "").unwrap();
+            listed.push(path(&legacy_mcp_config_path(&home, id).unwrap()));
         }
-        let skill = tool_skill_dir(&home, AgentToolId::Claude);
+        let skill = tool_skill_dir(&home, DEBUG, AgentToolId::Claude);
         fs::create_dir_all(&skill).unwrap();
         listed.push(path(&skill));
-        listed.push(path(&home.join(".codex/skills").join(BUNDLE_NAME)));
+        listed.push(path(&home.join(".codex/skills").join(DEBUG.name)));
         write_json_file(
             &receipt_file,
             &json!({
                 "version": 1,
-                "bundle": BUNDLE_NAME,
+                "bundle": DEBUG.name,
                 "bundle_version": "0.1.1",
                 "installed_at_unix": 7,
                 "mcp_binary": path(&legacy),
@@ -1875,11 +2073,18 @@ mod tests {
             serde_json::from_str(&fs::read_to_string(&receipt_file).unwrap()).unwrap();
         assert_eq!(receipt.version, RECEIPT_VERSION);
         assert_eq!(receipt.installed_at_unix, 7);
-        assert_eq!(receipt.cli_binary, path(&cli_binary_dest(&home)));
+        assert_eq!(receipt.cli_binary, Some(path(&cli_binary_dest(&home))));
+        assert_eq!(
+            receipt.skills,
+            [ReceiptSkill {
+                id: AgentSkillId::AstrlinkDebug,
+                version: DEBUG.version.to_string(),
+            }]
+        );
         assert_eq!(
             receipt.files,
             [
-                receipt.cli_binary.clone(),
+                path(&cli_binary_dest(&home)),
                 path(&skill),
                 path(&claude_settings_path(&home)),
                 path(&codex_agents_path(&home)),
@@ -1924,12 +2129,12 @@ mod tests {
             (AgentToolId::Grok, "[models\n".to_string()),
         ];
         for (id, raw) in &kept {
-            fs::write(legacy_mcp_config_path(&home, *id), raw).unwrap();
+            fs::write(legacy_mcp_config_path(&home, *id).unwrap(), raw).unwrap();
         }
         remove_legacy_mcp(&home).unwrap();
         for (id, raw) in &kept {
             assert_eq!(
-                &fs::read_to_string(legacy_mcp_config_path(&home, *id)).unwrap(),
+                &fs::read_to_string(legacy_mcp_config_path(&home, *id).unwrap()).unwrap(),
                 raw,
                 "{id:?}"
             );
@@ -1942,16 +2147,16 @@ mod tests {
         for reinstall in [false, true] {
             let context = installed_codex_context("codex-migrate");
             let home = &context.home;
-            let canonical = canonical_skill_dir(home);
-            let legacy = legacy_codex_skill_dir(home);
-            write_skill_tree(home, &legacy).unwrap();
+            let canonical = canonical_skill_dir(home, DEBUG);
+            let legacy = legacy_codex_skill_dir(home, DEBUG);
+            write_skill_tree(home, DEBUG, &legacy).unwrap();
             fs::write(canonical.join("SKILL.md"), "shared user edit").unwrap();
             fs::write(legacy.join("SKILL.md"), "legacy user edit").unwrap();
             fs::write(legacy.join("notes.txt"), "keep this extra file").unwrap();
             let legacy_manifest = fs::read(managed_files_path(&legacy)).unwrap();
 
             if reinstall {
-                install(&context, &[AgentToolId::Codex]).unwrap();
+                install(&context, DEBUG_ONLY, &[AgentToolId::Codex]).unwrap();
             } else {
                 sync_installed_skills(home).unwrap();
             }
@@ -1962,7 +2167,7 @@ mod tests {
             );
             let backups = codex_backups(home);
             assert_eq!(backups.len(), 1);
-            let archived = backups[0].join(BUNDLE_NAME);
+            let archived = backups[0].join(DEBUG.name);
             assert_eq!(
                 fs::read_to_string(archived.join("SKILL.md")).unwrap(),
                 "legacy user edit"
@@ -1981,12 +2186,13 @@ mod tests {
                     .iter()
                     .find(|tool| tool.id == AgentToolId::Codex)
                     .unwrap()
-                    .skill_installed
+                    .skill(AgentSkillId::AstrlinkDebug)
+                    .installed
             );
 
             // Startup and a later reinstall must not recreate the duplicate.
             sync_installed_skills(home).unwrap();
-            install(&context, &[AgentToolId::Codex]).unwrap();
+            install(&context, DEBUG_ONLY, &[AgentToolId::Codex]).unwrap();
             assert!(!legacy.exists());
             assert_eq!(codex_backups(home), backups);
             uninstall(&context).unwrap();
@@ -1999,11 +2205,11 @@ mod tests {
     #[test]
     fn startup_migration_requires_receipt() {
         let home = unique_temp("codex-no-receipt");
-        write_canonical_skill(&home).unwrap();
-        let legacy = legacy_codex_skill_dir(&home);
-        write_skill_tree(&home, &legacy).unwrap();
+        write_canonical_skill(&home, DEBUG).unwrap();
+        let legacy = legacy_codex_skill_dir(&home, DEBUG);
+        write_skill_tree(&home, DEBUG, &legacy).unwrap();
         sync_installed_skills(&home).unwrap();
-        assert_real_skill_copy(&home, &legacy);
+        assert_real_skill_copy(&home, DEBUG, &legacy);
         assert!(codex_backups(&home).is_empty());
         let _ = fs::remove_dir_all(&home);
     }
@@ -2012,8 +2218,8 @@ mod tests {
     fn startup_moves_lone_legacy_codex_copy_to_shared_directory() {
         let context = installed_codex_context("codex-legacy-only");
         let home = &context.home;
-        let canonical = canonical_skill_dir(home);
-        let legacy = legacy_codex_skill_dir(home);
+        let canonical = canonical_skill_dir(home, DEBUG);
+        let legacy = legacy_codex_skill_dir(home, DEBUG);
         fs::create_dir_all(legacy.parent().unwrap()).unwrap();
         fs::rename(&canonical, &legacy).unwrap();
         fs::write(legacy.join("SKILL.md"), "keep legacy customization").unwrap();
@@ -2031,11 +2237,11 @@ mod tests {
     fn migration_and_uninstall_preserve_foreign_codex_directory() {
         let context = installed_codex_context("codex-foreign");
         let home = &context.home;
-        let legacy = legacy_codex_skill_dir(home);
+        let legacy = legacy_codex_skill_dir(home, DEBUG);
         fs::create_dir_all(&legacy).unwrap();
         fs::write(legacy.join("SKILL.md"), "not ours").unwrap();
         sync_installed_skills(home).unwrap();
-        install(&context, &[AgentToolId::Codex]).unwrap();
+        install(&context, DEBUG_ONLY, &[AgentToolId::Codex]).unwrap();
         uninstall(&context).unwrap();
         assert_eq!(
             fs::read_to_string(legacy.join("SKILL.md")).unwrap(),
@@ -2049,15 +2255,15 @@ mod tests {
     fn migration_refuses_foreign_shared_directory_and_preserves_legacy_copy() {
         let context = installed_codex_context("codex-foreign-shared");
         let home = &context.home;
-        let canonical = canonical_skill_dir(home);
-        let legacy = legacy_codex_skill_dir(home);
-        write_skill_tree(home, &legacy).unwrap();
+        let canonical = canonical_skill_dir(home, DEBUG);
+        let legacy = legacy_codex_skill_dir(home, DEBUG);
+        write_skill_tree(home, DEBUG, &legacy).unwrap();
         fs::remove_file(managed_files_path(&canonical)).unwrap();
         fs::write(canonical.join("SKILL.md"), "foreign shared skill").unwrap();
         assert!(sync_installed_skills(home)
             .unwrap_err()
             .contains("refusing to overwrite"));
-        assert_real_skill_copy(home, &legacy);
+        assert_real_skill_copy(home, DEBUG, &legacy);
         assert!(codex_backups(home).is_empty());
         uninstall(&context).unwrap();
         assert!(!legacy.exists());
@@ -2072,9 +2278,9 @@ mod tests {
     fn uninstall_removes_legacy_codex_installation_before_startup_migration() {
         let context = installed_codex_context("codex-uninstall-legacy");
         let home = &context.home;
-        let canonical = canonical_skill_dir(home);
-        let legacy = legacy_codex_skill_dir(home);
-        write_skill_tree(home, &legacy).unwrap();
+        let canonical = canonical_skill_dir(home, DEBUG);
+        let legacy = legacy_codex_skill_dir(home, DEBUG);
+        write_skill_tree(home, DEBUG, &legacy).unwrap();
         uninstall(&context).unwrap();
         assert!(!canonical.exists());
         assert!(!legacy.exists());
@@ -2084,7 +2290,8 @@ mod tests {
                 .iter()
                 .find(|tool| tool.id == AgentToolId::Codex)
                 .unwrap()
-                .skill_installed
+                .skill(AgentSkillId::AstrlinkDebug)
+                .installed
         );
         let _ = fs::remove_dir_all(home);
     }
@@ -2096,8 +2303,8 @@ mod tests {
             for missing_shared in [false, true] {
                 let context = installed_codex_context("codex-link");
                 let home = &context.home;
-                let canonical = canonical_skill_dir(home);
-                let legacy = legacy_codex_skill_dir(home);
+                let canonical = canonical_skill_dir(home, DEBUG);
+                let legacy = legacy_codex_skill_dir(home, DEBUG);
                 fs::create_dir_all(legacy.parent().unwrap()).unwrap();
                 let target = if relative {
                     PathBuf::from("../../.agents/skills/astrlink-debug")
@@ -2110,7 +2317,7 @@ mod tests {
                 }
                 sync_installed_skills(home).unwrap();
                 assert!(legacy.symlink_metadata().is_err());
-                assert_real_skill_copy(home, &canonical);
+                assert_real_skill_copy(home, DEBUG, &canonical);
                 assert!(codex_backups(home).is_empty());
                 let _ = fs::remove_dir_all(home);
             }
@@ -2128,7 +2335,7 @@ mod tests {
             data_directory: None,
             raw_key_pins: None,
         };
-        install(&context, &[AgentToolId::Codex]).unwrap();
+        install(&context, DEBUG_ONLY, &[AgentToolId::Codex]).unwrap();
         context
     }
 
@@ -2148,19 +2355,19 @@ mod tests {
     #[test]
     fn hash_gate_overwrites_unchanged_files_and_keeps_edits() {
         let home = unique_temp("agent-hash-gate");
-        let dest = canonical_skill_dir(&home);
-        write_skill_tree(&home, &dest).unwrap();
+        let dest = canonical_skill_dir(&home, DEBUG);
+        write_skill_tree(&home, DEBUG, &dest).unwrap();
 
         let skill = dest.join("SKILL.md");
         fs::write(&skill, "stale-managed").unwrap();
         let mut hashes = managed_hashes(&dest);
         hashes.insert("SKILL.md".into(), sha256_hex(b"stale-managed"));
-        write_managed_manifest(&dest, &hashes).unwrap();
-        write_skill_tree(&home, &dest).unwrap();
+        write_managed_manifest(&dest, DEBUG, &hashes).unwrap();
+        write_skill_tree(&home, DEBUG, &dest).unwrap();
         assert_eq!(fs::read_to_string(&skill).unwrap(), rendered_skill(&home));
 
         fs::write(&skill, "user-edit").unwrap();
-        write_skill_tree(&home, &dest).unwrap();
+        write_skill_tree(&home, DEBUG, &dest).unwrap();
         assert_eq!(fs::read_to_string(&skill).unwrap(), "user-edit");
         let _ = fs::remove_dir_all(&home);
     }
@@ -2168,21 +2375,21 @@ mod tests {
     #[test]
     fn old_array_manifest_upgrades_to_hash_map() {
         let home = unique_temp("agent-old-manifest");
-        let dest = canonical_skill_dir(&home);
+        let dest = canonical_skill_dir(&home, DEBUG);
         fs::create_dir_all(dest.join("references")).unwrap();
         fs::write(dest.join("SKILL.md"), "legacy").unwrap();
         write_json_file(
             &managed_files_path(&dest),
             &json!({
                 "manager": "astrlink",
-                "bundle": BUNDLE_NAME,
+                "bundle": DEBUG.name,
                 "version": "0.0.1",
                 "files": ["SKILL.md", "references/trajectory.md", "manifest.json"],
             }),
         )
         .unwrap();
-        write_skill_tree(&home, &dest).unwrap();
-        assert_real_skill_copy(&home, &dest);
+        write_skill_tree(&home, DEBUG, &dest).unwrap();
+        assert_real_skill_copy(&home, DEBUG, &dest);
         let _ = fs::remove_dir_all(&home);
     }
 
@@ -2190,7 +2397,7 @@ mod tests {
     fn refuses_foreign_skill_directory() {
         let home = unique_temp("agent-foreign");
         fs::create_dir_all(home.join(".cursor")).unwrap();
-        let dest = tool_skill_dir(&home, AgentToolId::Cursor);
+        let dest = tool_skill_dir(&home, DEBUG, AgentToolId::Cursor);
         fs::create_dir_all(&dest).unwrap();
         fs::write(dest.join("SKILL.md"), "not yours").unwrap();
         let cli_source = home.join("src-astrlink-cli");
@@ -2202,6 +2409,7 @@ mod tests {
                 data_directory: None,
                 raw_key_pins: None,
             },
+            DEBUG_ONLY,
             &[AgentToolId::Cursor],
         )
         .unwrap_err();
@@ -2218,8 +2426,8 @@ mod tests {
     fn replaces_legacy_symlink_with_real_copy() {
         let home = unique_temp("agent-symlink");
         fs::create_dir_all(home.join(".cursor")).unwrap();
-        let canonical = write_canonical_skill(&home).unwrap();
-        let dest = tool_skill_dir(&home, AgentToolId::Cursor);
+        let canonical = write_canonical_skill(&home, DEBUG).unwrap();
+        let dest = tool_skill_dir(&home, DEBUG, AgentToolId::Cursor);
         fs::create_dir_all(dest.parent().unwrap()).unwrap();
         std::os::unix::fs::symlink(&canonical, &dest).unwrap();
         assert!(fs::symlink_metadata(&dest)
@@ -2236,43 +2444,46 @@ mod tests {
                 data_directory: None,
                 raw_key_pins: None,
             },
+            DEBUG_ONLY,
             &[AgentToolId::Cursor],
         )
         .unwrap();
-        assert_real_skill_copy(&home, &dest);
+        assert_real_skill_copy(&home, DEBUG, &dest);
         let _ = fs::remove_dir_all(&home);
     }
 
     #[test]
     fn sync_requires_receipt_and_skips_unknown_tools() {
         let home = unique_temp("agent-sync");
-        let canonical = canonical_skill_dir(&home);
-        write_skill_tree(&home, &canonical).unwrap();
+        let canonical = canonical_skill_dir(&home, DEBUG);
+        write_skill_tree(&home, DEBUG, &canonical).unwrap();
         let skill = canonical.join("SKILL.md");
         fs::write(&skill, "stale-managed").unwrap();
         let mut hashes = managed_hashes(&canonical);
         hashes.insert("SKILL.md".into(), sha256_hex(b"stale-managed"));
-        write_managed_manifest(&canonical, &hashes).unwrap();
+        write_managed_manifest(&canonical, DEBUG, &hashes).unwrap();
 
         sync_installed_skills(&home).unwrap();
         assert_eq!(fs::read_to_string(&skill).unwrap(), "stale-managed");
-        assert!(!tool_skill_dir(&home, AgentToolId::Cursor).exists());
+        assert!(!tool_skill_dir(&home, DEBUG, AgentToolId::Cursor).exists());
 
         write_json_file(
             &receipt_path(&home),
             &InstallReceipt {
                 version: RECEIPT_VERSION,
-                bundle: BUNDLE_NAME.to_string(),
-                bundle_version: BUNDLE_VERSION.to_string(),
+                skills: vec![ReceiptSkill {
+                    id: AgentSkillId::AstrlinkDebug,
+                    version: DEBUG.version.to_string(),
+                }],
                 installed_at_unix: 1,
-                cli_binary: "astrlink".into(),
+                cli_binary: Some("astrlink".into()),
                 files: vec![],
             },
         )
         .unwrap();
         sync_installed_skills(&home).unwrap();
         assert_eq!(fs::read_to_string(&skill).unwrap(), rendered_skill(&home));
-        assert!(!tool_skill_dir(&home, AgentToolId::Cursor).exists());
+        assert!(!tool_skill_dir(&home, DEBUG, AgentToolId::Cursor).exists());
         let _ = fs::remove_dir_all(&home);
     }
 
@@ -2298,10 +2509,12 @@ mod tests {
             &receipt_path(&home),
             &InstallReceipt {
                 version: RECEIPT_VERSION,
-                bundle: BUNDLE_NAME.to_string(),
-                bundle_version: BUNDLE_VERSION.to_string(),
+                skills: vec![ReceiptSkill {
+                    id: AgentSkillId::AstrlinkDebug,
+                    version: DEBUG.version.to_string(),
+                }],
                 installed_at_unix: 1,
-                cli_binary: "astrlink".into(),
+                cli_binary: Some("astrlink".into()),
                 files: vec![],
             },
         )
@@ -2340,30 +2553,48 @@ mod tests {
             raw_key_pins: None,
         };
         fs::create_dir_all(home.join(".grok")).unwrap();
-        assert!(install(&context, &[])
+        assert!(install(&context, &[], &[AgentToolId::Grok])
             .unwrap_err()
-            .contains("select at least one"));
-        assert!(install(&context, &[AgentToolId::Grok, AgentToolId::Cursor])
+            .contains("select at least one skill"));
+        assert!(install(&context, DEBUG_ONLY, &[])
             .unwrap_err()
-            .contains("no longer detected"));
+            .contains("select at least one agent tool"));
+        assert!(install(
+            &context,
+            DEBUG_ONLY,
+            &[AgentToolId::Grok, AgentToolId::Cursor]
+        )
+        .unwrap_err()
+        .contains("no longer detected"));
         assert!(!home.join(".cursor").exists());
-        assert!(!canonical_skill_dir(&home).exists());
+        assert!(!canonical_skill_dir(&home, DEBUG).exists());
         assert!(!cli_binary_dest(&home).exists());
         assert!(!receipt_path(&home).exists());
-        assert!(!tool_skill_dir(&home, AgentToolId::Grok).exists());
+        assert!(!tool_skill_dir(&home, DEBUG, AgentToolId::Grok).exists());
         let _ = fs::remove_dir_all(&home);
     }
 
     #[test]
     fn installs_only_selected_tools_and_startup_preserves_scope() {
-        for selected in [
-            vec![AgentToolId::Grok],
-            vec![AgentToolId::Cursor, AgentToolId::Grok],
-            vec![AgentToolId::Codex],
-            vec![AgentToolId::Claude, AgentToolId::Grok, AgentToolId::Grok],
+        let both = AgentSkillId::all();
+        let placeholder_only = [AgentSkillId::RedactionPlaceholders];
+        for (skills, selected) in [
+            (DEBUG_ONLY, vec![AgentToolId::Grok]),
+            (DEBUG_ONLY, vec![AgentToolId::Cursor, AgentToolId::Grok]),
+            (DEBUG_ONLY, vec![AgentToolId::Codex]),
+            (
+                DEBUG_ONLY,
+                vec![AgentToolId::Claude, AgentToolId::Grok, AgentToolId::Grok],
+            ),
+            (DEBUG_ONLY, vec![AgentToolId::Pi]),
+            (&both[..], vec![AgentToolId::Claude, AgentToolId::Pi]),
+            (
+                &placeholder_only[..],
+                vec![AgentToolId::Claude, AgentToolId::Codex],
+            ),
         ] {
             let home = unique_temp("agent-selected");
-            for dir in [".cursor", ".claude", ".codex", ".grok"] {
+            for dir in [".cursor", ".claude", ".codex", ".grok", ".pi"] {
                 fs::create_dir_all(home.join(dir)).unwrap();
             }
             let cli_source = home.join("src-astrlink-cli");
@@ -2381,9 +2612,15 @@ mod tests {
                 .iter()
                 .filter(|tool| selected.contains(&tool.id))
             {
-                expected_paths.extend(tool.preview_paths.clone());
+                for skill in tool
+                    .skills
+                    .iter()
+                    .filter(|skill| skills.contains(&skill.id))
+                {
+                    expected_paths.extend(skill.preview_paths.clone());
+                }
             }
-            let receipt = install(&context, &selected).unwrap();
+            let receipt = install(&context, skills, &selected).unwrap();
             assert_eq!(
                 receipt.files.into_iter().collect::<BTreeSet<_>>(),
                 expected_paths.into_iter().collect::<BTreeSet<_>>()
@@ -2392,30 +2629,45 @@ mod tests {
             sync_installed_cli(&context).unwrap();
             sync_installed_host_guards(&context.home, None, None).unwrap();
             let after = status(&context);
-            assert_eq!(
-                after.canonical_skill,
-                selected.contains(&AgentToolId::Codex)
-            );
+            let needs_cli = skills.contains(&AgentSkillId::AstrlinkDebug);
+            let shared = selected.iter().any(|id| id.uses_shared_skills());
             for tool in after.tools {
-                let installed = selected.contains(&tool.id);
-                assert_eq!(tool.skill_installed, installed, "{:?}", tool.id);
+                let chosen = selected.contains(&tool.id);
+                for skill in &tool.skills {
+                    // Codex and Pi share a directory, so choosing either one
+                    // installs the skill for both.
+                    let installed = skills.contains(&skill.id)
+                        && (chosen || tool.id.uses_shared_skills() && shared);
+                    assert_eq!(skill.installed, installed, "{:?} {:?}", tool.id, skill.id);
+                }
                 assert_eq!(
                     tool.cli_access_installed,
-                    installed && tool.cli_access != AgentCliAccessKind::Prompt,
+                    needs_cli
+                        && chosen
+                        && matches!(
+                            tool.cli_access,
+                            AgentCliAccessKind::AllowRules | AgentCliAccessKind::ExecPolicy
+                        ),
+                    "{:?}",
+                    tool.id
+                );
+                assert_eq!(
+                    tool.guard_installed,
+                    needs_cli && chosen && tool.guard != AgentGuardKind::SkillOnly,
                     "{:?}",
                     tool.id
                 );
             }
+            assert_eq!(cli_binary_dest(&context.home).exists(), needs_cli);
             assert_eq!(
                 codex_rules_path(&context.home).exists(),
-                selected.contains(&AgentToolId::Codex)
+                needs_cli && selected.contains(&AgentToolId::Codex)
             );
             uninstall(&context).unwrap();
             assert!(!cli_binary_dest(&context.home).exists());
-            assert!(status(&context)
-                .tools
-                .iter()
-                .all(|tool| !tool.skill_installed && !tool.cli_access_installed));
+            assert!(status(&context).tools.iter().all(|tool| {
+                tool.skills.iter().all(|skill| !skill.installed) && !tool.cli_access_installed
+            }));
             let _ = fs::remove_dir_all(&context.home);
         }
     }
@@ -2426,11 +2678,11 @@ mod tests {
         let home = &context.home;
         fs::create_dir_all(home.join(".grok")).unwrap();
         fs::create_dir_all(home.join(".cursor")).unwrap();
-        let cursor_config = legacy_mcp_config_path(home, AgentToolId::Cursor);
+        let cursor_config = legacy_mcp_config_path(home, AgentToolId::Cursor).unwrap();
         fs::write(&cursor_config, "invalid JSON must remain untouched").unwrap();
-        let canonical = canonical_skill_dir(home);
-        let legacy = legacy_codex_skill_dir(home);
-        write_skill_tree(home, &legacy).unwrap();
+        let canonical = canonical_skill_dir(home, DEBUG);
+        let legacy = legacy_codex_skill_dir(home, DEBUG);
+        write_skill_tree(home, DEBUG, &legacy).unwrap();
         let tracked = [
             canonical.join("SKILL.md"),
             managed_files_path(&canonical),
@@ -2443,7 +2695,7 @@ mod tests {
             .iter()
             .map(|path| fs::read(path).unwrap())
             .collect::<Vec<_>>();
-        install(&context, &[AgentToolId::Grok]).unwrap();
+        install(&context, DEBUG_ONLY, &[AgentToolId::Grok]).unwrap();
         for (path, bytes) in tracked.iter().zip(before) {
             assert_eq!(fs::read(path).unwrap(), bytes);
         }
@@ -2451,9 +2703,308 @@ mod tests {
             .tools
             .iter()
             .filter(|tool| [AgentToolId::Codex, AgentToolId::Grok].contains(&tool.id))
-            .all(|tool| tool.skill_installed));
+            .all(|tool| tool.skill(AgentSkillId::AstrlinkDebug).installed));
         assert!(codex_backups(home).is_empty());
         let _ = fs::remove_dir_all(home);
+    }
+
+    #[test]
+    fn bundles_match_their_manifests_and_the_placeholder_skill_stays_neutral() {
+        for skill in AgentSkillId::all() {
+            let bundle = skill.bundle();
+            let manifest: Value =
+                serde_json::from_str(bundle_file(bundle, "manifest.json")).unwrap();
+            assert_eq!(manifest["name"], bundle.name);
+            assert_eq!(manifest["version"], bundle.version);
+            assert_eq!(
+                serde_json::from_value::<Vec<AgentToolId>>(manifest["adapters"].clone()).unwrap(),
+                AgentToolId::all(),
+                "{}",
+                bundle.name
+            );
+            assert_eq!(serde_json::to_value(skill).unwrap(), bundle.name);
+            assert!(bundle_file(bundle, "SKILL.md")
+                .starts_with(&format!("---\nname: {}\n", bundle.name)));
+            assert_eq!(
+                bundle.needs_cli,
+                bundle
+                    .files
+                    .iter()
+                    .any(|file| file.contents.contains(CLI_PLACEHOLDER)),
+                "{}",
+                bundle.name
+            );
+        }
+        // Hosts may send the skill upstream, so it must not name the gateway.
+        for file in PLACEHOLDER_BUNDLE.files {
+            assert!(
+                !file.contents.to_lowercase().contains("astrlink"),
+                "{}",
+                file.relative
+            );
+        }
+    }
+
+    #[test]
+    fn placeholder_skill_alone_brings_no_cli_rules_or_guards() {
+        let home = unique_temp("agent-placeholder-only");
+        for dir in [".cursor", ".claude", ".codex", ".grok", ".pi"] {
+            fs::create_dir_all(home.join(dir)).unwrap();
+        }
+        let settings = claude_settings_path(&home);
+        let user_settings = r#"{"permissions":{"allow":["Bash(ls *)"]}}"#;
+        fs::write(&settings, user_settings).unwrap();
+        let placeholder = &PLACEHOLDER_BUNDLE;
+        // No sidecar is needed for a skill that never runs the CLI.
+        let context = InstallContext {
+            home: home.clone(),
+            cli_source: home.join("missing"),
+            data_directory: Some(home.join("data")),
+            raw_key_pins: None,
+        };
+        let receipt = install(
+            &context,
+            &[AgentSkillId::RedactionPlaceholders],
+            &AgentToolId::all(),
+        )
+        .unwrap();
+        assert_eq!(receipt.cli_binary, None);
+        assert_eq!(
+            receipt.skills,
+            [ReceiptSkill {
+                id: AgentSkillId::RedactionPlaceholders,
+                version: placeholder.version.to_string(),
+            }]
+        );
+        let after = status(&context);
+        let mut expected_paths = after.shared_paths.clone();
+        for tool in &after.tools {
+            let skill = tool.skill(AgentSkillId::RedactionPlaceholders);
+            assert!(skill.installed, "{:?}", tool.id);
+            assert!(!tool.skill(AgentSkillId::AstrlinkDebug).installed);
+            assert!(!tool.cli_access_installed && !tool.guard_installed);
+            expected_paths.extend(skill.preview_paths.clone());
+            assert_real_skill_copy(
+                &home,
+                placeholder,
+                &tool_skill_dir(&home, placeholder, tool.id),
+            );
+            assert!(!tool_skill_dir(&home, DEBUG, tool.id).exists());
+        }
+        assert_eq!(
+            receipt.files.iter().cloned().collect::<BTreeSet<_>>(),
+            expected_paths.into_iter().collect::<BTreeSet<_>>()
+        );
+        let untouched = |home: &Path| {
+            assert!(!cli_binary_dest(home).exists());
+            assert!(!codex_rules_path(home).exists());
+            assert!(!codex_agents_path(home).exists());
+            assert!(!host_guards_path(home).exists());
+            assert_eq!(
+                fs::read_to_string(claude_settings_path(home)).unwrap(),
+                user_settings
+            );
+        };
+        untouched(&home);
+
+        // Startup keeps the install skill-only once a sidecar exists.
+        let cli_source = home.join("src-astrlink-cli");
+        fs::write(&cli_source, b"cli").unwrap();
+        let context = InstallContext {
+            cli_source,
+            ..context
+        };
+        sync_installed_skills(&home).unwrap();
+        sync_installed_cli(&context).unwrap();
+        sync_installed_host_guards(&home, context.data_directory.as_deref(), None).unwrap();
+        untouched(&home);
+
+        uninstall(&context).unwrap();
+        for id in AgentToolId::all() {
+            assert!(!tool_skill_dir(&home, placeholder, id).exists(), "{id:?}");
+        }
+        assert_eq!(fs::read_to_string(&settings).unwrap(), user_settings);
+        assert!(!receipt_path(&home).exists());
+        let _ = fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn pi_uses_the_shared_directory_and_leaves_other_hosts_alone() {
+        let home = unique_temp("agent-pi");
+        let cli_source = home.join("src-astrlink-cli");
+        fs::write(&cli_source, b"cli").unwrap();
+        let context = InstallContext {
+            home: home.clone(),
+            cli_source,
+            data_directory: None,
+            raw_key_pins: None,
+        };
+        let pi = |context: &InstallContext| {
+            status(context)
+                .tools
+                .into_iter()
+                .find(|tool| tool.id == AgentToolId::Pi)
+                .unwrap()
+        };
+        assert!(!pi(&context).detected);
+        assert!(install(&context, DEBUG_ONLY, &[AgentToolId::Pi])
+            .unwrap_err()
+            .contains("no longer detected"));
+
+        for dir in [".pi", ".cursor", ".claude", ".codex", ".grok"] {
+            fs::create_dir_all(home.join(dir)).unwrap();
+        }
+        let settings = claude_settings_path(&home);
+        fs::write(&settings, "{}").unwrap();
+        let receipt = install(&context, &AgentSkillId::all(), &[AgentToolId::Pi]).unwrap();
+        for skill in AgentSkillId::all() {
+            let bundle = skill.bundle();
+            let shared = home.join(".agents").join("skills").join(bundle.name);
+            assert_eq!(tool_skill_dir(&home, bundle, AgentToolId::Pi), shared);
+            assert_real_skill_copy(&home, bundle, &shared);
+            assert!(receipt.files.contains(&display_path(&shared).unwrap()));
+            for id in [AgentToolId::Cursor, AgentToolId::Claude, AgentToolId::Grok] {
+                assert!(!tool_skill_dir(&home, bundle, id).exists(), "{id:?}");
+            }
+            assert!(!legacy_codex_skill_dir(&home, bundle).exists());
+            assert!(!home.join(".pi").join("agent").exists());
+        }
+        // Pi runs commands without asking, so it needs the CLI but no rules,
+        // and the Claude Code and Codex files stay as they were.
+        assert!(cli_binary_dest(&home).is_file());
+        assert!(!codex_rules_path(&home).exists());
+        assert!(!codex_agents_path(&home).exists());
+        assert!(!host_guards_path(&home).exists());
+        assert_eq!(fs::read_to_string(&settings).unwrap(), "{}");
+        let status = pi(&context);
+        assert!(status.detected && status.skills.iter().all(|skill| skill.installed));
+        assert_eq!(
+            (status.cli_access, status.cli_access_installed),
+            (AgentCliAccessKind::Unrestricted, false)
+        );
+        assert_eq!(
+            (status.guard, status.guard_installed),
+            (AgentGuardKind::SkillOnly, false)
+        );
+
+        uninstall(&context).unwrap();
+        for skill in AgentSkillId::all() {
+            assert!(!canonical_skill_dir(&home, skill.bundle()).exists());
+        }
+        assert!(pi(&context).skills.iter().all(|skill| !skill.installed));
+        let _ = fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn a_later_skill_only_install_keeps_the_earlier_cli_install() {
+        let context = installed_codex_context("agent-later-placeholder");
+        let home = context.home.clone();
+        fs::create_dir_all(home.join(".pi")).unwrap();
+        let canonical = canonical_skill_dir(&home, DEBUG);
+        let tracked = [
+            canonical.join("SKILL.md"),
+            managed_files_path(&canonical),
+            codex_rules_path(&home),
+            codex_agents_path(&home),
+            host_guards_path(&home),
+            cli_binary_dest(&home),
+        ];
+        let before = tracked
+            .iter()
+            .map(|path| fs::read(path).unwrap())
+            .collect::<Vec<_>>();
+        let receipt = install(
+            &context,
+            &[AgentSkillId::RedactionPlaceholders],
+            &[AgentToolId::Pi],
+        )
+        .unwrap();
+        assert_eq!(receipt.cli_binary, None);
+        for (path, bytes) in tracked.iter().zip(before) {
+            assert_eq!(fs::read(path).unwrap(), bytes, "{path:?}");
+        }
+        let codex = status(&context)
+            .tools
+            .into_iter()
+            .find(|tool| tool.id == AgentToolId::Codex)
+            .unwrap();
+        assert!(codex.skills.iter().all(|skill| skill.installed));
+        assert!(codex.cli_access_installed && codex.guard_installed);
+
+        // Startup still keeps the CLI the earlier install copied current.
+        let next = home.join("next-astrlink-cli");
+        fs::write(&next, b"next").unwrap();
+        sync_installed_cli(&InstallContext {
+            cli_source: next,
+            ..context
+        })
+        .unwrap();
+        assert_eq!(fs::read(cli_binary_dest(&home)).unwrap(), b"next");
+        let _ = fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn startup_refreshes_every_bundle_and_keeps_user_edits() {
+        let home = unique_temp("agent-sync-bundles");
+        for dir in [".claude", ".codex"] {
+            fs::create_dir_all(home.join(dir)).unwrap();
+        }
+        let cli_source = home.join("src-astrlink-cli");
+        fs::write(&cli_source, b"cli").unwrap();
+        let context = InstallContext {
+            home: home.clone(),
+            cli_source,
+            data_directory: None,
+            raw_key_pins: None,
+        };
+        install(
+            &context,
+            &AgentSkillId::all(),
+            &[AgentToolId::Claude, AgentToolId::Codex],
+        )
+        .unwrap();
+        let dirs = |bundle| {
+            [
+                tool_skill_dir(&home, bundle, AgentToolId::Claude),
+                canonical_skill_dir(&home, bundle),
+            ]
+        };
+        for skill in AgentSkillId::all() {
+            let bundle = skill.bundle();
+            for dir in dirs(bundle) {
+                fs::write(dir.join("manifest.json"), "stale-managed").unwrap();
+                let mut hashes = managed_hashes(&dir);
+                hashes.insert("manifest.json".into(), sha256_hex(b"stale-managed"));
+                write_managed_manifest(&dir, bundle, &hashes).unwrap();
+                fs::write(dir.join("SKILL.md"), "user edit").unwrap();
+            }
+        }
+        sync_installed_skills(&home).unwrap();
+        for skill in AgentSkillId::all() {
+            let bundle = skill.bundle();
+            for dir in dirs(bundle) {
+                assert_eq!(
+                    fs::read_to_string(dir.join("manifest.json")).unwrap(),
+                    bundle_file(bundle, "manifest.json"),
+                    "{dir:?}"
+                );
+                assert_eq!(
+                    fs::read_to_string(dir.join("SKILL.md")).unwrap(),
+                    "user edit",
+                    "{dir:?}"
+                );
+            }
+        }
+        // A reinstall keeps the edits too.
+        install(&context, &AgentSkillId::all(), &[AgentToolId::Claude]).unwrap();
+        for skill in AgentSkillId::all() {
+            let dir = tool_skill_dir(&home, skill.bundle(), AgentToolId::Claude);
+            assert_eq!(
+                fs::read_to_string(dir.join("SKILL.md")).unwrap(),
+                "user edit"
+            );
+        }
+        let _ = fs::remove_dir_all(&home);
     }
 
     #[test]
@@ -2619,7 +3170,7 @@ mod tests {
     #[test]
     fn install_writes_host_guards_and_uninstall_restores_user_files() {
         let home = unique_temp("agent-guards");
-        for dir in [".cursor", ".claude", ".codex", ".grok"] {
+        for dir in [".cursor", ".claude", ".codex", ".grok", ".pi"] {
             fs::create_dir_all(home.join(dir)).unwrap();
         }
         let settings = claude_settings_path(&home);
@@ -2641,7 +3192,7 @@ mod tests {
 
         let before = status(&context);
         assert!(before.tools.iter().all(|tool| !tool.guard_installed));
-        let receipt = install(&context, &AgentToolId::all()).unwrap();
+        let receipt = install(&context, DEBUG_ONLY, &AgentToolId::all()).unwrap();
         let codex_rules_file = codex_rules_path(&home);
         for path in [
             &settings,
@@ -2734,7 +3285,12 @@ mod tests {
             data_directory: Some(home.join("data")),
             raw_key_pins: None,
         };
-        install(&context, &[AgentToolId::Claude, AgentToolId::Codex]).unwrap();
+        install(
+            &context,
+            DEBUG_ONLY,
+            &[AgentToolId::Claude, AgentToolId::Codex],
+        )
+        .unwrap();
         assert!(claude_settings_path(&home).is_file());
         assert!(codex_agents_path(&home).is_file());
         assert!(codex_rules_path(&home).is_file());
@@ -2774,7 +3330,12 @@ mod tests {
             data_directory: Some(data.clone()),
             raw_key_pins: None,
         };
-        install(&earlier, &[AgentToolId::Claude, AgentToolId::Codex]).unwrap();
+        install(
+            &earlier,
+            DEBUG_ONLY,
+            &[AgentToolId::Claude, AgentToolId::Codex],
+        )
+        .unwrap();
         let current = InstallContext {
             raw_key_pins: Some(pins.clone()),
             ..earlier
@@ -2838,7 +3399,12 @@ mod tests {
             data_directory: Some(data.clone()),
             raw_key_pins: None,
         };
-        install(&context, &[AgentToolId::Claude, AgentToolId::Codex]).unwrap();
+        install(
+            &context,
+            DEBUG_ONLY,
+            &[AgentToolId::Claude, AgentToolId::Codex],
+        )
+        .unwrap();
         let installed = fs::read_to_string(claude_settings_path(&home)).unwrap();
 
         // Recreate what the MCP-based installer left: deny rules only, and a
@@ -2910,7 +3476,7 @@ mod tests {
             data_directory: None,
             raw_key_pins: None,
         };
-        let error = install(&context, &[AgentToolId::Codex]).unwrap_err();
+        let error = install(&context, DEBUG_ONLY, &[AgentToolId::Codex]).unwrap_err();
         assert!(
             error.contains("refusing to overwrite Codex rules"),
             "{error}"
@@ -2940,7 +3506,7 @@ mod tests {
             data_directory: None,
             raw_key_pins: None,
         };
-        let error = install(&context, &[AgentToolId::Claude]).unwrap_err();
+        let error = install(&context, DEBUG_ONLY, &[AgentToolId::Claude]).unwrap_err();
         assert!(error.contains("will not overwrite"), "{error}");
         assert_eq!(
             fs::read_to_string(claude_settings_path(&home)).unwrap(),
@@ -3010,16 +3576,25 @@ mod tests {
         path
     }
 
-    fn rendered_skill(home: &Path) -> String {
-        SKILL_MD.replace(CLI_PLACEHOLDER, &cli_command(home))
+    fn bundle_file(bundle: &SkillBundle, relative: &str) -> &'static str {
+        bundle
+            .files
+            .iter()
+            .find(|file| file.relative == relative)
+            .unwrap()
+            .contents
     }
 
-    fn assert_real_skill_copy(home: &Path, dir: &Path) {
+    fn rendered_skill(home: &Path) -> String {
+        bundle_file(DEBUG, "SKILL.md").replace(CLI_PLACEHOLDER, &cli_command(home))
+    }
+
+    fn assert_real_skill_copy(home: &Path, bundle: &SkillBundle, dir: &Path) {
         let metadata = fs::symlink_metadata(dir).unwrap();
         assert!(metadata.is_dir());
         assert!(!metadata.file_type().is_symlink());
         let hashes = managed_hashes(dir);
-        for file in SKILL_FILES {
+        for file in bundle.files {
             let rendered = file.contents.replace(CLI_PLACEHOLDER, &cli_command(home));
             assert_eq!(
                 fs::read_to_string(dir.join(file.relative)).unwrap(),

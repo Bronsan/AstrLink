@@ -94,13 +94,19 @@ export function TrajectoryInspector({
   const tabs = useMemo(() => inspectorTabs(chain), [chain]);
   const requestedTab = tabChip(row.chip);
   const [focusChip, setFocusChip] = useState(requestedTab);
+  const tabsRef = useRef(tabs);
+  tabsRef.current = tabs;
+  // Only a different phase moves the tab. A poll hands down a fresh record for
+  // the same one, and a running call grows new tabs; neither may pull the
+  // operator off the tab they chose.
   useEffect(() => {
+    const current = tabsRef.current;
     setFocusChip(
-      tabs.some((item) => item.chip === requestedTab)
+      current.some((item) => item.chip === requestedTab)
         ? requestedTab
-        : (tabs[0]?.chip ?? requestedTab),
+        : (current[0]?.chip ?? requestedTab),
     );
-  }, [tabs, record.id, requestedTab]);
+  }, [record.id, row.id, requestedTab]);
   const focusRow =
     tabs.find((item) => item.chip === focusChip) ??
     tabs.find((item) => item.chip === requestedTab) ??
@@ -524,11 +530,16 @@ function BodyInspector({
   omitCapturedBody: boolean;
 }) {
   const captured = omitCapturedBody ? null : auditPart(auditContent, part);
-  const unrestoredHits = omitCapturedBody
-    ? extractPrivacyHits(auditPart(auditContent, part)?.content ?? "")
-    : captured
-      ? extractPrivacyHits(captured.content)
-      : [];
+  // Only the restore summary lists these; scanning a large body on every
+  // render of the other tabs would stall them.
+  const restoreSource =
+    row.chip === "RESTORE"
+      ? (auditPart(auditContent, part)?.content ?? "")
+      : "";
+  const unrestoredHits = useMemo(
+    () => extractPrivacyHits(restoreSource),
+    [restoreSource],
+  );
   const sectionKey = `trajectory-${row.chip}-${part}`;
   const missingHint = auditLoading ? null : missingBodyHint(record);
   // Tabs with a view switch pick each view's own withheld hint.
@@ -750,6 +761,7 @@ function PolicyInspector({
           copyKey={`policy:${record.id}`}
           label={t("trajectory.redactedRequest")}
           missingHint={missingHint}
+          revealPrivacy
           scrollerRef={scrollerRef}
           testId="inspector-policy-body"
           views={[

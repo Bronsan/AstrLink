@@ -247,9 +247,10 @@ fn agent_debug_status(app: tauri::AppHandle) -> Result<agent_install::AgentInsta
 #[tauri::command]
 fn install_agent_debug(
     app: tauri::AppHandle,
+    skill_ids: Vec<agent_install::AgentSkillId>,
     tool_ids: Vec<agent_install::AgentToolId>,
 ) -> Result<agent_install::InstallReceipt, String> {
-    agent_install::install(&agent_install_context(&app)?, &tool_ids)
+    agent_install::install(&agent_install_context(&app)?, &skill_ids, &tool_ids)
 }
 
 #[tauri::command]
@@ -1481,10 +1482,10 @@ async fn create_access_token(
     manager.create_access_token(&name).await
 }
 
-#[tauri::command]
 /// Copies an access token from Core straight to the clipboard: the token
 /// never reaches the webview, and no click gesture has to outlast the
 /// reveal. `false` means the clipboard refused it.
+#[tauri::command]
 async fn copy_access_token(
     app: tauri::AppHandle,
     token_id: String,

@@ -478,7 +478,7 @@ export function SettingsCenter({
 
   if (loadingError && !settings) {
     return (
-      <section className="grid gap-4 pb-2">
+      <section className="gutter-frame grid gap-4 pb-2">
         <PageHeader title={t("settings.title")} />
         <Panel className="grid gap-2.5 border-destructive/35 bg-danger-wash p-4 text-danger-foreground">
           <strong className="text-sm font-semibold">
@@ -505,7 +505,7 @@ export function SettingsCenter({
     bodyLimitDraft === null
   ) {
     return (
-      <section className="grid gap-4 pb-2">
+      <section className="gutter-frame grid gap-4 pb-2">
         <PageHeader title={t("settings.title")} />
         <p className="text-xs text-text-secondary">{t("settings.loading")}</p>
       </section>
@@ -541,7 +541,7 @@ export function SettingsCenter({
       settings.values.inference_port;
 
   return (
-    <section className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden">
+    <section className="gutter-frame flex h-full min-h-0 min-w-0 flex-col overflow-hidden">
       <PageHeader title={t("settings.title")} />
 
       <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-3">
@@ -572,7 +572,7 @@ export function SettingsCenter({
         ) : null}
 
         <Tabs
-          className="min-h-0 min-w-0 flex-1 gap-3 overflow-hidden"
+          className="min-h-0 min-w-0 flex-1 gap-3 overflow-y-clip"
           onValueChange={(value) => setTab(value as SettingsTab)}
           value={tab}
         >
@@ -588,7 +588,7 @@ export function SettingsCenter({
           </TabsList>
 
           <TabsContent
-            className="min-h-0 min-w-0 flex-1 overflow-y-auto overscroll-contain"
+            className="gutter-scroller min-h-0 min-w-0 flex-1 overflow-y-auto overscroll-contain"
             data-tab-scroller
             value="general"
           >
@@ -970,7 +970,7 @@ export function SettingsCenter({
           </TabsContent>
 
           <TabsContent
-            className="min-h-0 min-w-0 flex-1 overflow-y-auto overscroll-contain"
+            className="gutter-scroller min-h-0 min-w-0 flex-1 overflow-y-auto overscroll-contain"
             data-tab-scroller
             value="tray"
           >

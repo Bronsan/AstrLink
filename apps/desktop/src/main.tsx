@@ -33,6 +33,7 @@ import {
 } from "./quota-display";
 import { isThemePreference } from "./theme-model";
 import { initializeScrollbarAutoHide } from "./lib/scrollbar-auto-hide";
+import { initializeScrollbarGutter } from "./lib/scrollbar-gutter";
 import "./styles/globals.css";
 
 const root = document.getElementById("root");
@@ -50,6 +51,7 @@ if (trayPopover) document.documentElement.dataset.surface = "tray-popover";
 
 initializeTheme();
 initializeScrollbarAutoHide();
+initializeScrollbarGutter();
 
 async function loadPreferences(): Promise<void> {
   let themeUpdated = false;

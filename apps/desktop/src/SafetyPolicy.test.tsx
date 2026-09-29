@@ -1655,6 +1655,37 @@ describe("SafetyPolicy", () => {
     );
   });
 
+  it("offers the privacy redaction skill beside the notice switch", async () => {
+    bridgeMocks.getPrivacyPolicy.mockResolvedValueOnce(policyRecord());
+    const install = vi.fn();
+    await act(async () => {
+      root.render(
+        <SafetyPolicy
+          coreSessionKey="session-1"
+          isReady
+          onInstallPlaceholderSkill={install}
+        />,
+      );
+      await Promise.resolve();
+    });
+    await flush();
+
+    const notice = container.querySelector<HTMLButtonElement>(
+      '[role="switch"][aria-label="注入占位符约定说明"]',
+    );
+    const row = notice?.closest("label")?.parentElement;
+    expect(row?.textContent).toContain("安装隐私脱敏 Skill");
+    const button = [...(row?.querySelectorAll("button") ?? [])].find(
+      (item) => item.textContent === "安装 Skill",
+    );
+    // The button sits outside the switch's label, so it leaves the policy alone.
+    expect(button?.closest("label")).toBeNull();
+    await act(async () => button?.click());
+    expect(install).toHaveBeenCalledTimes(1);
+    expect(notice?.getAttribute("aria-checked")).toBe("true");
+    expect(bridgeMocks.updatePrivacyPolicy).not.toHaveBeenCalled();
+  });
+
   it("keeps the two tool declaration switches independent", async () => {
     bridgeMocks.getPrivacyPolicy.mockResolvedValueOnce(policyRecord());
     bridgeMocks.updatePrivacyPolicy
@@ -1731,9 +1762,9 @@ describe("SafetyPolicy", () => {
       dialog?.querySelector("#streaming-restore-demo-title")?.textContent,
     ).toBe("流式响应还原演示");
     expect(dialog?.textContent).toContain("请求侧脱敏");
-    expect(dialog?.textContent).toContain("占位符还原");
-    expect(dialog?.textContent).toContain("不对响应正文或 SSE");
-    expect(dialog?.textContent).toContain("固定示例");
+    expect(dialog?.textContent).toContain("还原占位符");
+    expect(dialog?.textContent).toContain("不审核响应内容");
+    expect(dialog?.textContent).toContain("固定值");
     expect(dialog?.textContent).toContain("alice@example.com");
     expect(dialog?.textContent).toContain("<PRIVATE_EMAIL_7f3a91c04d28be56>");
     expect(dialog?.textContent).toContain(

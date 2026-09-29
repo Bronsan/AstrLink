@@ -35,6 +35,11 @@ import {
 } from "@/components/icons";
 
 import { ChoiceCard } from "@/components/ChoiceCard";
+import {
+  DialogPicker,
+  type DialogPickerGroup,
+  type DialogPickerOption,
+} from "@/components/DialogPicker";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { EmptyState } from "@/components/EmptyState";
 import { ModelBrandIcon } from "@/components/ModelBrandIcon";
@@ -55,6 +60,7 @@ import { Panel, PanelHeader } from "@/components/Panel";
 import { DataRow } from "@/components/DataRow";
 import { ServiceKindIcon } from "@/components/ServiceKindIcon";
 import { ServiceKindLabel } from "@/components/ServiceKindLabel";
+import { StatusBadge } from "@/components/StatusBadge";
 import { StatusDot } from "@/components/StatusDot";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -84,9 +90,7 @@ import { RadioGroup } from "@/components/ui/radio-group";
 import {
   Select,
   SelectContent,
-  SelectGroup,
   SelectItem,
-  SelectLabel,
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
@@ -134,7 +138,10 @@ import { notify } from "./notify";
 import { PageHeader } from "./PageHeader";
 import { decodeModelEditorValue, encodeModelEditorValue } from "./model-editor";
 import { filterModels } from "./model-groups";
-import { ServiceModelsEditor } from "./ServiceModelsEditor";
+import {
+  ServiceModelsEditor,
+  type UpstreamModelSnapshot,
+} from "./ServiceModelsEditor";
 import {
   activeServiceRisk,
   responsesWebSocketEnabled,
@@ -246,6 +253,58 @@ function serviceTypeOptionLabel(kind: ServiceKind): string {
   return serviceKindLabel(kind);
 }
 
+function serviceKindPickerHint(kind: ServiceKind): string {
+  if (isSubscriptionKind(kind)) return subscriptionOauthLabel(kind);
+  if (kind === "newapi") return i18n.t("services.kindPickerNewapiHint");
+  if (kind === "openai_compatible") return "Chat · Completions · Models";
+  if (kind === "custom") return i18n.t("services.kindPickerCustomHint");
+  return new URL(httpServicePreset(kind).baseURL).host;
+}
+
+function serviceKindPickerOption(
+  kind: ServiceKind,
+): DialogPickerOption<ServiceKind> {
+  return {
+    value: kind,
+    label: serviceKindLabel(kind),
+    description: serviceKindPickerHint(kind),
+    icon: <ServiceKindIcon kind={kind} size={20} />,
+  };
+}
+
+function serviceKindPickerGroups(): DialogPickerGroup<ServiceKind>[] {
+  return [
+    {
+      label: i18n.t("services.groupSubscription"),
+      options: [
+        "codex_subscription" as const,
+        "claude_subscription" as const,
+        "grok_subscription" as const,
+        ...codingPlanPresetIDs,
+      ].map(serviceKindPickerOption),
+    },
+    {
+      label: i18n.t("services.groupGateway"),
+      options: [serviceKindPickerOption("newapi")],
+    },
+    {
+      label: i18n.t("services.groupPayAsYouGo"),
+      options: payAsYouGoPresetIDs.map(serviceKindPickerOption),
+    },
+    {
+      label: i18n.t("services.groupAdvanced"),
+      options: httpServicePresetIDs
+        .filter(
+          (kind) =>
+            kind !== "newapi" &&
+            !codingPlanPresetIDs.includes(kind) &&
+            !payAsYouGoPresetIDs.includes(kind),
+        )
+        .map(serviceKindPickerOption),
+    },
+  ];
+}
+
 /** The only login transport a single-flow provider offers; null when the user must pick. */
 function defaultAuthorizationFlow(kind: ServiceKind): AuthorizationFlow | null {
   if (kind === "claude_subscription") return "authorization_code";
@@ -310,8 +369,28 @@ function initialModelPreviewSelection(
 type ModelPreview = {
   models: string[];
   selected: string[];
+  /** Current allowlist entries the upstream did not return. */
+  missing: string[];
   warnings: string[];
 };
+
+function modelDiscoveryProtocols(draft: Draft): ModelDiscoveryProtocol[] {
+  if (isSubscriptionKind(draft.kind)) return ["openai.models"];
+  return (["openai.models", "google.models"] as const).filter((protocol) =>
+    draft.capabilities.some((capability) => capability.protocol === protocol),
+  );
+}
+
+// An upstream model list only describes the connection it was fetched with.
+function modelDiscoveryKey(draft: Draft): string {
+  return JSON.stringify([
+    draft.kind,
+    draft.baseURL.trim(),
+    authForDraft(draft),
+    draft.secret,
+    modelDiscoveryProtocols(draft),
+  ]);
+}
 
 const authLabels: Record<ServiceAuthScheme, string> = {
   get none() {
@@ -523,23 +602,28 @@ function ModelPreviewDialog({
   onClose: () => void;
 }) {
   const t = useT();
-  const filtered = useMemo(
-    () => filterModels(preview.models, query),
-    [preview.models, query],
-  );
+  const [missingOnly, setMissingOnly] = useState(false);
+  const source = missingOnly ? preview.missing : preview.models;
+  const filtered = useMemo(() => filterModels(source, query), [source, query]);
   const selectedSet = useMemo(
     () => new Set(preview.selected),
     [preview.selected],
   );
+  const missingSet = useMemo(() => new Set(preview.missing), [preview.missing]);
   const filteredSelectedCount = filtered.reduce(
     (count, model) => count + (selectedSet.has(model) ? 1 : 0),
     0,
   );
+  const selectedMissingCount = preview.missing.reduce(
+    (count, model) => count + (selectedSet.has(model) ? 1 : 0),
+    0,
+  );
   const hasQuery = query.trim().length > 0;
+  const narrowed = hasQuery || missingOnly;
 
   return (
     <Dialog open onOpenChange={(open) => !open && onClose()}>
-      <DialogContent className="w-[min(620px,calc(100vw-40px))] max-w-none sm:max-w-none">
+      <DialogContent className="flex w-[min(620px,calc(100vw-40px))] max-w-none flex-col sm:max-w-none">
         <DialogHeader>
           <DialogTitle>{t("services.selectModelsTitle")}</DialogTitle>
           <DialogDescription>
@@ -553,10 +637,51 @@ function ModelPreviewDialog({
             })}
           </FormMessage>
         ) : null}
+        {preview.missing.length > 0 ? (
+          <FormMessage
+            className="flex flex-wrap items-center gap-x-3 gap-y-1"
+            data-testid="model-preview-missing"
+            tone="warning"
+          >
+            <span className="min-w-0 flex-[1_1_240px]">
+              {t(
+                preview.warnings.length > 0
+                  ? "services.previewMissingPartial"
+                  : "services.previewMissing",
+                { count: preview.missing.length },
+              )}
+            </span>
+            <span className="flex shrink-0 items-center gap-3">
+              <Button
+                className="h-auto px-0 text-xs"
+                onClick={() => setMissingOnly((value) => !value)}
+                type="button"
+                variant="link"
+              >
+                {missingOnly
+                  ? t("services.showAllModels")
+                  : t("services.showMissingOnly")}
+              </Button>
+              <Button
+                className="h-auto px-0 text-xs"
+                disabled={selectedMissingCount === 0}
+                onClick={() =>
+                  onSelectedChange(
+                    preview.selected.filter((model) => !missingSet.has(model)),
+                  )
+                }
+                type="button"
+                variant="link"
+              >
+                {t("services.uncheckMissing")}
+              </Button>
+            </span>
+          </FormMessage>
+        ) : null}
         {preview.models.length > 0 ? (
           <div className="flex min-w-0 flex-wrap items-center gap-2">
             <ModelSelect
-              options={preview.models}
+              options={source}
               className="min-w-0 flex-[1_1_160px]"
               aria-label={t("services.searchUpstream")}
               placeholder={t("services.searchModels")}
@@ -574,7 +699,7 @@ function ModelPreviewDialog({
                 }
                 type="button"
               >
-                {hasQuery
+                {narrowed
                   ? t("services.selectAllMatches", { count: filtered.length })
                   : t("services.selectAll")}
               </Button>
@@ -582,7 +707,7 @@ function ModelPreviewDialog({
                 variant="outline"
                 disabled={filteredSelectedCount === 0}
                 onClick={() => {
-                  if (!hasQuery) {
+                  if (!narrowed) {
                     onSelectedChange([]);
                     return;
                   }
@@ -593,14 +718,15 @@ function ModelPreviewDialog({
                 }}
                 type="button"
               >
-                {hasQuery
+                {narrowed
                   ? t("services.clearMatches")
                   : t("services.selectNone")}
               </Button>
             </div>
           </div>
         ) : null}
-        <div className="my-2 grid max-h-[min(52vh,460px)] gap-1 overflow-auto">
+        {/* Only the list shrinks, so notices never push the actions off short windows. */}
+        <div className="my-2 grid max-h-[460px] min-h-0 gap-1 overflow-auto">
           {preview.models.length === 0 ? (
             <p>{t("services.emptyUpstream")}</p>
           ) : filtered.length === 0 ? (
@@ -625,6 +751,11 @@ function ModelPreviewDialog({
                 <code className="min-w-0 truncate font-mono text-xs">
                   {encodeModelEditorValue(model)}
                 </code>
+                {missingSet.has(model) ? (
+                  <StatusBadge className="ml-auto" tone="pending">
+                    {t("models.missingUpstream")}
+                  </StatusBadge>
+                ) : null}
               </Label>
             ))
           )}
@@ -634,7 +765,7 @@ function ModelPreviewDialog({
             selected: preview.selected.length,
             total: preview.models.length,
           })}
-          {hasQuery
+          {narrowed
             ? t("services.showingFiltered", {
                 shown: filtered.length,
                 total: preview.models.length,
@@ -729,6 +860,10 @@ export function ServiceManager({
   const [probingModels, setProbingModels] = useState(false);
   const [modelPreview, setModelPreview] = useState<ModelPreview | null>(null);
   const [modelPreviewQuery, setModelPreviewQuery] = useState("");
+  const [upstreamModels, setUpstreamModels] = useState<{
+    key: string;
+    snapshot: UpstreamModelSnapshot;
+  } | null>(null);
   const [editorTab, setEditorTab] = useState<EditorTab>("connection");
   const [usageByService, setUsageByService] = useWorkspaceSnapshot<
     Record<
@@ -869,6 +1004,7 @@ export function ServiceManager({
     setModelEditor("");
     setModelPreview(null);
     setModelPreviewQuery("");
+    setUpstreamModels(null);
     setEditorTab(requestedEditorTab);
     if (view.kind === "list") {
       setEditing(null);
@@ -1160,15 +1296,7 @@ export function ServiceManager({
       setError(t("services.saveBeforeFetch"));
       return;
     }
-    const discoveryProtocols: ModelDiscoveryProtocol[] = isSubscriptionKind(
-      draft.kind,
-    )
-      ? ["openai.models"]
-      : (["openai.models", "google.models"] as const).filter((protocol) =>
-          draft.capabilities.some(
-            (capability) => capability.protocol === protocol,
-          ),
-        );
+    const discoveryProtocols = modelDiscoveryProtocols(draft);
     if (discoveryProtocols.length === 0) {
       setError(t("services.enableDiscovery"));
       return;
@@ -1215,15 +1343,21 @@ export function ServiceManager({
         );
         return;
       }
-      const models = [...new Set([...draft.models, ...discovered])].sort();
+      const upstream = new Set(discovered);
+      const models = [...new Set([...draft.models, ...upstream])].sort();
       if (models.length > 2_000) {
         setError(t("services.mergeTooMany"));
         return;
       }
+      setUpstreamModels({
+        key: modelDiscoveryKey(draft),
+        snapshot: { models: upstream, partial: warnings.length > 0 },
+      });
       setModelPreviewQuery("");
       setModelPreview({
         models,
         selected: initialModelPreviewSelection(draft.models, models),
+        missing: draft.models.filter((model) => !upstream.has(model)).sort(),
         warnings,
       });
     } finally {
@@ -1567,7 +1701,7 @@ export function ServiceManager({
     ).length;
     return (
       <section
-        className="@container flex min-h-0 w-full min-w-0 flex-1 flex-col overflow-hidden"
+        className="@container gutter-frame flex min-h-0 w-full min-w-0 flex-1 flex-col overflow-hidden"
         aria-labelledby="service-heading"
       >
         {billingService !== null ? (
@@ -1781,7 +1915,7 @@ export function ServiceManager({
           ) : !serviceOrder.hasOrder ? null : (
             <>
               <div
-                className="@container/service-list group/service-list min-h-0 min-w-0 flex-1 overflow-y-auto [scrollbar-gutter:stable]"
+                className="@container/service-list group/service-list gutter-scroller min-h-0 min-w-0 flex-1 overflow-y-auto"
                 data-testid="service-list-scroller"
                 ref={serviceListScrollerRef}
               >
@@ -2496,6 +2630,7 @@ export function ServiceManager({
 
   const editingKind = editing?.service.kind;
   const canKeepCredential = Boolean(editing?.service.http?.credential_ref);
+  const savedKeyHint = editing?.service.http?.credential_hint;
   const selectedPreset = isSubscriptionKind(draft.kind)
     ? null
     : httpServicePreset(draft.kind as HTTPServicePresetID, protocols);
@@ -2513,16 +2648,17 @@ export function ServiceManager({
         }))
       }
       onDiscoverModels={
-        isSubscriptionKind(draft.kind) ||
-        draft.capabilities.some(
-          ({ protocol }) =>
-            protocol === "openai.models" || protocol === "google.models",
-        )
+        modelDiscoveryProtocols(draft).length > 0
           ? () => void discoverModels()
           : undefined
       }
       onModelEditorChange={setModelEditor}
       onRemoveModels={removeDraftModels}
+      upstream={
+        upstreamModels?.key === modelDiscoveryKey(draft)
+          ? upstreamModels.snapshot
+          : null
+      }
     />
   );
   // Subscriptions keep their native protocols fixed; any other entry protocol
@@ -2725,108 +2861,20 @@ export function ServiceManager({
                 : selectedPreset?.description
             }
           >
-            <Select
+            <DialogPicker
+              aria-label={t("services.serviceType")}
+              description={t("services.kindPickerDescription")}
               disabled={view.kind === "edit"}
+              groups={serviceKindPickerGroups()}
+              onValueChange={selectKind}
+              title={t("services.kindPickerTitle")}
               value={draft.kind}
-              onValueChange={(value) => selectKind(value as ServiceKind)}
-            >
-              <SelectTrigger
-                aria-label={t("services.serviceType")}
-                className="w-full"
-              >
-                <SelectValue>
-                  <ServiceKindLabel kind={draft.kind}>
-                    {serviceTypeOptionLabel(draft.kind)}
-                  </ServiceKindLabel>
-                </SelectValue>
-              </SelectTrigger>
-              <SelectContent>
-                <SelectGroup>
-                  <SelectLabel>{t("services.groupSubscription")}</SelectLabel>
-                  <SelectItem
-                    value="codex_subscription"
-                    textValue={serviceTypeOptionLabel("codex_subscription")}
-                  >
-                    <ServiceKindLabel kind="codex_subscription">
-                      {serviceTypeOptionLabel("codex_subscription")}
-                    </ServiceKindLabel>
-                  </SelectItem>
-                  <SelectItem
-                    value="claude_subscription"
-                    textValue={serviceTypeOptionLabel("claude_subscription")}
-                  >
-                    <ServiceKindLabel kind="claude_subscription">
-                      {serviceTypeOptionLabel("claude_subscription")}
-                    </ServiceKindLabel>
-                  </SelectItem>
-                  <SelectItem
-                    value="grok_subscription"
-                    textValue={serviceTypeOptionLabel("grok_subscription")}
-                  >
-                    <ServiceKindLabel kind="grok_subscription">
-                      {serviceTypeOptionLabel("grok_subscription")}
-                    </ServiceKindLabel>
-                  </SelectItem>
-                  {codingPlanPresetIDs.map((kind) => (
-                    <SelectItem
-                      key={kind}
-                      value={kind}
-                      textValue={serviceTypeOptionLabel(kind)}
-                    >
-                      <ServiceKindLabel kind={kind}>
-                        {serviceTypeOptionLabel(kind)}
-                      </ServiceKindLabel>
-                    </SelectItem>
-                  ))}
-                </SelectGroup>
-                <SelectGroup>
-                  <SelectLabel>{t("services.groupGateway")}</SelectLabel>
-                  <SelectItem
-                    value="newapi"
-                    textValue={serviceTypeOptionLabel("newapi")}
-                  >
-                    <ServiceKindLabel kind="newapi">
-                      {serviceTypeOptionLabel("newapi")}
-                    </ServiceKindLabel>
-                  </SelectItem>
-                </SelectGroup>
-                <SelectGroup>
-                  <SelectLabel>{t("services.groupPayAsYouGo")}</SelectLabel>
-                  {payAsYouGoPresetIDs.map((kind) => (
-                    <SelectItem
-                      key={kind}
-                      value={kind}
-                      textValue={serviceTypeOptionLabel(kind)}
-                    >
-                      <ServiceKindLabel kind={kind}>
-                        {serviceTypeOptionLabel(kind)}
-                      </ServiceKindLabel>
-                    </SelectItem>
-                  ))}
-                </SelectGroup>
-                <SelectGroup>
-                  <SelectLabel>{t("services.groupAdvanced")}</SelectLabel>
-                  {httpServicePresetIDs
-                    .filter(
-                      (kind) =>
-                        kind !== "newapi" &&
-                        !codingPlanPresetIDs.includes(kind) &&
-                        !payAsYouGoPresetIDs.includes(kind),
-                    )
-                    .map((kind) => (
-                      <SelectItem
-                        key={kind}
-                        value={kind}
-                        textValue={serviceTypeOptionLabel(kind)}
-                      >
-                        <ServiceKindLabel kind={kind}>
-                          {serviceTypeOptionLabel(kind)}
-                        </ServiceKindLabel>
-                      </SelectItem>
-                    ))}
-                </SelectGroup>
-              </SelectContent>
-            </Select>
+              valueLabel={
+                <ServiceKindLabel kind={draft.kind}>
+                  {serviceTypeOptionLabel(draft.kind)}
+                </ServiceKindLabel>
+              }
+            />
           </Field>
           <Field htmlFor="service-name" label={t("services.serviceName")}>
             <Input
@@ -3045,7 +3093,11 @@ export function ServiceManager({
                     maxLength={16_384}
                     placeholder={
                       canKeepCredential
-                        ? t("services.apiKeySaved")
+                        ? savedKeyHint
+                          ? t("services.apiKeySavedHint", {
+                              hint: savedKeyHint,
+                            })
+                          : t("services.apiKeySaved")
                         : t("services.apiKeyPaste")
                     }
                     type="password"
@@ -3095,7 +3147,7 @@ export function ServiceManager({
   );
   return (
     <section
-      className="@container flex min-h-0 w-full min-w-0 flex-1 flex-col overflow-hidden"
+      className="@container gutter-frame flex min-h-0 w-full min-w-0 flex-1 flex-col overflow-hidden"
       aria-labelledby="service-editor-heading"
     >
       <PageHeader
@@ -3128,13 +3180,13 @@ export function ServiceManager({
       ) : (
         <form
           aria-busy={saving}
-          className="flex min-h-0 w-full min-w-0 flex-1 flex-col overflow-hidden"
+          className="flex min-h-0 w-full min-w-0 flex-1 flex-col overflow-y-clip"
           data-testid="service-form"
           noValidate
           onSubmit={(event) => void submit(event)}
         >
           <fieldset
-            className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden border-0 p-0 disabled:pointer-events-none disabled:opacity-70"
+            className="flex min-h-0 min-w-0 flex-1 flex-col overflow-y-clip border-0 p-0 disabled:pointer-events-none disabled:opacity-70"
             disabled={!isReady || saving}
           >
             <Tabs
@@ -3200,7 +3252,7 @@ export function ServiceManager({
                 </TabsTrigger>
               </TabsList>
               <TabsContent
-                className="min-h-0 min-w-0 flex-1 overflow-y-auto pr-4 pb-1"
+                className="gutter-scroller min-h-0 min-w-0 flex-1 overflow-y-auto pr-4 pb-1"
                 data-tab-scroller=""
                 data-testid="service-editor-tab-panel"
                 value="connection"
@@ -3208,7 +3260,7 @@ export function ServiceManager({
                 {connectionFields}
               </TabsContent>
               <TabsContent
-                className="min-h-0 min-w-0 flex-1 overflow-y-auto pr-4 pb-1"
+                className="gutter-scroller min-h-0 min-w-0 flex-1 overflow-y-auto pr-4 pb-1"
                 data-tab-scroller=""
                 data-testid="service-editor-tab-panel"
                 value="models"
@@ -3216,7 +3268,7 @@ export function ServiceManager({
                 {modelsEditor}
               </TabsContent>
               <TabsContent
-                className="min-h-0 min-w-0 flex-1 overflow-y-auto pr-4 pb-1"
+                className="gutter-scroller min-h-0 min-w-0 flex-1 overflow-y-auto pr-4 pb-1"
                 data-tab-scroller=""
                 data-testid="service-editor-tab-panel"
                 value="protocols"
@@ -3224,7 +3276,7 @@ export function ServiceManager({
                 {protocolEditor}
               </TabsContent>
               <TabsContent
-                className="min-h-0 min-w-0 flex-1 overflow-y-auto pr-4 pb-1"
+                className="gutter-scroller min-h-0 min-w-0 flex-1 overflow-y-auto pr-4 pb-1"
                 data-tab-scroller=""
                 data-testid="service-editor-tab-panel"
                 value="failure"

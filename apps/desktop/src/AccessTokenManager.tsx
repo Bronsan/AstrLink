@@ -371,7 +371,7 @@ export function AccessTokenManager({
 
   return (
     <section
-      className="@container flex min-h-0 w-full min-w-0 flex-1 flex-col overflow-hidden"
+      className="@container gutter-frame flex min-h-0 w-full min-w-0 flex-1 flex-col overflow-hidden"
       aria-labelledby="token-manager-heading"
     >
       <PageHeader
@@ -481,7 +481,7 @@ export function AccessTokenManager({
       <div
         aria-busy={catalog.status === "loading"}
         aria-label={t("tokens.listLabel")}
-        className="@container/token-list min-h-0 min-w-0 flex-1 overflow-y-auto pb-1 pr-1"
+        className="@container/token-list gutter-scroller min-h-0 min-w-0 flex-1 overflow-y-auto pb-1 pr-1"
       >
         {catalog.status === "blocked" && catalog.items.length === 0 ? (
           <EmptyState
