@@ -355,7 +355,7 @@ describe("TrayPopoverPanel", () => {
     const hint = document.querySelector<HTMLButtonElement>(
       '[data-slot="tray-raw-password-required"]',
     );
-    expect(hint?.textContent).toBe("尚未设置原文口令，点此打开 AstrLink 设置");
+    expect(hint?.textContent).toBe("请求原文还没有保护，点此设置");
     await act(async () => hint!.click());
     expect(actions).toEqual([{ kind: "open" }]);
   });

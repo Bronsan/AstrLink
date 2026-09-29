@@ -172,34 +172,6 @@ func TestStoredKDFParametersAreBounded(t *testing.T) {
 	}
 }
 
-func TestLocalEnvelopeRoundTripAndBinding(t *testing.T) {
-	private, public := keyPair(t)
-	localKey := bytes.Repeat([]byte{0x42}, 32)
-	nonce, wrapped, err := WrapLocal(localKey, private, 3, public)
-	if err != nil {
-		t.Fatal(err)
-	}
-	opened, err := UnwrapLocal(localKey, nonce, wrapped, 3, public)
-	if err != nil || !bytes.Equal(opened, private) {
-		t.Fatalf("UnwrapLocal: %v", err)
-	}
-	if _, err := UnwrapLocal(bytes.Repeat([]byte{0x43}, 32), nonce, wrapped, 3, public); !errors.Is(err, ErrEnvelope) {
-		t.Fatalf("another local key opened the envelope: %v", err)
-	}
-	if _, err := UnwrapLocal(localKey, nonce, wrapped, 4, public); !errors.Is(err, ErrEnvelope) {
-		t.Fatalf("envelope opened for another key id: %v", err)
-	}
-	// The password and local envelopes use distinct bindings.
-	envelope, err := WrapPassword(private, []byte("12345678"), testKDF, 3, public)
-	if err != nil {
-		t.Fatal(err)
-	}
-	wrapKey := deriveWrapKey([]byte("12345678"), envelope.Salt, envelope.KDF)
-	if _, err := UnwrapLocal(wrapKey, envelope.Nonce, envelope.Wrapped, 3, public); !errors.Is(err, ErrEnvelope) {
-		t.Fatalf("a password envelope opened as a local one: %v", err)
-	}
-}
-
 func TestPairChecksAndPublicKeyMAC(t *testing.T) {
 	private, public := keyPair(t)
 	derived, err := DerivePublic(private)

@@ -41,12 +41,11 @@ import {
 } from "./service-model";
 import {
   parseAccessTokenCreateResult,
+  parseAccessTokenCopied,
   parseAccessTokenPage,
-  parseAccessTokenRevealResult,
   parseAccessTokenUsageResponse,
   type AccessTokenCreateResult,
   type AccessTokenPage,
-  type AccessTokenRevealResult,
   type AccessTokenUsageResponse,
 } from "./access-token-model";
 import {
@@ -100,12 +99,9 @@ import {
   type RawAccessProofOutcome,
 } from "./raw-access-model";
 import {
-  parsePresenceOutcome,
   parseRawSealingOutcome,
   parseRawSealingState,
   parseRawSealingStatus,
-  type PresenceOutcome,
-  type PresencePurpose,
   type RawPasswordAction,
   type RawProof,
   type RawSealingOutcome,
@@ -611,9 +607,8 @@ export async function listRawAccess(): Promise<RawAccessGrant[]> {
 }
 
 /**
- * Decides one agent raw access request. Approving needs a proof: the raw
- * password, which the host forwards once and keeps no copy of, or a
- * presence check the host runs itself. Denying carries none.
+ * Decides one agent raw access request. Approving needs the raw password,
+ * which the host forwards once and keeps no copy of. Denying carries none.
  */
 export async function decideRawAccess(
   grantId: string,
@@ -643,29 +638,15 @@ export async function unlockRaw(proof: RawProof): Promise<RawSealingOutcome> {
 
 /**
  * Accepts a raw key replaced outside the desktop, such as by the operator's
- * own `astrlink-core raw-password`. That key's password is required; a
- * keychain build's host also runs its presence check first. Core only
- * checks the password, so raw content stays locked.
+ * own `astrlink-core raw-password`. It takes that key's password; Core only
+ * checks it, so raw content stays locked.
  */
 export async function acknowledgeRawKey(
-  password: string,
+  proof: RawProof,
 ): Promise<RawSealingOutcome> {
   requireNativeBridge();
   return parseRawSealingOutcome(
-    await invoke<unknown>("acknowledge_raw_key", { password }),
-  );
-}
-
-/**
- * Checks the raw password for a desktop action whose proof stays in the app,
- * such as revealing an access token (D14). No unlock session starts.
- */
-export async function verifyRawPassword(
-  password: string,
-): Promise<RawSealingOutcome> {
-  requireNativeBridge();
-  return parseRawSealingOutcome(
-    await invoke<unknown>("verify_raw_password", { password }),
+    await invoke<unknown>("acknowledge_raw_key", { proof }),
   );
 }
 
@@ -701,16 +682,6 @@ export async function setRawPassword(
       password: password ?? null,
       proof: proof ?? null,
     }),
-  );
-}
-
-/** Shows the system presence prompt for a desktop-only action (D14). */
-export async function verifyLocalPresence(
-  purpose: PresencePurpose,
-): Promise<PresenceOutcome> {
-  requireNativeBridge();
-  return parsePresenceOutcome(
-    await invoke<unknown>("verify_local_presence", { purpose }),
   );
 }
 
@@ -772,12 +743,14 @@ export async function createAccessToken(
   );
 }
 
-export async function revealAccessToken(
-  tokenId: string,
-): Promise<AccessTokenRevealResult> {
+/**
+ * Has the host copy the token to the clipboard; the token never reaches the
+ * webview. False when the clipboard refused it.
+ */
+export async function copyAccessToken(tokenId: string): Promise<boolean> {
   requireNativeBridge();
-  return parseAccessTokenRevealResult(
-    await invoke<unknown>("reveal_access_token", { tokenId }),
+  return parseAccessTokenCopied(
+    await invoke<unknown>("copy_access_token", { tokenId }),
   );
 }
 

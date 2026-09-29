@@ -59,30 +59,21 @@ func (err *RawBackoffError) Error() string {
 }
 
 // RawProof is what a caller offers to open the raw sealing key: the raw
-// password, or a desktop LocalAuthentication success where Core holds the
-// local envelope. Password bytes belong to the caller, which clears them.
+// password. Password bytes belong to the caller, which clears them.
 type RawProof struct {
-	Password      []byte
-	LocalPresence bool
+	Password []byte
 }
 
 // Empty reports whether no proof was offered at all.
-func (proof RawProof) Empty() bool { return len(proof.Password) == 0 && !proof.LocalPresence }
+func (proof RawProof) Empty() bool { return len(proof.Password) == 0 }
 
 // RawVaultStatus describes raw sealing without exposing key material.
 type RawVaultStatus struct {
 	// Configured is true once a raw sealing key exists.
 	Configured bool
-	// LocalPresence is true when Core holds the local envelope, so a
-	// desktop LocalAuthentication success is accepted as proof once a
-	// password is set too.
-	LocalPresence bool
 	// PasswordSet is true when a password envelope exists. Until then raw
 	// captures are not kept and nothing raw is readable.
 	PasswordSet bool
-	// LocalEnvelope is true when a local envelope is stored, whether or not
-	// this Core's local key opens it.
-	LocalEnvelope bool
 	// KeyVerified is false while the stored public key fails its MAC; raw
 	// captures are then not kept until a proof confirms it.
 	KeyVerified bool
@@ -620,7 +611,7 @@ func (handler *Handler) decideRawAccess(writer http.ResponseWriter, request *htt
 	proof, err := parseRawProof(members["proof"])
 	if err != nil {
 		writeValidationFailed(writer, "proof is invalid", []errorDetail{{
-			Field: "proof", Reason: "must be {password} or {kind: \"local_presence\"}",
+			Field: "proof", Reason: "must be {password}",
 		}})
 		return
 	}
@@ -651,7 +642,7 @@ func (handler *Handler) decideRawAccess(writer http.ResponseWriter, request *htt
 		return
 	}
 	if proof.Empty() {
-		writeError(writer, http.StatusUnprocessableEntity, "raw_proof_required", "approving raw access requires the raw password or local presence")
+		writeError(writer, http.StatusUnprocessableEntity, "raw_proof_required", "approving raw access requires the raw password")
 		return
 	}
 	keys, err := handler.openGrantKeys(request.Context(), pending.RequestID, proof.RawProof)
@@ -808,8 +799,8 @@ type ownedRawProof struct{ RawProof }
 
 func (proof ownedRawProof) clear() { clear(proof.Password) }
 
-// parseRawProof reads {password} or {kind: "local_presence"}. An absent or
-// null proof is empty, which deny accepts and approval rejects.
+// parseRawProof reads {password}. An absent or null proof is empty, which
+// deny accepts and approval rejects.
 func parseRawProof(raw json.RawMessage) (ownedRawProof, error) {
 	if len(raw) == 0 || isJSONNull(raw) {
 		return ownedRawProof{}, nil
@@ -850,12 +841,6 @@ func parseRawProof(raw json.RawMessage) (ownedRawProof, error) {
 		if len(proof.Password) == 0 {
 			return ownedRawProof{}, errors.New("password proof needs a password")
 		}
-	case "local_presence":
-		if len(proof.Password) != 0 {
-			proof.clear()
-			return ownedRawProof{}, errors.New("local presence proof carries no password")
-		}
-		proof.LocalPresence = true
 	default:
 		proof.clear()
 		return ownedRawProof{}, errors.New("unknown proof kind")

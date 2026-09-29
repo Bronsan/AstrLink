@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -19,10 +20,10 @@ import (
 	"github.com/QuantumNous/astrlink/core/internal/storage/migrate"
 )
 
-const upgradeRequestID = contract.RequestID("request_before_envelopes")
+const bodyRequestID = contract.RequestID("request_with_body")
 
 // knownPrompt stands in for a captured prompt; it must only exist encrypted.
-const knownPrompt = "ZEBRA-QUARTZ upgrade prompt fragment"
+const knownPrompt = "ZEBRA-QUARTZ prompt fragment"
 
 type envelopeRow struct {
 	kind, createdAt string
@@ -34,44 +35,48 @@ func testLocalKey(t *testing.T, fill byte) []byte {
 	return bytes.Repeat([]byte{fill}, envelope.KeyBytes)
 }
 
-// writeV42Fixture builds a database as the release before envelopes left it:
-// a plaintext audit_keys row and a captured body sealed under it.
-func writeV42Fixture(t *testing.T, path string) (auditKey []byte) {
+// writeSchemaFixture migrates a database to version without the store's
+// key setup.
+func writeSchemaFixture(t *testing.T, path string, version int64) {
 	t.Helper()
 	database, err := sql.Open(driverName, sqliteFileDSN(path))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer database.Close()
-	migrations := migrate.DefaultMigrations()
-	var released []migrate.Migration
-	for _, migration := range migrations {
-		if migration.Version <= 42 {
-			released = append(released, migration)
+	var migrations []migrate.Migration
+	for _, migration := range migrate.DefaultMigrations() {
+		if migration.Version <= version {
+			migrations = append(migrations, migration)
 		}
 	}
-	runner, err := migrate.New(migrate.SQLDatabase{DB: database}, released)
+	runner, err := migrate.New(migrate.SQLDatabase{DB: database}, migrations)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := runner.Up(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	auditKey, err = envelope.NewKey()
+}
+
+// writeBodyFixture creates a database with one captured body sealed under
+// its audit key and returns that key.
+func writeBodyFixture(t *testing.T, path string, localKey []byte) (auditKey []byte) {
+	t.Helper()
+	ctx := context.Background()
+	store := openWithKey(t, path, localKey, nil)
+	defer store.Close()
+	auditKey, err := store.GetAuditKey(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := database.Exec(`INSERT INTO audit_keys (id, key_bytes, created_at) VALUES (1, ?, '2026-09-20T00:00:00Z')`, auditKey); err != nil {
+	if err := store.InsertRequestRecord(ctx, contract.RequestRecord{
+		ID: bodyRequestID, StartedAt: time.Now().UTC(), Status: contract.RequestStatusSucceeded,
+		InputProtocol: contract.ProtocolOpenAIChat,
+	}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := database.Exec(`INSERT INTO request_records (id, started_at, status, input_protocol, streaming, audit_json, created_at)
-VALUES (?, '2026-09-20T00:00:00Z', 'succeeded', 'openai.responses', 0, '{}', '2026-09-20T00:00:00Z')`, upgradeRequestID); err != nil {
-		t.Fatal(err)
-	}
-	blob := sealedPayload(t, auditKey, upgradeRequestID, storage.AuditDirectionRequest, knownPrompt)
-	if _, err := database.Exec(`INSERT INTO audit_blobs (request_id, direction, media_type, nonce, ciphertext, truncated, captured_bytes, created_at)
-VALUES (?, ?, ?, ?, ?, 0, ?, '2026-09-20T00:00:00Z')`,
-		blob.RequestID, blob.Direction, blob.MediaType, blob.Nonce, blob.Ciphertext, blob.CapturedBytes); err != nil {
+	if err := store.InsertAuditBlob(ctx, sealedPayload(t, auditKey, bodyRequestID, storage.AuditDirectionRequest, knownPrompt)); err != nil {
 		t.Fatal(err)
 	}
 	return auditKey
@@ -138,72 +143,24 @@ func fileContains(t *testing.T, path string, needle []byte) bool {
 	return false
 }
 
-func assertUpgradeBodyReadable(t *testing.T, store *Store, auditKey []byte) {
+func assertBodyReadable(t *testing.T, store *Store, auditKey []byte) {
 	t.Helper()
 	key, err := store.GetAuditKey(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !bytes.Equal(key, auditKey) {
-		t.Fatal("dek_audit differs from the adopted audit_keys value")
+		t.Fatal("dek_audit changed")
 	}
-	assertAuditPlaintexts(t, store, key, upgradeRequestID, map[storage.AuditDirection]string{
+	assertAuditPlaintexts(t, store, key, bodyRequestID, map[storage.AuditDirection]string{
 		storage.AuditDirectionRequest: knownPrompt,
 	})
 }
 
-func TestUpgradeMovesAuditKeyIntoEnvelopeAndScrubsTheFile(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "astrlink.db")
-	auditKey := writeV42Fixture(t, path)
-	localKey := testLocalKey(t, 0x11)
-
-	store := openWithKey(t, path, localKey, nil)
-	if got := countRows(t, store, "audit_keys"); got != 0 {
-		t.Fatalf("audit_keys keeps %d row(s)", got)
-	}
-	envelopes := readEnvelopes(t, store)
-	if len(envelopes) != 2 {
-		t.Fatalf("key_envelopes = %d rows, want secrets and audit", len(envelopes))
-	}
-	audit := envelopes[envelope.KindAudit]
-	dek, err := envelope.Unwrap(localKey, audit.nonce, audit.wrapped, envelope.KindAudit)
-	if err != nil || !bytes.Equal(dek, auditKey) {
-		t.Fatalf("audit envelope does not hold the adopted key: %v", err)
-	}
-	secrets := envelopes[envelope.KindSecrets]
-	if _, err := envelope.Unwrap(localKey, secrets.nonce, secrets.wrapped, envelope.KindSecrets); err != nil {
-		t.Fatalf("secrets envelope: %v", err)
-	}
-	assertUpgradeBodyReadable(t, store, auditKey)
-	if store.HasOrphanedAuditKey() {
-		t.Fatal("a clean upgrade reports an orphaned audit key")
-	}
-	if got := countRows(t, store, "pending_file_scrub"); got != 0 {
-		t.Fatal("the file scrub did not finish")
-	}
-	if err := store.Close(); err != nil {
-		t.Fatal(err)
-	}
-	if fileContains(t, path, auditKey) {
-		t.Fatal("the plaintext audit key survives in the database file")
-	}
-	if fileContains(t, path, []byte(knownPrompt)) {
-		t.Fatal("a captured prompt is stored in plaintext")
-	}
-	if _, err := os.Stat(path + ".scrub"); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("scrub copy left behind: %v", err)
-	}
-	for _, candidate := range []string{path, path + "-wal", path + "-shm"} {
-		if info, err := os.Stat(candidate); err == nil && info.Mode().Perm() != 0o600 {
-			t.Fatalf("%s mode = %04o", filepath.Base(candidate), info.Mode().Perm())
-		}
-	}
-}
-
 func TestRestartKeepsEnvelopesUnchanged(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "astrlink.db")
-	auditKey := writeV42Fixture(t, path)
 	localKey := testLocalKey(t, 0x22)
+	auditKey := writeBodyFixture(t, path, localKey)
 	store := openWithKey(t, path, localKey, nil)
 	before := readEnvelopes(t, store)
 	if err := store.Close(); err != nil {
@@ -222,7 +179,7 @@ func TestRestartKeepsEnvelopesUnchanged(t *testing.T) {
 				t.Fatalf("restart %d rewrote the %s envelope", attempt, kind)
 			}
 		}
-		assertUpgradeBodyReadable(t, store, auditKey)
+		assertBodyReadable(t, store, auditKey)
 		if len(logs) != 0 {
 			t.Fatalf("restart %d logged %q", attempt, logs)
 		}
@@ -232,7 +189,7 @@ func TestRestartKeepsEnvelopesUnchanged(t *testing.T) {
 	}
 }
 
-func TestFreshDatabaseCreatesBothEnvelopesWithoutAScrub(t *testing.T) {
+func TestFreshDatabaseCreatesBothEnvelopes(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "astrlink.db")
 	store := openWithKey(t, path, testLocalKey(t, 0x33), nil)
 	defer store.Close()
@@ -250,9 +207,6 @@ func TestFreshDatabaseCreatesBothEnvelopesWithoutAScrub(t *testing.T) {
 	second, err := store.GetAuditKey(context.Background())
 	if err != nil || !bytes.Equal(first, second) {
 		t.Fatalf("GetAuditKey() differs from GetOrCreateAuditKey(): %v", err)
-	}
-	if countRows(t, store, "audit_keys") != 0 || countRows(t, store, "pending_file_scrub") != 0 {
-		t.Fatal("a fresh database wrote a plaintext key or asked for a scrub")
 	}
 }
 
@@ -280,16 +234,12 @@ func TestOpenWithoutAKeyUsesLocalKeyFileBesideTheDatabase(t *testing.T) {
 
 func TestMissingLocalKeySetsEnvelopesAsideAndReportsTheAuditKeyMissing(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "astrlink.db")
-	auditKey := writeV42Fixture(t, path)
 	original := testLocalKey(t, 0x44)
-	store := openWithKey(t, path, original, nil)
-	if err := store.Close(); err != nil {
-		t.Fatal(err)
-	}
+	auditKey := writeBodyFixture(t, path, original)
 
 	var logs []string
 	replacement := testLocalKey(t, 0x55)
-	store = openWithKey(t, path, replacement, &logs)
+	store := openWithKey(t, path, replacement, &logs)
 	envelopes := readEnvelopes(t, store)
 	var orphaned []string
 	for kind := range envelopes {
@@ -310,7 +260,7 @@ func TestMissingLocalKeySetsEnvelopesAsideAndReportsTheAuditKeyMissing(t *testin
 	if bytes.Equal(key, auditKey) {
 		t.Fatal("a replacement local key recovered the old audit key")
 	}
-	blobs, err := store.GetAuditBlobsByRequest(context.Background(), upgradeRequestID)
+	blobs, err := store.GetAuditBlobsByRequest(context.Background(), bodyRequestID)
 	if err != nil || len(blobs) != 1 {
 		t.Fatalf("metadata was lost: %d blobs, %v", len(blobs), err)
 	}
@@ -336,194 +286,9 @@ func TestMissingLocalKeySetsEnvelopesAsideAndReportsTheAuditKeyMissing(t *testin
 	// The original key coming back restores its envelopes.
 	store = openWithKey(t, path, original, nil)
 	defer store.Close()
-	assertUpgradeBodyReadable(t, store, auditKey)
+	assertBodyReadable(t, store, auditKey)
 	if got := len(readEnvelopes(t, store)); got != 4 {
 		t.Fatalf("recovery left %d envelopes, want 4", got)
-	}
-}
-
-func TestStrayLegacyAuditKeyIsWrappedNotKept(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "astrlink.db")
-	auditKey := writeV42Fixture(t, path)
-	localKey := testLocalKey(t, 0x66)
-	store := openWithKey(t, path, localKey, nil)
-	// An older build ran in between and created its own plaintext key.
-	stray := testLocalKey(t, 0x77)
-	if _, err := store.db.Exec(`INSERT INTO audit_keys (id, key_bytes, created_at) VALUES (1, ?, '2026-09-21T00:00:00Z')`, stray); err != nil {
-		t.Fatal(err)
-	}
-	if err := store.Close(); err != nil {
-		t.Fatal(err)
-	}
-	store = openWithKey(t, path, localKey, nil)
-	defer store.Close()
-	assertUpgradeBodyReadable(t, store, auditKey)
-	if countRows(t, store, "audit_keys") != 0 {
-		t.Fatal("the stray plaintext key was kept")
-	}
-	var found bool
-	for kind, row := range readEnvelopes(t, store) {
-		if strings.HasPrefix(kind, "audit.legacy.") {
-			dek, err := envelope.Unwrap(localKey, row.nonce, row.wrapped, envelope.KindAudit)
-			found = err == nil && bytes.Equal(dek, stray)
-		}
-	}
-	if !found {
-		t.Fatal("the stray key was not kept wrapped for recovery")
-	}
-	if fileContains(t, path, stray) {
-		t.Fatal("the stray plaintext key survives in the file")
-	}
-}
-
-func TestAWrappedLegacyKeyIsNeverRestoredAsTheAuditKey(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "astrlink.db")
-	auditKey := writeV42Fixture(t, path)
-	original := testLocalKey(t, 0x68)
-	store := openWithKey(t, path, original, nil)
-	stray := testLocalKey(t, 0x79)
-	if _, err := store.db.Exec(`INSERT INTO audit_keys (id, key_bytes, created_at) VALUES (1, ?, '2026-09-21T00:00:00Z')`, stray); err != nil {
-		t.Fatal(err)
-	}
-	if err := store.Close(); err != nil {
-		t.Fatal(err)
-	}
-	// The stray key is wrapped under the original local key, newer than the
-	// audit envelope, so it is the first row a loose match would try.
-	for _, key := range [][]byte{original, testLocalKey(t, 0x5A)} {
-		store = openWithKey(t, path, key, nil)
-		if err := store.Close(); err != nil {
-			t.Fatal(err)
-		}
-	}
-
-	store = openWithKey(t, path, original, nil)
-	defer store.Close()
-	assertUpgradeBodyReadable(t, store, auditKey)
-	legacy := 0
-	for kind, row := range readEnvelopes(t, store) {
-		if !strings.HasPrefix(kind, "audit.legacy.") {
-			continue
-		}
-		legacy++
-		if dek, err := envelope.Unwrap(original, row.nonce, row.wrapped, envelope.KindAudit); err != nil || !bytes.Equal(dek, stray) {
-			t.Fatalf("the legacy envelope changed: %v", err)
-		}
-	}
-	if legacy != 1 {
-		t.Fatalf("legacy envelopes = %d, want the one kept for recovery", legacy)
-	}
-}
-
-func TestInterruptedScrubKeepsTheOriginalAndRetries(t *testing.T) {
-	for _, step := range []string{"before_close", "before_replace", "after_replace"} {
-		t.Run(step, func(t *testing.T) {
-			path := filepath.Join(t.TempDir(), "astrlink.db")
-			auditKey := writeV42Fixture(t, path)
-			localKey := testLocalKey(t, 0x88)
-			interrupted := errors.New("simulated crash")
-			scrubHook = func(current string) error {
-				if current == step {
-					return interrupted
-				}
-				return nil
-			}
-			var logs []string
-			store := openWithKey(t, path, localKey, &logs)
-			scrubHook = nil
-			if len(logs) != 1 || !strings.Contains(logs[0], "simulated crash") {
-				t.Fatalf("logs = %q", logs)
-			}
-			// The store keeps working, on the original or the complete copy.
-			assertUpgradeBodyReadable(t, store, auditKey)
-			if countRows(t, store, "audit_keys") != 0 {
-				t.Fatal("the interrupted scrub restored the plaintext key row")
-			}
-			if countRows(t, store, "pending_file_scrub") != 1 {
-				t.Fatal("the interrupted scrub dropped its request")
-			}
-			if _, err := os.Stat(path + ".scrub"); !errors.Is(err, os.ErrNotExist) {
-				t.Fatalf("scrub copy left behind: %v", err)
-			}
-			if err := store.Close(); err != nil {
-				t.Fatal(err)
-			}
-			// Until the copy replaces it, the original still holds the freed
-			// key bytes, which shows the grep below can find them.
-			if step != "after_replace" && !fileContains(t, path, auditKey) {
-				t.Fatal("the original file no longer holds the deleted key")
-			}
-
-			store = openWithKey(t, path, localKey, nil)
-			defer store.Close()
-			assertUpgradeBodyReadable(t, store, auditKey)
-			if countRows(t, store, "pending_file_scrub") != 0 {
-				t.Fatal("the retry did not finish the scrub")
-			}
-			if fileContains(t, path, auditKey) {
-				t.Fatal("the plaintext audit key survives the retried scrub")
-			}
-		})
-	}
-}
-
-func TestScrubReplacesAStaleCopyFromACrash(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "astrlink.db")
-	auditKey := writeV42Fixture(t, path)
-	if err := os.WriteFile(path+".scrub", []byte("half-written copy"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	store := openWithKey(t, path, testLocalKey(t, 0x99), nil)
-	defer store.Close()
-	assertUpgradeBodyReadable(t, store, auditKey)
-	if countRows(t, store, "pending_file_scrub") != 0 {
-		t.Fatal("a stale copy blocked the scrub")
-	}
-	if _, err := os.Stat(path + ".scrub"); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("stale copy left behind: %v", err)
-	}
-}
-
-func TestScrubWaitsWhileAnotherConnectionHasTheFileOpen(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "astrlink.db")
-	auditKey := writeV42Fixture(t, path)
-	other, err := sql.Open(driverName, sqliteFileDSN(path))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer other.Close()
-	connection, err := other.Conn(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer connection.Close()
-	if err := connection.PingContext(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	var logs []string
-	store := openWithKey(t, path, testLocalKey(t, 0xaa), &logs)
-	if len(logs) != 1 || !strings.Contains(logs[0], errScrubBusy.Error()) {
-		t.Fatalf("logs = %q", logs)
-	}
-	assertUpgradeBodyReadable(t, store, auditKey)
-	if countRows(t, store, "pending_file_scrub") != 1 {
-		t.Fatal("a busy scrub dropped its request")
-	}
-	// The other connection still sees the same file.
-	var envelopes int
-	if err := connection.QueryRowContext(context.Background(), `SELECT COUNT(*) FROM key_envelopes`).Scan(&envelopes); err != nil || envelopes != 2 {
-		t.Fatalf("other connection sees %d envelopes: %v", envelopes, err)
-	}
-	if err := store.Close(); err != nil {
-		t.Fatal(err)
-	}
-	_ = connection.Close()
-	_ = other.Close()
-
-	store = openWithKey(t, path, testLocalKey(t, 0xaa), nil)
-	defer store.Close()
-	if countRows(t, store, "pending_file_scrub") != 0 {
-		t.Fatal("the scrub did not run once the file was free")
 	}
 }
 
@@ -616,12 +381,12 @@ func TestReadOnlyOpenReadsBesideAServingStoreAndWritesNothing(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := serving.InsertRequestRecord(ctx, contract.RequestRecord{
-		ID: upgradeRequestID, StartedAt: time.Now().UTC(), Status: contract.RequestStatusSucceeded,
+		ID: bodyRequestID, StartedAt: time.Now().UTC(), Status: contract.RequestStatusSucceeded,
 		InputProtocol: contract.ProtocolOpenAIChat,
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := serving.InsertAuditBlob(ctx, sealedPayload(t, auditKey, upgradeRequestID, storage.AuditDirectionRequest, knownPrompt)); err != nil {
+	if err := serving.InsertAuditBlob(ctx, sealedPayload(t, auditKey, bodyRequestID, storage.AuditDirectionRequest, knownPrompt)); err != nil {
 		t.Fatal(err)
 	}
 	before := databaseFiles(t, path)
@@ -636,7 +401,7 @@ func TestReadOnlyOpenReadsBesideAServingStoreAndWritesNothing(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	assertUpgradeBodyReadable(t, reader, auditKey)
+	assertBodyReadable(t, reader, auditKey)
 	if err := reader.InsertRequestRecord(ctx, contract.RequestRecord{
 		ID: "request_read_only_write", StartedAt: time.Now().UTC(), Status: contract.RequestStatusSucceeded,
 		InputProtocol: contract.ProtocolOpenAIChat,
@@ -655,30 +420,6 @@ func TestReadOnlyOpenReadsBesideAServingStoreAndWritesNothing(t *testing.T) {
 	}
 }
 
-// writeCurrentFixtureWithoutKeys migrates a database to the current schema
-// without the store's key setup, as if a Core stopped right after migrating.
-func writeCurrentFixtureWithoutKeys(t *testing.T, path string, legacyAuditKey bool) {
-	t.Helper()
-	database, err := sql.Open(driverName, sqliteFileDSN(path))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer database.Close()
-	runner, err := migrate.New(migrate.SQLDatabase{DB: database}, migrate.DefaultMigrations())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := runner.Up(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	if legacyAuditKey {
-		if _, err := database.Exec(`INSERT INTO audit_keys (id, key_bytes, created_at) VALUES (1, ?, '2026-09-20T00:00:00Z')`,
-			testLocalKey(t, 9)); err != nil {
-			t.Fatal(err)
-		}
-	}
-}
-
 func TestReadOnlyOpenRefusesADatabaseThatNeedsACoreStart(t *testing.T) {
 	ctx := context.Background()
 	for _, testCase := range []struct {
@@ -686,9 +427,8 @@ func TestReadOnlyOpenRefusesADatabaseThatNeedsACoreStart(t *testing.T) {
 		write    func(t *testing.T, path string)
 		fragment string
 	}{
-		{"older schema", func(t *testing.T, path string) { writeV42Fixture(t, path) }, "older"},
-		{"plaintext audit key", func(t *testing.T, path string) { writeCurrentFixtureWithoutKeys(t, path, true) }, "plaintext audit key"},
-		{"no data keys", func(t *testing.T, path string) { writeCurrentFixtureWithoutKeys(t, path, false) }, "has not been created"},
+		{"older schema", func(t *testing.T, path string) { writeSchemaFixture(t, path, 42) }, "older"},
+		{"no data keys", func(t *testing.T, path string) { writeSchemaFixture(t, path, math.MaxInt64) }, "has not been created"},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "astrlink.db")

@@ -13,7 +13,6 @@ mod macos_app;
 mod preferences;
 mod raw_access;
 mod raw_key_pin;
-mod raw_presence;
 mod recovery_path;
 mod service_proxy;
 mod sidecar;
@@ -35,6 +34,7 @@ use serde::{Deserialize, Serialize};
 use sidecar::{CoreManager, CoreSnapshot, PolicyRecordResponse, ServiceRecordResponse};
 use tauri::{Emitter, Manager, RunEvent, State, WebviewUrl, WebviewWindowBuilder, WindowEvent};
 use tauri_plugin_autostart::ManagerExt;
+use tauri_plugin_clipboard_manager::ClipboardExt;
 use tauri_plugin_dialog::DialogExt;
 #[cfg(not(target_os = "macos"))]
 use tauri_plugin_notification::NotificationExt;
@@ -1176,80 +1176,15 @@ async fn list_raw_access(
     manager.list_raw_access().await
 }
 
-/// Why the system presence prompt is shown. The WebView picks one; the
-/// prompt text stays in the host locale files.
-#[derive(Clone, Copy, Deserialize)]
-#[serde(rename_all = "snake_case")]
-enum PresencePurpose {
-    ApproveRawAccess,
-    UnlockRaw,
-    ChangeRawPassword,
-    ResetRawPassword,
-    RevealAccessToken,
-    AcknowledgeRawKey,
-}
-
-impl PresencePurpose {
-    fn reason_key(self) -> &'static str {
-        match self {
-            Self::ApproveRawAccess => "host.rawPresence.approveRawAccess",
-            Self::UnlockRaw => "host.rawPresence.unlockRaw",
-            Self::ChangeRawPassword => "host.rawPresence.changeRawPassword",
-            Self::ResetRawPassword => "host.rawPresence.resetRawPassword",
-            Self::RevealAccessToken => "host.rawPresence.revealAccessToken",
-            Self::AcknowledgeRawKey => "host.rawPresence.acknowledgeRawKey",
-        }
+/// Turns the dialog's proof into one for Core.
+fn raw_proof(arg: raw_access::ProofArg) -> raw_access::Proof {
+    match arg {
+        raw_access::ProofArg::Password { password } => raw_access::Proof::Password(password),
     }
-}
-
-/// The system prompt for a reset names what it discards: the raw content
-/// captured under the old key.
-fn raw_password_purpose(action: &str) -> PresencePurpose {
-    if action == "reset" {
-        PresencePurpose::ResetRawPassword
-    } else {
-        PresencePurpose::ChangeRawPassword
-    }
-}
-
-/// Runs the LocalAuthentication prompt off the async runtime. A presence
-/// proof only reaches Core from here, after the prompt succeeded, so the
-/// WebView cannot send one on its own.
-async fn confirm_raw_proof(
-    app: &tauri::AppHandle,
-    arg: raw_access::ProofArg,
-    purpose: PresencePurpose,
-) -> Result<Result<raw_access::Proof, raw_access::ProofOutcome>, String> {
-    confirm_proof_with(arg, raw_presence::system(), presence_reason(app, purpose)).await
-}
-
-async fn confirm_proof_with(
-    arg: raw_access::ProofArg,
-    presence: &'static dyn raw_presence::PresenceVerifier,
-    reason: String,
-) -> Result<Result<raw_access::Proof, raw_access::ProofOutcome>, String> {
-    tauri::async_runtime::spawn_blocking(move || raw_access::confirm_proof(arg, presence, &reason))
-        .await
-        .map_err(|error| format!("local presence check failed: {error}"))
-}
-
-/// The system prompt text for `purpose` in the host locale.
-fn presence_reason(app: &tauri::AppHandle, purpose: PresencePurpose) -> String {
-    let locale = app
-        .state::<Arc<PreferencesStore>>()
-        .snapshot()
-        .values
-        .locale;
-    i18n::t(locale, purpose.reason_key(), &[])
-}
-
-fn proof_outcome_value(outcome: raw_access::ProofOutcome) -> Result<serde_json::Value, String> {
-    serde_json::to_value(outcome).map_err(|error| error.to_string())
 }
 
 #[tauri::command]
 async fn decide_raw_access(
-    app: tauri::AppHandle,
     grant_id: String,
     decision: String,
     proof: Option<raw_access::ProofArg>,
@@ -1257,12 +1192,7 @@ async fn decide_raw_access(
 ) -> Result<serde_json::Value, String> {
     // The desktop never keeps the proof: it is wiped once it has been sent.
     let proof = match proof {
-        Some(arg) if decision != "deny" => {
-            match confirm_raw_proof(&app, arg, PresencePurpose::ApproveRawAccess).await? {
-                Ok(proof) => Some(proof),
-                Err(outcome) => return proof_outcome_value(outcome),
-            }
-        }
+        Some(arg) if decision != "deny" => Some(raw_proof(arg)),
         _ => None,
     };
     manager
@@ -1270,9 +1200,8 @@ async fn decide_raw_access(
         .await
 }
 
-/// Raw sealing state plus whether this build can offer the presence prompt,
-/// whether it is a keychain build that also wants presence to accept a
-/// replaced key, and whether the raw key was replaced outside the desktop.
+/// Raw sealing state plus whether the raw key was replaced outside the
+/// desktop.
 #[tauri::command]
 async fn raw_sealing_status(
     manager: State<'_, Arc<CoreManager>>,
@@ -1280,16 +1209,6 @@ async fn raw_sealing_status(
 ) -> Result<serde_json::Value, String> {
     let _pinning = pins.guard().await;
     let mut status = manager.raw_sealing_status().await?;
-    let presence = tauri::async_runtime::spawn_blocking(|| raw_presence::system().available())
-        .await
-        .unwrap_or(false);
-    if let Some(object) = status.as_object_mut() {
-        object.insert("presence_available".to_string(), presence.into());
-        object.insert(
-            "keychain_build".to_string(),
-            raw_presence::keychain_build().into(),
-        );
-    }
     note_raw_key(&pins, &manager, &mut status, raw_key_pin::PinAction::Check).await;
     Ok(status)
 }
@@ -1389,16 +1308,11 @@ async fn unlock_raw(
     manager: State<'_, Arc<CoreManager>>,
     pins: State<'_, Arc<raw_key_pin::RawKeyPins>>,
 ) -> Result<serde_json::Value, String> {
-    match confirm_raw_proof(&app, proof, PresencePurpose::UnlockRaw).await? {
-        Ok(proof) => {
-            let _pinning = pins.guard().await;
-            let result = manager.unlock_raw(&proof).await;
-            let result =
-                note_raw_key_outcome(&pins, &manager, result, raw_key_pin::PinAction::Check).await;
-            broadcast_raw_sealing_change(&app, result)
-        }
-        Err(outcome) => proof_outcome_value(outcome),
-    }
+    let proof = raw_proof(proof);
+    let _pinning = pins.guard().await;
+    let result = manager.unlock_raw(&proof).await;
+    let result = note_raw_key_outcome(&pins, &manager, result, raw_key_pin::PinAction::Check).await;
+    broadcast_raw_sealing_change(&app, result)
 }
 
 #[tauri::command]
@@ -1419,77 +1333,31 @@ async fn lock_raw(
 }
 
 /// Accepts a raw key replaced outside the desktop, such as by the operator's
-/// own `astrlink-core raw-password`. The key's password shows the operator
-/// chose it; presence alone only shows someone is at this Mac. A keychain
-/// build asks for both, so a script that set the password itself cannot
-/// accept the key through the WebView; where that build cannot show the
-/// prompt, only a reset is left. Nothing unlocks raw parts.
+/// own `astrlink-core raw-password`. Only the key's own password accepts it:
+/// that shows the operator chose the key. Nothing unlocks raw parts.
 #[tauri::command]
 async fn acknowledge_raw_key(
     app: tauri::AppHandle,
-    password: zeroize::Zeroizing<String>,
+    proof: raw_access::ProofArg,
     manager: State<'_, Arc<CoreManager>>,
     pins: State<'_, Arc<raw_key_pin::RawKeyPins>>,
 ) -> Result<serde_json::Value, String> {
-    let presence = raw_presence::keychain_build().then(|| {
-        (
-            raw_presence::system(),
-            presence_reason(&app, PresencePurpose::AcknowledgeRawKey),
-        )
-    });
-    let result = acknowledge_replaced_key(&manager, &pins, password, presence).await;
+    let proof = raw_proof(proof);
+    let result = acknowledge_replaced_key(&manager, &pins, &proof).await;
     broadcast_raw_sealing_change(&app, result)
 }
 
-/// The acknowledgement behind `acknowledge_raw_key`. `presence` is the
-/// verifier and prompt text where the build asks for presence too; it runs
-/// first, so nothing reaches Core unless it passed. Core's verify route then
-/// checks the password without starting an unlock session, and the key its
+/// The acknowledgement behind `acknowledge_raw_key`. Core's verify route
+/// checks the proof without starting an unlock session, and the key its
 /// answer names is pinned.
 async fn acknowledge_replaced_key(
     manager: &CoreManager,
     pins: &Arc<raw_key_pin::RawKeyPins>,
-    password: zeroize::Zeroizing<String>,
-    presence: Option<(&'static dyn raw_presence::PresenceVerifier, String)>,
+    proof: &raw_access::Proof,
 ) -> Result<serde_json::Value, String> {
-    if let Some((verifier, reason)) = presence {
-        let checked =
-            confirm_proof_with(raw_access::ProofArg::LocalPresence {}, verifier, reason).await?;
-        if let Err(outcome) = checked {
-            return proof_outcome_value(outcome);
-        }
-    }
     let _pinning = pins.guard().await;
-    let result = manager
-        .verify_raw(&raw_access::Proof::Password(password))
-        .await;
+    let result = manager.verify_raw(proof).await;
     note_raw_key_outcome(pins, manager, result, raw_key_pin::PinAction::Pin).await
-}
-
-/// Checks the raw password for a desktop action whose proof never reaches
-/// Core otherwise, such as revealing an access token (D14). Core's verify
-/// route opens no unlock session, so nothing changes for other windows.
-#[tauri::command]
-async fn verify_raw_password(
-    password: zeroize::Zeroizing<String>,
-    manager: State<'_, Arc<CoreManager>>,
-    pins: State<'_, Arc<raw_key_pin::RawKeyPins>>,
-) -> Result<serde_json::Value, String> {
-    check_raw_password(&manager, &pins, password).await
-}
-
-/// The check behind `verify_raw_password`. A key replaced outside the
-/// desktop stays unaccepted: its password proves an action, not the key.
-async fn check_raw_password(
-    manager: &CoreManager,
-    pins: &Arc<raw_key_pin::RawKeyPins>,
-    password: zeroize::Zeroizing<String>,
-) -> Result<serde_json::Value, String> {
-    let _pinning = pins.guard().await;
-    let result = manager
-        .verify_raw(&raw_access::Proof::Password(password))
-        .await;
-    note_raw_key_outcome(pins, manager, result, raw_key_pin::PinAction::Check).await
 }
 
 /// Sets, changes, or resets the raw password. `password` is the new one;
@@ -1503,13 +1371,7 @@ async fn set_raw_password(
     manager: State<'_, Arc<CoreManager>>,
     pins: State<'_, Arc<raw_key_pin::RawKeyPins>>,
 ) -> Result<serde_json::Value, String> {
-    let proof = match proof {
-        Some(arg) => match confirm_raw_proof(&app, arg, raw_password_purpose(&action)).await? {
-            Ok(proof) => Some(proof),
-            Err(outcome) => return proof_outcome_value(outcome),
-        },
-        None => None,
-    };
+    let proof = proof.map(raw_proof);
     let _pinning = pins.guard().await;
     let result = manager
         .change_raw_password(
@@ -1521,20 +1383,6 @@ async fn set_raw_password(
     let pin_action = raw_key_pin::PinAction::after_password(&action);
     let result = note_raw_key_outcome(&pins, &manager, result, pin_action).await;
     broadcast_raw_sealing_change(&app, result)
-}
-
-/// Shows the system presence prompt alone, for desktop actions whose proof
-/// never reaches Core (D14). It returns an outcome, never an error, for a
-/// cancelled or unsupported prompt.
-#[tauri::command]
-async fn verify_local_presence(
-    app: tauri::AppHandle,
-    purpose: PresencePurpose,
-) -> Result<serde_json::Value, String> {
-    match confirm_raw_proof(&app, raw_access::ProofArg::LocalPresence {}, purpose).await? {
-        Ok(_) => Ok(serde_json::json!({ "outcome": "verified" })),
-        Err(outcome) => proof_outcome_value(outcome),
-    }
 }
 
 #[tauri::command]
@@ -1621,11 +1469,26 @@ async fn create_access_token(
 }
 
 #[tauri::command]
-async fn reveal_access_token(
+/// Copies an access token from Core straight to the clipboard: the token
+/// never reaches the webview, and no click gesture has to outlast the
+/// reveal. `false` means the clipboard refused it.
+async fn copy_access_token(
+    app: tauri::AppHandle,
     token_id: String,
     manager: State<'_, Arc<CoreManager>>,
-) -> Result<serde_json::Value, String> {
-    manager.reveal_access_token(&token_id).await
+) -> Result<bool, String> {
+    let secret = manager.reveal_access_token(&token_id).await?;
+    let token = secret["access_token"]
+        .as_str()
+        .filter(|token| !token.is_empty())
+        .ok_or("access token reveal returned no token")?;
+    match app.clipboard().write_text(token) {
+        Ok(()) => Ok(true),
+        Err(error) => {
+            eprintln!("unable to copy the access token: {error}");
+            Ok(false)
+        }
+    }
 }
 
 #[tauri::command]
@@ -1872,9 +1735,7 @@ pub fn run() {
             unlock_raw,
             lock_raw,
             acknowledge_raw_key,
-            verify_raw_password,
             set_raw_password,
-            verify_local_presence,
             builtin_tool_action,
             get_routing_settings,
             update_routing_settings,
@@ -1885,7 +1746,7 @@ pub fn run() {
             list_access_token_usage,
             get_usage_summary,
             create_access_token,
-            reveal_access_token,
+            copy_access_token,
             open_cc_switch_import,
             delete_access_token,
             list_privacy_policies,
@@ -2297,8 +2158,6 @@ mod tests {
 
     #[test]
     fn acknowledging_a_replaced_key_checks_the_password_without_unlocking() {
-        use raw_presence::{testing::FakePresence, Presence};
-
         let (pinned, replacement) = ("a".repeat(64), "b".repeat(64));
         let core = FakeRawCore::start(replacement.clone());
         let pins = Arc::new(raw_key_pin::RawKeyPins::new(
@@ -2309,16 +2168,16 @@ mod tests {
             std::path::PathBuf::from("/nonexistent/astrlink-data"),
             core.url.clone(),
         );
-        let password = || zeroize::Zeroizing::new(FakeRawCore::PASSWORD.to_string());
-        let leak =
-            |result| -> &'static FakePresence { Box::leak(Box::new(FakePresence::new(result))) };
+        let password =
+            |value: &str| raw_access::Proof::Password(zeroize::Zeroizing::new(value.to_string()));
         tauri::async_runtime::block_on(async {
-            // A file build takes the password alone. Core only checks it:
-            // no unlock session opens, and the key it names is pinned.
+            // Core only checks the password: no unlock session opens, and
+            // the key it names is pinned.
             replace_raw_key(&pins, &manager, &core, &pinned).await;
-            let outcome = acknowledge_replaced_key(&manager, &pins, password(), None)
-                .await
-                .unwrap();
+            let outcome =
+                acknowledge_replaced_key(&manager, &pins, &password(FakeRawCore::PASSWORD))
+                    .await
+                    .unwrap();
             assert_eq!(outcome["outcome"], "sealing");
             assert_eq!(outcome["status"]["unlocked"], false);
             assert_eq!(outcome["status"]["key_replaced"], false);
@@ -2332,132 +2191,13 @@ mod tests {
 
             // A wrong password pins nothing.
             replace_raw_key(&pins, &manager, &core, &pinned).await;
-            let refused = acknowledge_replaced_key(
-                &manager,
-                &pins,
-                zeroize::Zeroizing::new("not the password".to_string()),
-                None,
-            )
-            .await
-            .unwrap();
-            assert_eq!(refused["outcome"], "password_invalid");
-            assert!(manager.view().raw_key_replaced);
-            assert_eq!(core.take_requests(), ["POST /control/v1/audit/raw-verify"]);
-
-            // A keychain build asks for presence first; without it, nothing
-            // reaches Core and the key stays unaccepted.
-            for (result, outcome) in [
-                (Presence::Cancelled, "presence_cancelled"),
-                (Presence::Unsupported, "presence_unsupported"),
-            ] {
-                let presence = leak(result);
-                let refused = acknowledge_replaced_key(
-                    &manager,
-                    &pins,
-                    password(),
-                    Some((presence, "confirm".to_string())),
-                )
+            let refused = acknowledge_replaced_key(&manager, &pins, &password("not the password"))
                 .await
                 .unwrap();
-                assert_eq!(refused["outcome"], outcome);
-                assert_eq!(presence.prompts(), 1);
-                assert!(manager.view().raw_key_replaced);
-                assert!(
-                    core.take_requests().is_empty(),
-                    "{outcome} still reached Core"
-                );
-            }
-            let presence = leak(Presence::Verified);
-            let accepted = acknowledge_replaced_key(
-                &manager,
-                &pins,
-                password(),
-                Some((presence, "confirm".to_string())),
-            )
-            .await
-            .unwrap();
-            assert_eq!(accepted["outcome"], "sealing");
-            assert_eq!(accepted["status"]["unlocked"], false);
-            assert_eq!(presence.prompts(), 1);
-            assert!(!manager.view().raw_key_replaced);
-            assert_eq!(core.take_requests(), ["POST /control/v1/audit/raw-verify"]);
-            assert_eq!(
-                manager.raw_sealing_status().await.unwrap()["unlocked"],
-                false
-            );
-        });
-    }
-
-    #[test]
-    fn a_password_proof_opens_no_unlock_session() {
-        let (pinned, replacement) = ("a".repeat(64), "b".repeat(64));
-        let core = FakeRawCore::start(replacement);
-        let pins = Arc::new(raw_key_pin::RawKeyPins::new(
-            Box::new(MemoryPins::default()),
-        ));
-        let manager = CoreManager::new();
-        manager.serve_control_for_tests(
-            std::path::PathBuf::from("/nonexistent/astrlink-data"),
-            core.url.clone(),
-        );
-        tauri::async_runtime::block_on(async {
-            let refused = check_raw_password(
-                &manager,
-                &pins,
-                zeroize::Zeroizing::new("not the password".to_string()),
-            )
-            .await
-            .unwrap();
             assert_eq!(refused["outcome"], "password_invalid");
-            assert_eq!(core.take_requests(), ["POST /control/v1/audit/raw-verify"]);
-
-            // Proving an action with a replaced key's password neither
-            // unlocks raw parts nor accepts that key.
-            replace_raw_key(&pins, &manager, &core, &pinned).await;
-            let proved = check_raw_password(
-                &manager,
-                &pins,
-                zeroize::Zeroizing::new(FakeRawCore::PASSWORD.to_string()),
-            )
-            .await
-            .unwrap();
-            assert_eq!(proved["outcome"], "sealing");
-            assert_eq!(proved["status"]["unlocked"], false);
-            assert_eq!(proved["status"]["key_replaced"], true);
             assert!(manager.view().raw_key_replaced);
             assert_eq!(core.take_requests(), ["POST /control/v1/audit/raw-verify"]);
-            assert_eq!(
-                manager.raw_sealing_status().await.unwrap()["unlocked"],
-                false
-            );
         });
-    }
-
-    #[test]
-    fn raw_password_prompts_name_a_reset() {
-        assert!(matches!(
-            raw_password_purpose("reset"),
-            PresencePurpose::ResetRawPassword
-        ));
-        for action in ["set", "change"] {
-            assert!(matches!(
-                raw_password_purpose(action),
-                PresencePurpose::ChangeRawPassword
-            ));
-        }
-        for purpose in [
-            PresencePurpose::ApproveRawAccess,
-            PresencePurpose::UnlockRaw,
-            PresencePurpose::ChangeRawPassword,
-            PresencePurpose::ResetRawPassword,
-            PresencePurpose::RevealAccessToken,
-            PresencePurpose::AcknowledgeRawKey,
-        ] {
-            let key = purpose.reason_key();
-            for locale in [i18n::Locale::En, i18n::Locale::ZhCN] {
-                assert_ne!(i18n::t(locale, key, &[]), key, "{key} missing");
-            }
-        }
     }
 
     #[test]

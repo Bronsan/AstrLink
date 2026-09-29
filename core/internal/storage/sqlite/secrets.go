@@ -15,8 +15,7 @@ import (
 
 // Secret columns are sealed under dek_secrets (plan §5.4). The AAD binds the
 // table and the primary key, so a value copied onto another row does not
-// open. Rows written before migration 45 keep sealed = 0 and read as
-// plaintext until SealPlaintextSecrets seals them at the next start.
+// open. Every write sets sealed = 1, so a sealed = 0 row is invalid.
 const (
 	serviceCredentialsTable      = "service_credentials"
 	accessTokenSecretsTable      = "local_access_token_secrets"
@@ -31,115 +30,32 @@ const (
 
 type secretColumn struct {
 	table, key, value string
-	// flagged tables carry a sealed column; subscription_credentials is
-	// sealed from its first row.
-	flagged bool
 }
 
 var secretColumns = []secretColumn{
-	{table: serviceCredentialsTable, key: "service_id", value: "credential_value", flagged: true},
-	{table: accessTokenSecretsTable, key: "token_id", value: "token_value", flagged: true},
-	{table: builtinToolCredentialsTable, key: "kind", value: "credential_value", flagged: true},
-	{table: serviceProxyCredentialsTable, key: "service_id", value: "credential_value", flagged: true},
+	{table: serviceCredentialsTable, key: "service_id", value: "credential_value"},
+	{table: accessTokenSecretsTable, key: "token_id", value: "token_value"},
+	{table: builtinToolCredentialsTable, key: "kind", value: "credential_value"},
+	{table: serviceProxyCredentialsTable, key: "service_id", value: "credential_value"},
 	{table: subscriptionCredentialsTable, key: "service_id", value: "credential_value"},
 }
 
 // openSecret returns the plaintext of one stored value. It takes ownership of
-// stored and clears it once a sealed value is opened.
+// stored and clears it; a row not marked sealed is refused.
 func (store *Store) openSecret(table, key string, stored []byte, sealed bool) ([]byte, error) {
-	if !sealed {
-		return stored, nil
-	}
 	defer clear(stored)
+	if !sealed {
+		return nil, fmt.Errorf("%w: %s %s is not sealed", storagecontract.ErrInvalidRecord, table, key)
+	}
 	return store.keys.openColumn(table, key, stored)
 }
 
-// SealPlaintextSecrets seals every secret row still stored as plaintext, in
-// one transaction, and returns how many it sealed. It is idempotent. Open
-// calls it once the data keys are ready; when it seals anything it asks for a
-// file scrub, which the same Open runs, so the plaintext left in free pages
-// goes too.
-func (store *Store) SealPlaintextSecrets(ctx context.Context) (sealed int, err error) {
-	transaction, err := store.db.BeginTx(ctx, nil)
-	if err != nil {
-		return 0, fmt.Errorf("begin secret sealing: %w", err)
-	}
-	defer rollbackOnError(transaction, &err)
-	for _, column := range secretColumns {
-		if !column.flagged {
-			continue
-		}
-		count, sealErr := store.sealPlaintextColumnTx(ctx, transaction, column)
-		if sealErr != nil {
-			err = sealErr
-			return 0, err
-		}
-		sealed += count
-	}
-	if sealed > 0 {
-		if err = requestFileScrubTx(ctx, transaction, store.now().UTC().Format(time.RFC3339Nano)); err != nil {
-			return 0, err
-		}
-	}
-	if err = transaction.Commit(); err != nil {
-		return 0, fmt.Errorf("commit secret sealing: %w", err)
-	}
-	return sealed, nil
-}
-
-func (store *Store) sealPlaintextColumnTx(ctx context.Context, transaction *sql.Tx, column secretColumn) (int, error) {
-	type plaintextRow struct {
-		key   string
-		value []byte
-	}
-	var pending []plaintextRow
-	defer func() {
-		for _, row := range pending {
-			clear(row.value)
-		}
-	}()
-	rows, err := transaction.QueryContext(ctx, fmt.Sprintf(`SELECT %s, %s FROM %s WHERE sealed = 0`,
-		column.key, column.value, column.table))
-	if err != nil {
-		return 0, fmt.Errorf("read plaintext %s: %w", column.table, err)
-	}
-	for rows.Next() {
-		var row plaintextRow
-		if err := rows.Scan(&row.key, &row.value); err != nil {
-			_ = rows.Close()
-			return 0, fmt.Errorf("read plaintext %s: %w", column.table, err)
-		}
-		pending = append(pending, row)
-	}
-	if err := rows.Close(); err != nil {
-		return 0, fmt.Errorf("read plaintext %s: %w", column.table, err)
-	}
-	if err := rows.Err(); err != nil {
-		return 0, fmt.Errorf("read plaintext %s: %w", column.table, err)
-	}
-	for _, row := range pending {
-		sealedValue, err := store.keys.sealColumn(column.table, row.key, row.value)
-		if err != nil {
-			return 0, fmt.Errorf("seal %s: %w", column.table, err)
-		}
-		if _, err := transaction.ExecContext(ctx, fmt.Sprintf(`UPDATE %s SET %s = ?, sealed = 1 WHERE %s = ? AND sealed = 0`,
-			column.table, column.value, column.key), sealedValue, row.key); err != nil {
-			return 0, fmt.Errorf("seal %s: %w", column.table, err)
-		}
-	}
-	return len(pending), nil
-}
-
 // LocalDataStatus counts saved secrets this device cannot decrypt (§5.7).
-// Each sealed value is opened once, so it also catches a damaged row.
+// Each value is opened once, so it also catches a damaged row.
 func (store *Store) LocalDataStatus(ctx context.Context) (contract.LocalDataStatus, error) {
 	status := contract.LocalDataStatus{AuditKeyMissing: store.HasOrphanedAuditKey()}
 	for _, column := range secretColumns {
-		sealedFilter := ""
-		if column.flagged {
-			sealedFilter = " WHERE sealed = 1"
-		}
-		unreadable, err := store.countUnreadable(ctx, column, sealedFilter)
+		unreadable, err := store.countUnreadable(ctx, column)
 		if err != nil {
 			return contract.LocalDataStatus{}, err
 		}
@@ -152,8 +68,8 @@ func (store *Store) LocalDataStatus(ctx context.Context) (contract.LocalDataStat
 	return status, nil
 }
 
-func (store *Store) countUnreadable(ctx context.Context, column secretColumn, filter string) (int, error) {
-	rows, err := store.db.QueryContext(ctx, fmt.Sprintf(`SELECT %s, %s FROM %s%s`, column.key, column.value, column.table, filter))
+func (store *Store) countUnreadable(ctx context.Context, column secretColumn) (int, error) {
+	rows, err := store.db.QueryContext(ctx, fmt.Sprintf(`SELECT %s, %s FROM %s`, column.key, column.value, column.table))
 	if err != nil {
 		return 0, fmt.Errorf("read sealed %s: %w", column.table, err)
 	}

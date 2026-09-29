@@ -30,13 +30,15 @@ import { passwordLength } from "@/raw-sealing-model";
  */
 const MAX_PASSWORD_LENGTH = 128;
 
+/** Fixed so password managers recognise the raw password field. */
+export const PROOF_PASSWORD_ID = "raw-current-password";
+
 /**
- * What the user chose to prove before the action. `presence` asks the host
- * to run the system prompt; a plain `confirm` click proves nothing more.
+ * What the user gave to prove the action; a plain `confirm` click proves
+ * nothing more.
  */
 export type ProofInput =
   | { kind: "password"; password: string }
-  | { kind: "presence" }
   | { kind: "confirm" };
 
 /** How a proof-carrying action ended. Only `done` lets the caller close. */
@@ -44,12 +46,10 @@ export type ProofResult =
   | { kind: "done" }
   | { kind: "password_invalid" }
   | { kind: "backoff"; retryAfterSeconds: number }
-  | { kind: "presence_cancelled" }
-  | { kind: "presence_unsupported" }
   | { kind: "error"; message: string };
 
 /** How the dialog asks for its proof; see `rawProofMode`. */
-export type ProofMode = "password" | "presence" | "confirm";
+export type ProofMode = "password" | "confirm";
 
 export interface ProofAction {
   id: string;
@@ -72,16 +72,10 @@ interface ProofConfirmDialogProps {
   /** Inputs the action itself needs, such as a new password, after the proof. */
   fields?: ReactNode;
   /**
-   * `password` asks for the raw password; `presence` lets the host show the
-   * system Touch ID prompt on submit; `confirm` is for hosts where neither
-   * is set up, where the dialog only keeps UI automation from acting alone.
+   * `password` asks for the raw password; `confirm` is for hosts where none
+   * is set, where the dialog only keeps UI automation from acting alone.
    */
   proof: ProofMode;
-  /**
-   * In `presence` mode, the user also has a raw password: offer it instead,
-   * and fall back to it when the prompt turns out to be unavailable.
-   */
-  passwordFallback?: boolean;
   /** Labels the proof password, e.g. as the current one beside a new one. */
   passwordLabel?: string;
   /** Keeps every action disabled, e.g. while `children` hold an invalid form. */
@@ -98,9 +92,8 @@ interface ProofConfirmDialogProps {
 /**
  * The one confirmation that asks for a fresh proof (plan §5.11.6, D14). The
  * password lives only in this dialog's state until it is submitted, and is
- * cleared after every attempt. A presence proof is only requested here; the
- * host runs the system prompt when the caller forwards it. A refusal keeps
- * the dialog open; the caller closes it once an action is `done`.
+ * cleared after every attempt. A refusal keeps the dialog open; the caller
+ * closes it once an action is `done`.
  */
 export function ProofConfirmDialog(props: ProofConfirmDialogProps) {
   const t = useT();
@@ -119,7 +112,6 @@ export function ProofConfirmDialog(props: ProofConfirmDialogProps) {
     cancelLabel = t("common.cancel"),
     children,
     description,
-    passwordFallback = false,
     passwordLabel = t("proofDialog.passwordLabel"),
     proof,
     submitDisabled = false,
@@ -130,7 +122,6 @@ export function ProofConfirmDialog(props: ProofConfirmDialogProps) {
       cancelLabel: props.cancelLabel,
       children: props.children,
       description: props.description,
-      passwordFallback: props.passwordFallback,
       passwordLabel: props.passwordLabel,
       proof: props.proof,
       submitDisabled: props.submitDisabled,
@@ -142,11 +133,6 @@ export function ProofConfirmDialog(props: ProofConfirmDialogProps) {
   const [password, setPassword] = useState("");
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [notice, setNotice] = useState<string | null>(null);
-  // The user chose the password over the presence prompt.
-  const [preferPassword, setPreferPassword] = useState(false);
-  // The host reported that it cannot show the presence prompt.
-  const [presenceUnsupported, setPresenceUnsupported] = useState(false);
   const [retryAt, setRetryAt] = useState<number | null>(null);
   const [now, setNow] = useState(() => Date.now());
   const passwordRef = useRef<HTMLInputElement>(null);
@@ -160,10 +146,7 @@ export function ProofConfirmDialog(props: ProofConfirmDialogProps) {
     if (open) return;
     setPassword("");
     setError(null);
-    setNotice(null);
     setRetryAt(null);
-    setPreferPassword(false);
-    setPresenceUnsupported(false);
   }, [open]);
 
   useEffect(() => {
@@ -178,13 +161,7 @@ export function ProofConfirmDialog(props: ProofConfirmDialogProps) {
 
   const retrySeconds =
     retryAt === null ? 0 : Math.max(1, Math.ceil((retryAt - now) / 1000));
-  const mode: ProofMode =
-    proof === "presence" &&
-    passwordFallback &&
-    (preferPassword || presenceUnsupported)
-      ? "password"
-      : proof;
-  const needsPassword = mode === "password";
+  const needsPassword = proof === "password";
   const passwordTooLong =
     needsPassword && passwordLength(password) > MAX_PASSWORD_LENGTH;
   const blocked =
@@ -201,27 +178,14 @@ export function ProofConfirmDialog(props: ProofConfirmDialogProps) {
       }),
     );
 
-  const switchProof = (usePassword: boolean) => {
-    if (pendingRef.current) return;
-    setPreferPassword(usePassword);
-    setPassword("");
-    setError(null);
-    setNotice(null);
-    focusProof(usePassword);
-  };
-
   const submit = async (actionId: string) => {
     if (pendingRef.current || !open || blocked) return;
-    const input: ProofInput =
-      mode === "password"
-        ? { kind: "password", password }
-        : mode === "presence"
-          ? { kind: "presence" }
-          : { kind: "confirm" };
+    const input: ProofInput = needsPassword
+      ? { kind: "password", password }
+      : { kind: "confirm" };
     // Nothing keeps the password once it is on its way.
     setPassword("");
     setError(null);
-    setNotice(null);
     pendingRef.current = true;
     setPending(true);
     let result: ProofResult;
@@ -236,24 +200,11 @@ export function ProofConfirmDialog(props: ProofConfirmDialogProps) {
       pendingRef.current = false;
       setPending(false);
     }
-    let focusPassword = needsPassword;
     switch (result.kind) {
       case "done":
         return;
       case "password_invalid":
         setError(t("proofDialog.passwordInvalid"));
-        break;
-      case "presence_cancelled":
-        setNotice(t("proofDialog.presenceCancelled"));
-        break;
-      case "presence_unsupported":
-        setPresenceUnsupported(true);
-        if (passwordFallback) {
-          setNotice(t("proofDialog.presenceFallback"));
-          focusPassword = true;
-        } else {
-          setError(t("proofDialog.presenceUnsupported"));
-        }
         break;
       case "backoff": {
         const at = Date.now() + result.retryAfterSeconds * 1000;
@@ -266,7 +217,7 @@ export function ProofConfirmDialog(props: ProofConfirmDialogProps) {
         setError(result.message || t("proofDialog.failed"));
         break;
     }
-    focusProof(focusPassword);
+    focusProof(needsPassword);
   };
 
   const [defaultAction, ...otherActions] = actions;
@@ -304,33 +255,15 @@ export function ProofConfirmDialog(props: ProofConfirmDialogProps) {
             </AlertDialogDescription>
           </AlertDialogHeader>
           {children}
-          {mode === "presence" ? (
-            <div
-              className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 text-xs text-text-secondary"
-              data-slot="proof-presence"
-            >
-              <span>{t("proofDialog.presenceHint")}</span>
-              {passwordFallback ? (
-                <Button
-                  className="h-auto px-0"
-                  disabled={pending}
-                  onClick={() => switchProof(true)}
-                  size="xs"
-                  type="button"
-                  variant="link"
-                >
-                  {t("proofDialog.usePassword")}
-                </Button>
-              ) : null}
-            </div>
-          ) : null}
           {needsPassword ? (
             <div className="grid gap-1">
-              <Field label={passwordLabel}>
+              <Field htmlFor={PROOF_PASSWORD_ID} label={passwordLabel}>
                 <Input
                   aria-invalid={passwordTooLong || undefined}
-                  autoComplete="off"
+                  autoComplete="current-password"
                   disabled={pending}
+                  id={PROOF_PASSWORD_ID}
+                  name="current-password"
                   onChange={(event) => setPassword(event.target.value)}
                   ref={passwordRef}
                   spellCheck={false}
@@ -342,18 +275,6 @@ export function ProofConfirmDialog(props: ProofConfirmDialogProps) {
                 <FormMessage tone="error">
                   {t("rawSealing.tooLong", { max: MAX_PASSWORD_LENGTH })}
                 </FormMessage>
-              ) : null}
-              {proof === "presence" && !presenceUnsupported ? (
-                <Button
-                  className="h-auto justify-self-start px-0"
-                  disabled={pending}
-                  onClick={() => switchProof(false)}
-                  size="xs"
-                  type="button"
-                  variant="link"
-                >
-                  {t("proofDialog.usePresence")}
-                </Button>
               ) : null}
             </div>
           ) : null}
@@ -370,11 +291,6 @@ export function ProofConfirmDialog(props: ProofConfirmDialogProps) {
           {retryAt !== null ? (
             <FormMessage data-slot="proof-backoff" tone="warning">
               {t("proofDialog.backoff", { seconds: retrySeconds })}
-            </FormMessage>
-          ) : null}
-          {notice ? (
-            <FormMessage data-slot="proof-notice" tone="notice">
-              {notice}
             </FormMessage>
           ) : null}
           {error ? <FormMessage tone="error">{error}</FormMessage> : null}

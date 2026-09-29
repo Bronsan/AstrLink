@@ -14,8 +14,8 @@ function controlError(status: string, code: string): Error {
 
 describe("rawSealingErrorMessage", () => {
   it.each([
-    ["409 Conflict", "raw_access_unavailable", "尚未设置原文口令。"],
-    ["409 Conflict", "raw_password_not_set", "尚未设置原文口令。"],
+    ["409 Conflict", "raw_access_unavailable", "还没设置原文保护。"],
+    ["409 Conflict", "raw_password_not_set", "还没设置原文保护。"],
     ["409 Conflict", "raw_sealing_unavailable", "当前 Core 不支持原文封存。"],
     [
       "409 Conflict",
@@ -47,13 +47,10 @@ describe("rawSealingErrorMessage", () => {
 });
 
 describe("rawProofOf", () => {
-  it("carries a password or a presence proof, and nothing for a confirmation", () => {
+  it("carries a password, and nothing for a confirmation", () => {
     expect(rawProofOf({ kind: "password", password: "correct horse" })).toEqual(
       { kind: "password", password: "correct horse" },
     );
-    expect(rawProofOf({ kind: "presence" })).toEqual({
-      kind: "local_presence",
-    });
     expect(rawProofOf({ kind: "confirm" })).toBeUndefined();
   });
 });
@@ -66,11 +63,5 @@ describe("refusalResult", () => {
     expect(
       refusalResult({ outcome: "backoff", retry_after_seconds: 30 }),
     ).toEqual({ kind: "backoff", retryAfterSeconds: 30 });
-    expect(refusalResult({ outcome: "presence_cancelled" })).toEqual({
-      kind: "presence_cancelled",
-    });
-    expect(refusalResult({ outcome: "presence_unsupported" })).toEqual({
-      kind: "presence_unsupported",
-    });
   });
 });

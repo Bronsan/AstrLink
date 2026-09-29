@@ -137,7 +137,7 @@ func main() {
 		if localKeyFile == "" {
 			localKeyFile = os.Getenv(localkey.EnvKeyFile)
 		}
-		localKey, keySource, err := localkey.Resolve(localkey.Options{
+		localKey, _, err := localkey.Resolve(localkey.Options{
 			StdinKey: tokens.localKey,
 			KeyFile:  localKeyFile,
 			DataDir:  dataDirectory,
@@ -164,15 +164,7 @@ func main() {
 		} else if recovered > 0 {
 			logger.Printf("recovered %d interrupted request record(s)", recovered)
 		}
-		rawVault := controlapi.NewRawVault(store, controlapi.RawVaultOptions{
-			// Only a key the desktop keeps in the keychain may carry the
-			// local envelope for Touch ID (§5.11.9).
-			LocalEnvelope: keySource == localkey.SourceStdin,
-			Logf:          logger.Printf,
-		})
-		if err := rawVault.EnsureRawSealing(ctx); err != nil {
-			logger.Printf("prepare raw content sealing: %v", err)
-		}
+		rawVault := controlapi.NewRawVault(store, controlapi.RawVaultOptions{Logf: logger.Printf})
 		warnWithoutRawPassword(ctx, rawVault, dataDirectory, logger.Printf)
 		accessTokenManager, err := accesstoken.NewManager(store)
 		if err != nil {

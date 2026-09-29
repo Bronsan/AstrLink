@@ -49,7 +49,6 @@ function rawSealing(overrides: Partial<RawSealingState> = {}): RawSealingState {
     configured: true,
     password_set: true,
     password_required: overrides.password_set === false,
-    local_presence: false,
     envelopes: ["password"],
     key_verified: true,
     unlocked: false,
@@ -59,8 +58,6 @@ function rawSealing(overrides: Partial<RawSealingState> = {}): RawSealingState {
     password_min_length: 8,
     password_max_length: 128,
     key_replaced: false,
-    presence_available: false,
-    keychain_build: false,
     ...overrides,
   };
 }
@@ -335,7 +332,7 @@ describe("SafetyPolicy", () => {
     const entry = container.querySelector<HTMLButtonElement>(
       '[data-slot="raw-password-entry"]',
     );
-    expect(entry?.textContent).toContain("原文口令");
+    expect(entry?.textContent).toContain("原文保护");
     expect(entry?.querySelector(".sr-only")?.textContent).toBe("未设置");
     expect(header?.contains(entry ?? null)).toBe(true);
     await act(async () => {
@@ -345,16 +342,16 @@ describe("SafetyPolicy", () => {
     const missing = document.querySelector(
       '[data-slot="raw-password-missing"]',
     );
-    expect(missing?.textContent).toContain("原文正文不会被记录");
+    expect(missing?.textContent).toContain("新请求的原文不会保存");
     const set = [...(missing?.querySelectorAll("button") ?? [])].find(
-      (button) => button.textContent === "设置口令",
+      (button) => button.textContent === "开始设置",
     );
     await act(async () => {
       set?.click();
       await Promise.resolve();
     });
     const dialog = document.querySelector('[data-slot="proof-confirm-dialog"]');
-    expect(dialog?.textContent).toContain("设置原文口令");
+    expect(dialog?.textContent).toContain("保护请求原文");
     // Opened from the page, the dialog can be cancelled.
     expect(
       [...(dialog?.querySelectorAll("button") ?? [])].some(

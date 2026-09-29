@@ -32,11 +32,7 @@ export type RawAccessProofOutcome =
   | { outcome: "decided"; grant: RawAccessGrant }
   | { outcome: "password_invalid" }
   | { outcome: "backoff"; retry_after_seconds: number }
-  | { outcome: "not_pending" }
-  /** The presence prompt was dismissed; nothing reached Core. */
-  | { outcome: "presence_cancelled" }
-  /** This build cannot check presence; ask for the password instead. */
-  | { outcome: "presence_unsupported" };
+  | { outcome: "not_pending" };
 
 type JsonObject = Record<string, unknown>;
 
@@ -119,8 +115,6 @@ export function parseRawAccessProofOutcome(
       };
     case "password_invalid":
     case "not_pending":
-    case "presence_cancelled":
-    case "presence_unsupported":
       return { outcome: outcome.outcome };
     case "backoff": {
       const seconds = outcome.retry_after_seconds;

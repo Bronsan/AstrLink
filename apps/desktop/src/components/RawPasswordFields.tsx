@@ -11,6 +11,10 @@ import {
   type RawSealingStatus,
 } from "@/raw-sealing-model";
 
+/** Fixed ids, so password managers and labels find the new password. */
+export const NEW_PASSWORD_ID = "raw-new-password";
+export const CONFIRM_PASSWORD_ID = "raw-confirm-password";
+
 type PasswordPolicy = Pick<
   RawSealingStatus,
   "password_min_length" | "password_max_length"
@@ -24,6 +28,7 @@ export function RawPasswordFields({
   confirmation,
   disabled = false,
   inputRef,
+  labels,
   onConfirmationChange,
   onPasswordChange,
   password,
@@ -33,6 +38,8 @@ export function RawPasswordFields({
   disabled?: boolean;
   /** The new-password input, for a dialog that focuses it on open. */
   inputRef?: Ref<HTMLInputElement>;
+  /** Replaces the new-password labels where no current password is asked. */
+  labels?: { password: string; confirmation: string };
   onConfirmationChange: (value: string) => void;
   onPasswordChange: (value: string) => void;
   password: string;
@@ -56,12 +63,17 @@ export function RawPasswordFields({
   });
   return (
     <div className="grid gap-3" data-slot="raw-password-fields">
-      <Field label={t("rawSealing.newPassword")}>
+      <Field
+        htmlFor={NEW_PASSWORD_ID}
+        label={labels?.password ?? t("rawSealing.newPassword")}
+      >
         <Input
           aria-describedby={hintId}
           aria-invalid={tooLong || undefined}
           autoComplete="new-password"
           disabled={disabled}
+          id={NEW_PASSWORD_ID}
+          name="new-password"
           onChange={(event) => onPasswordChange(event.target.value)}
           ref={inputRef}
           spellCheck={false}
@@ -69,12 +81,17 @@ export function RawPasswordFields({
           value={password}
         />
       </Field>
-      <Field label={t("rawSealing.confirmPassword")}>
+      <Field
+        htmlFor={CONFIRM_PASSWORD_ID}
+        label={labels?.confirmation ?? t("rawSealing.confirmPassword")}
+      >
         <Input
           aria-describedby={hintId}
           aria-invalid={mismatch || undefined}
           autoComplete="new-password"
           disabled={disabled}
+          id={CONFIRM_PASSWORD_ID}
+          name="confirm-password"
           onChange={(event) => onConfirmationChange(event.target.value)}
           spellCheck={false}
           type="password"

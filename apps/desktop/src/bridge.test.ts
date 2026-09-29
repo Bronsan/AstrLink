@@ -21,11 +21,10 @@ import {
   lockRaw,
   setRawPassword,
   unlockRaw,
-  verifyLocalPresence,
-  verifyRawPassword,
   cancelPrivacyModelInstallation,
   pausePrivacyModelInstallation,
   resumePrivacyModelInstallation,
+  copyAccessToken,
   createAccessToken,
   createService,
   deleteAccessToken,
@@ -58,7 +57,6 @@ import {
   probeServiceProxy,
   testService,
   probePrivacyModel,
-  revealAccessToken,
   restartCore,
   updateService,
   updatePrivacyPolicy,
@@ -141,16 +139,6 @@ describe("desktop bridge contract", () => {
       proof: { kind: "password", password: "correct horse" },
     });
 
-    invokeMock.mockResolvedValueOnce({ outcome: "presence_cancelled" });
-    await expect(
-      decideRawAccess(grant.grant_id, "window_15m", { kind: "local_presence" }),
-    ).resolves.toEqual({ outcome: "presence_cancelled" });
-    expect(invokeMock).toHaveBeenLastCalledWith("decide_raw_access", {
-      grantId: grant.grant_id,
-      decision: "window_15m",
-      proof: { kind: "local_presence" },
-    });
-
     // A denial never carries a proof, even if the caller passes one.
     invokeMock.mockResolvedValueOnce({ outcome: "not_pending" });
     await expect(
@@ -190,8 +178,7 @@ describe("desktop bridge contract", () => {
       configured: true,
       password_set: true,
       password_required: false,
-      local_presence: true,
-      envelopes: ["password", "local"],
+      envelopes: ["password"],
       key_verified: true,
       unlocked: false,
       unlock_expires_at: null,
@@ -201,16 +188,8 @@ describe("desktop bridge contract", () => {
       password_max_length: 128,
       key_replaced: false,
     };
-    invokeMock.mockResolvedValueOnce({
-      ...status,
-      presence_available: true,
-      keychain_build: true,
-    });
-    await expect(getRawSealingStatus()).resolves.toEqual({
-      ...status,
-      presence_available: true,
-      keychain_build: true,
-    });
+    invokeMock.mockResolvedValueOnce(status);
+    await expect(getRawSealingStatus()).resolves.toEqual(status);
     expect(invokeMock).toHaveBeenLastCalledWith("raw_sealing_status");
 
     const unlocked = {
@@ -219,13 +198,15 @@ describe("desktop bridge contract", () => {
       unlock_expires_at: "2026-09-28T10:15:00Z",
     };
     invokeMock.mockResolvedValueOnce({ outcome: "sealing", status: unlocked });
-    await expect(unlockRaw({ kind: "local_presence" })).resolves.toEqual({
+    await expect(
+      unlockRaw({ kind: "password", password: "correct horse" }),
+    ).resolves.toEqual({
       outcome: "sealing",
       status: unlocked,
       reset: null,
     });
     expect(invokeMock).toHaveBeenLastCalledWith("unlock_raw", {
-      proof: { kind: "local_presence" },
+      proof: { kind: "password", password: "correct horse" },
     });
 
     invokeMock.mockResolvedValueOnce(status);
@@ -233,28 +214,18 @@ describe("desktop bridge contract", () => {
     expect(invokeMock).toHaveBeenLastCalledWith("lock_raw");
 
     invokeMock.mockResolvedValueOnce({ outcome: "sealing", status });
-    await expect(acknowledgeRawKey("terminal passphrase")).resolves.toEqual({
+    await expect(
+      acknowledgeRawKey({ kind: "password", password: "terminal passphrase" }),
+    ).resolves.toEqual({
       outcome: "sealing",
       status,
       reset: null,
     });
     expect(invokeMock).toHaveBeenLastCalledWith("acknowledge_raw_key", {
-      password: "terminal passphrase",
+      proof: { kind: "password", password: "terminal passphrase" },
     });
 
-    invokeMock.mockResolvedValueOnce({ outcome: "password_invalid" });
-    await expect(verifyRawPassword("correct horse")).resolves.toEqual({
-      outcome: "password_invalid",
-    });
-    expect(invokeMock).toHaveBeenLastCalledWith("verify_raw_password", {
-      password: "correct horse",
-    });
-
-    invokeMock.mockResolvedValueOnce({
-      ...status,
-      presence_available: false,
-      keychain_build: false,
-    });
+    invokeMock.mockResolvedValueOnce(status);
     await expect(getRawSealingStatus()).resolves.toMatchObject({
       key_replaced: false,
     });
@@ -292,22 +263,12 @@ describe("desktop bridge contract", () => {
       proof: null,
     });
 
-    invokeMock.mockResolvedValueOnce({ outcome: "verified" });
-    await expect(verifyLocalPresence("reveal_access_token")).resolves.toEqual({
-      outcome: "verified",
-    });
-    expect(invokeMock).toHaveBeenLastCalledWith("verify_local_presence", {
-      purpose: "reveal_access_token",
-    });
-
-    invokeMock.mockResolvedValueOnce(status);
-    await expect(getRawSealingStatus()).rejects.toThrow("presence_available");
-    invokeMock.mockResolvedValueOnce({ ...status, presence_available: true });
-    await expect(getRawSealingStatus()).rejects.toThrow("keychain_build");
+    invokeMock.mockResolvedValueOnce({ ...status, envelopes: ["local"] });
+    await expect(getRawSealingStatus()).rejects.toThrow("$.envelopes[0]");
     invokeMock.mockResolvedValueOnce({ outcome: "decided" });
-    await expect(unlockRaw({ kind: "local_presence" })).rejects.toThrow(
-      "$.outcome",
-    );
+    await expect(
+      unlockRaw({ kind: "password", password: "correct horse" }),
+    ).rejects.toThrow("$.outcome");
   });
 
   it("reads which saved data no longer decrypts", async () => {
@@ -755,13 +716,9 @@ describe("desktop bridge contract", () => {
       name: "VS Code",
     });
 
-    invokeMock.mockResolvedValueOnce({
-      access_token: secret,
-    });
-    await expect(revealAccessToken("token_01")).resolves.toEqual({
-      access_token: secret,
-    });
-    expect(invokeMock).toHaveBeenLastCalledWith("reveal_access_token", {
+    invokeMock.mockResolvedValueOnce(true);
+    await expect(copyAccessToken("token_01")).resolves.toBe(true);
+    expect(invokeMock).toHaveBeenLastCalledWith("copy_access_token", {
       tokenId: "token_01",
     });
 

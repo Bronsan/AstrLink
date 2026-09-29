@@ -46,8 +46,8 @@ func (clock *rawTestClock) Advance(delta time.Duration) {
 	clock.now = clock.now.Add(delta)
 }
 
-func newTestRawVault(store storage.RawSealingStore, local bool, clock *rawTestClock) *Vault {
-	vault := NewRawVault(store, RawVaultOptions{LocalEnvelope: local, KDF: rawVaultTestKDF})
+func newTestRawVault(store storage.RawSealingStore, clock *rawTestClock) *Vault {
+	vault := NewRawVault(store, RawVaultOptions{KDF: rawVaultTestKDF})
 	if clock != nil {
 		vault.now = clock.Now
 	}
@@ -56,8 +56,6 @@ func newTestRawVault(store storage.RawSealingStore, local bool, clock *rawTestCl
 
 func passwordProof(password string) RawProof { return RawProof{Password: []byte(password)} }
 
-var localPresenceProof = RawProof{LocalPresence: true}
-
 func mustSetRawPassword(t *testing.T, vault *Vault, password string, proof RawProof) RawVaultStatus {
 	t.Helper()
 	outcome, err := vault.ChangePassword(context.Background(), RawPasswordSet, []byte(password), proof)
@@ -65,15 +63,6 @@ func mustSetRawPassword(t *testing.T, vault *Vault, password string, proof RawPr
 		t.Fatalf("set raw password: %v", err)
 	}
 	return outcome.Status
-}
-
-// resealAll moves the fixture's audit-sealed raw parts onto the raw key, as
-// the vault's background pass does.
-func resealAll(t *testing.T, store *sqlite.Store) {
-	t.Helper()
-	if _, err := store.ResealRawParts(context.Background(), rawResealBatch); err != nil {
-		t.Fatal(err)
-	}
 }
 
 func rawPartByDirection(t *testing.T, store *sqlite.Store, direction storage.AuditDirection) storage.AuditBlob {
@@ -108,21 +97,14 @@ func openWithOpener(t *testing.T, opener RawKeyOpener, blob storage.AuditBlob) s
 func TestRawVaultPasswordLifecycle(t *testing.T) {
 	ctx := context.Background()
 	store := newRawAccessFixture(t, nil).store
-	vault := newTestRawVault(store, false, nil)
+	vault := newTestRawVault(store, nil)
 
 	status, err := vault.Status(ctx)
-	if err != nil || status.Configured || status.PasswordSet || status.LocalPresence {
+	if err != nil || status.Configured || status.PasswordSet {
 		t.Fatalf("fresh status=%#v err=%v", status, err)
 	}
 	if _, err := vault.Unlock(ctx, passwordProof(rawTestPassword)); !errors.Is(err, ErrRawNotConfigured) {
 		t.Fatalf("unlock before set: %v", err)
-	}
-	// Key file platforms get no key without a password.
-	if err := vault.EnsureRawSealing(ctx); err != nil {
-		t.Fatal(err)
-	}
-	if status, _ := vault.Status(ctx); status.Configured {
-		t.Fatal("EnsureRawSealing created a key without the keychain")
 	}
 	for _, testCase := range []struct {
 		password string
@@ -144,11 +126,11 @@ func TestRawVaultPasswordLifecycle(t *testing.T) {
 	}
 
 	status = mustSetRawPassword(t, vault, rawTestPassword, RawProof{})
-	if !status.Configured || !status.PasswordSet || status.LocalEnvelope || status.LocalPresence || !status.KeyVerified || status.Unlocked {
+	if !status.Configured || !status.PasswordSet || !status.KeyVerified || status.Unlocked {
 		t.Fatalf("status after set=%#v", status)
 	}
 	state, err := store.LoadRawSealing(ctx)
-	if err != nil || state.Local != nil || state.Password == nil {
+	if err != nil || state.Password == nil {
 		t.Fatalf("stored state=%#v err=%v", state, err)
 	}
 	if _, err := vault.ChangePassword(ctx, RawPasswordSet, []byte(rawVaultNewPassword), RawProof{}); !errors.Is(err, ErrRawPasswordAlreadySet) {
@@ -160,7 +142,6 @@ func TestRawVaultPasswordLifecycle(t *testing.T) {
 		want  error
 	}{
 		{RawProof{}, ErrRawProofRequired},
-		{localPresenceProof, ErrRawProofRequired},
 		{passwordProof("wrong password"), ErrRawPasswordInvalid},
 	} {
 		if _, err := vault.ChangePassword(ctx, RawPasswordChange, []byte(rawVaultNewPassword), testCase.proof); !errors.Is(err, testCase.want) {
@@ -188,7 +169,7 @@ func TestRawVaultPasswordLifecycle(t *testing.T) {
 func TestRawVaultBacksOffWrongPasswords(t *testing.T) {
 	ctx := context.Background()
 	clock := newRawTestClock()
-	vault := newTestRawVault(newRawAccessFixture(t, nil).store, false, clock)
+	vault := newTestRawVault(newRawAccessFixture(t, nil).store, clock)
 	mustSetRawPassword(t, vault, rawTestPassword, RawProof{})
 	wrong := passwordProof("wrong password")
 	noop := func(RawKeyOpener) error { return nil }
@@ -204,8 +185,8 @@ func TestRawVaultBacksOffWrongPasswords(t *testing.T) {
 		if _, err := vault.Unlock(ctx, passwordProof(rawTestPassword)); !errors.As(err, &backoff) || backoff.Remaining != want {
 			t.Fatalf("after %d failures: %v want backoff %s", failures, err, want)
 		}
-		if err := vault.WithProof(ctx, localPresenceProof, noop); !errors.As(err, &backoff) {
-			t.Fatalf("backoff did not cover every proof: %v", err)
+		if _, err := vault.Verify(ctx, passwordProof(rawTestPassword)); !errors.As(err, &backoff) {
+			t.Fatalf("backoff did not cover verify: %v", err)
 		}
 		if status, _ := vault.Status(ctx); status.RetryAfter != want {
 			t.Fatalf("status retry after %s want %s", status.RetryAfter, want)
@@ -230,7 +211,7 @@ func TestRawVaultBacksOffWrongPasswords(t *testing.T) {
 
 func TestRawVaultParallelGuessesQueueBehindTheBackoff(t *testing.T) {
 	clock := newRawTestClock()
-	vault := newTestRawVault(newRawAccessFixture(t, nil).store, false, clock)
+	vault := newTestRawVault(newRawAccessFixture(t, nil).store, clock)
 	mustSetRawPassword(t, vault, rawTestPassword, RawProof{})
 	var invalid sync.WaitGroup
 	results := make(chan error, 12)
@@ -263,15 +244,15 @@ func TestRawVaultParallelGuessesQueueBehindTheBackoff(t *testing.T) {
 func TestRawVaultProofZeroesThePrivateKeyAndLeavesTheSessionLocked(t *testing.T) {
 	ctx := context.Background()
 	store := newRawAccessFixture(t, nil).store
-	vault := newTestRawVault(store, false, nil)
+	vault := newTestRawVault(store, nil)
 	mustSetRawPassword(t, vault, rawTestPassword, RawProof{})
-	resealAll(t, store)
+	captureRawTestParts(t, store)
 	var cleared [][]byte
 	vault.privateCleared = func(private []byte) { cleared = append(cleared, private) }
 
 	blob := rawPartByDirection(t, store, storage.AuditDirectionRequest)
 	if blob.Sealing != storage.AuditSealingRawV1 {
-		t.Fatalf("fixture part was not resealed: %q", blob.Sealing)
+		t.Fatalf("fixture part was not sealed to the raw key: %q", blob.Sealing)
 	}
 	var kept RawKeyOpener
 	if err := vault.WithProof(ctx, passwordProof(rawTestPassword), func(opener RawKeyOpener) error {
@@ -319,7 +300,7 @@ func TestRawVaultProofZeroesThePrivateKeyAndLeavesTheSessionLocked(t *testing.T)
 func TestRawVaultVerifyChecksAProofWithoutASession(t *testing.T) {
 	ctx := context.Background()
 	clock := newRawTestClock()
-	vault := newTestRawVault(newRawAccessFixture(t, nil).store, false, clock)
+	vault := newTestRawVault(newRawAccessFixture(t, nil).store, clock)
 	if _, err := vault.Verify(ctx, RawProof{}); !errors.Is(err, ErrRawProofRequired) {
 		t.Fatalf("verify without proof: %v", err)
 	}
@@ -380,9 +361,9 @@ func TestRawVaultUnlockSessionIdlesOut(t *testing.T) {
 	ctx := context.Background()
 	clock := newRawTestClock()
 	store := newRawAccessFixture(t, nil).store
-	vault := newTestRawVault(store, false, clock)
+	vault := newTestRawVault(store, clock)
 	mustSetRawPassword(t, vault, rawTestPassword, RawProof{})
-	resealAll(t, store)
+	captureRawTestParts(t, store)
 	blob := rawPartByDirection(t, store, storage.AuditDirectionResponse)
 
 	if _, err := vault.Unlock(ctx, RawProof{}); !errors.Is(err, ErrRawProofRequired) {
@@ -435,183 +416,19 @@ func TestRawVaultUnlockSessionIdlesOut(t *testing.T) {
 	}
 }
 
-func TestRawVaultKeychainKeyWaitsForARawPassword(t *testing.T) {
-	ctx := context.Background()
-	store := newRawAccessFixture(t, nil).store
-	vault := newTestRawVault(store, true, nil)
-	if err := vault.EnsureRawSealing(ctx); err != nil {
-		t.Fatal(err)
-	}
-	status, err := vault.Status(ctx)
-	if err != nil || !status.Configured || status.PasswordSet || !status.LocalEnvelope || !status.LocalPresence || !status.KeyVerified {
-		t.Fatalf("status=%#v err=%v", status, err)
-	}
-	first, err := store.LoadRawSealing(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := vault.EnsureRawSealing(ctx); err != nil {
-		t.Fatal(err)
-	}
-	if again, _ := store.LoadRawSealing(ctx); again.KeyID != first.KeyID {
-		t.Fatal("EnsureRawSealing replaced an existing key")
-	}
-	// The local key takes older raw parts off the audit key, but nothing
-	// raw opens until a raw password is set: not local presence, not a
-	// password proof, not an unlock.
-	resealAll(t, store)
-	blob := rawPartByDirection(t, store, storage.AuditDirectionRequest)
-	for name, proof := range map[string]RawProof{"local presence": localPresenceProof, "password": passwordProof(rawTestPassword)} {
-		if err := vault.WithProof(ctx, proof, func(RawKeyOpener) error {
-			t.Fatalf("%s opened raw content without a raw password", name)
-			return nil
-		}); !errors.Is(err, ErrRawNotConfigured) {
-			t.Fatalf("%s proof without a raw password: %v", name, err)
-		}
-		if _, err := vault.Unlock(ctx, proof); !errors.Is(err, ErrRawNotConfigured) {
-			t.Fatalf("%s unlock without a raw password: %v", name, err)
-		}
-	}
-	if _, err := vault.ChangePassword(ctx, RawPasswordSet, []byte(rawTestPassword), RawProof{}); !errors.Is(err, ErrRawProofRequired) {
-		t.Fatalf("set without presence: %v", err)
-	}
-	// Setting the first password starts the reseal pass at once.
-	select {
-	case <-vault.reseal:
-	default:
-	}
-	status = mustSetRawPassword(t, vault, rawTestPassword, localPresenceProof)
-	if !status.PasswordSet || !status.LocalPresence {
-		t.Fatalf("status after set=%#v", status)
-	}
-	select {
-	case <-vault.reseal:
-	default:
-		t.Fatal("setting the first raw password did not request a reseal")
-	}
-	if err := vault.WithProof(ctx, localPresenceProof, func(opener RawKeyOpener) error {
-		if !strings.Contains(openWithOpener(t, opener, blob), rawTestSecret) {
-			t.Fatal("local presence did not open the raw part")
-		}
-		return nil
-	}); err != nil {
-		t.Fatal(err)
-	}
-	// A forgotten password is rewrapped from the local envelope without
-	// losing a single part.
-	if _, err := vault.ChangePassword(ctx, RawPasswordChange, []byte(rawVaultNewPassword), localPresenceProof); err != nil {
-		t.Fatal(err)
-	}
-	if err := vault.WithProof(ctx, passwordProof(rawVaultNewPassword), func(opener RawKeyOpener) error {
-		if !strings.Contains(openWithOpener(t, opener, blob), rawTestSecret) {
-			t.Fatal("rewrapped key lost the raw part")
-		}
-		return nil
-	}); err != nil {
-		t.Fatal(err)
-	}
-	// A reset needs a new password even here: a key with only its local
-	// envelope would keep nothing raw.
-	if _, err := vault.ChangePassword(ctx, RawPasswordReset, nil, RawProof{}); !errors.Is(err, ErrRawPasswordRequired) {
-		t.Fatalf("reset without a password: %v", err)
-	}
-	if again := rawPartByDirection(t, store, storage.AuditDirectionRequest); again.Sealing != storage.AuditSealingRawV1 ||
-		string(again.WrappedKey) != string(blob.WrappedKey) {
-		t.Fatal("a refused reset discarded raw parts")
-	}
-	outcome, err := vault.ChangePassword(ctx, RawPasswordReset, []byte(rawTestPassword), localPresenceProof)
-	if err != nil || outcome.Reset == nil || outcome.Reset.DeletedParts != 2 || !outcome.Status.PasswordSet || !outcome.Status.LocalPresence {
-		t.Fatalf("reset outcome=%#v err=%v", outcome, err)
-	}
-}
-
-func TestRawVaultResetTakesTheProofTheLocalEnvelopeOpens(t *testing.T) {
-	ctx := context.Background()
-	path := filepath.Join(t.TempDir(), "astrlink.db")
-	first := newRawAccessFixtureAt(t, path, nil).store
-	vault := newTestRawVault(first, true, nil)
-	if err := vault.EnsureRawSealing(ctx); err != nil {
-		t.Fatal(err)
-	}
-	// Raw parts kept before an upgrade wait on the keychain key alone.
-	resealAll(t, first)
-	before, err := first.LoadRawSealing(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	kept := func(when string) {
-		t.Helper()
-		state, err := first.LoadRawSealing(ctx)
-		if err != nil || state.KeyID != before.KeyID {
-			t.Fatalf("%s replaced the key: state=%d err=%v", when, state.KeyID, err)
-		}
-		if blob := rawPartByDirection(t, first, storage.AuditDirectionRequest); blob.Sealing != storage.AuditSealingRawV1 {
-			t.Fatalf("%s discarded raw parts", when)
-		}
-	}
-	// Driving the operator API alone neither discards them nor plants a
-	// password: the local envelope opens this key, so a reset takes its
-	// proof.
-	if _, err := vault.ChangePassword(ctx, RawPasswordReset, []byte(rawVaultNewPassword), RawProof{}); !errors.Is(err, ErrRawProofRequired) {
-		t.Fatalf("reset of a keychain key without a proof: %v", err)
-	}
-	kept("a reset without a proof")
-	if _, err := vault.ChangePassword(ctx, RawPasswordReset, []byte(rawVaultNewPassword), passwordProof(rawTestPassword)); !errors.Is(err, ErrRawProofRequired) {
-		t.Fatalf("reset with a password the key does not have: %v", err)
-	}
-	kept("a reset with a password proof and no password")
-
-	mustSetRawPassword(t, vault, rawTestPassword, localPresenceProof)
-	if _, err := vault.ChangePassword(ctx, RawPasswordReset, []byte(rawVaultNewPassword), RawProof{}); !errors.Is(err, ErrRawProofRequired) {
-		t.Fatalf("reset of a password key without a proof: %v", err)
-	}
-	if _, err := vault.ChangePassword(ctx, RawPasswordReset, []byte(rawVaultNewPassword), passwordProof("not the raw password")); !errors.Is(err, ErrRawPasswordInvalid) {
-		t.Fatalf("reset with a wrong password: %v", err)
-	}
-	kept("a refused reset")
-	vault.noteRightPassword()
-	// The current password opens the key as well as presence does.
-	outcome, err := vault.ChangePassword(ctx, RawPasswordReset, []byte(rawVaultNewPassword), passwordProof(rawTestPassword))
-	if err != nil || outcome.Reset == nil || outcome.Reset.DeletedParts != 2 {
-		t.Fatalf("reset with the current password=%#v err=%v", outcome, err)
-	}
-	if err := first.Close(); err != nil {
-		t.Fatal(err)
-	}
-
-	// Once the keychain entry is lost nothing here opens the key: a reset
-	// is the only way back and takes no proof.
-	lost, err := sqlite.Open(ctx, path, sqlite.WithLocalKey(make([]byte, storage.AuditKeyBytes)))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = lost.Close() })
-	recovered := newTestRawVault(lost, true, nil)
-	if status, err := recovered.Status(ctx); err != nil || status.LocalPresence {
-		t.Fatalf("status with a lost keychain=%#v err=%v", status, err)
-	}
-	outcome, err = recovered.ChangePassword(ctx, RawPasswordReset, []byte(rawTestPassword), RawProof{})
-	if err != nil || outcome.Reset == nil || !outcome.Status.PasswordSet || !outcome.Status.LocalPresence {
-		t.Fatalf("reset with a lost keychain=%#v err=%v", outcome, err)
-	}
-}
-
 func TestRawVaultRepairsAKeyTheKeychainLost(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "astrlink.db")
 	first := newRawAccessFixtureAt(t, path, nil).store
-	vault := newTestRawVault(first, true, nil)
-	if err := vault.EnsureRawSealing(ctx); err != nil {
-		t.Fatal(err)
-	}
-	mustSetRawPassword(t, vault, rawTestPassword, localPresenceProof)
-	resealAll(t, first)
+	vault := newTestRawVault(first, nil)
+	mustSetRawPassword(t, vault, rawTestPassword, RawProof{})
+	captureRawTestParts(t, first)
 	if err := first.Close(); err != nil {
 		t.Fatal(err)
 	}
 
 	// The keychain entry is gone: Core starts with a new local key, so the
-	// local envelope and the public key MAC no longer verify.
+	// public key MAC no longer verifies.
 	lost, err := sqlite.Open(ctx, path, sqlite.WithLocalKey(make([]byte, storage.AuditKeyBytes)))
 	if err != nil {
 		t.Fatal(err)
@@ -629,40 +446,31 @@ func TestRawVaultRepairsAKeyTheKeychainLost(t *testing.T) {
 	if lost.HasRawSealingKey() {
 		t.Fatal("a read-only vault repaired the public key MAC")
 	}
-	repaired := newTestRawVault(lost, true, nil)
-	if err := repaired.EnsureRawSealing(ctx); err != nil {
-		t.Fatal(err)
-	}
+	repaired := newTestRawVault(lost, nil)
 	status, err := repaired.Status(ctx)
-	if err != nil || !status.Configured || status.LocalPresence || status.KeyVerified || !status.LocalEnvelope {
+	if err != nil || !status.Configured || status.KeyVerified {
 		t.Fatalf("status with a lost keychain=%#v err=%v", status, err)
-	}
-	if _, err := repaired.Unlock(ctx, localPresenceProof); !errors.Is(err, ErrRawProofRequired) {
-		t.Fatalf("local presence with a lost keychain: %v", err)
 	}
 	if _, err := repaired.Unlock(ctx, passwordProof(rawTestPassword)); err != nil {
 		t.Fatal(err)
 	}
 	status, _ = repaired.Status(ctx)
-	if !status.LocalPresence || !status.KeyVerified || !lost.HasRawSealingKey() {
+	if !status.KeyVerified || !lost.HasRawSealingKey() {
 		t.Fatalf("status after the password repaired the key=%#v", status)
-	}
-	if err := repaired.WithProof(ctx, localPresenceProof, func(RawKeyOpener) error { return nil }); err != nil {
-		t.Fatalf("rebuilt local envelope: %v", err)
 	}
 }
 
 func TestRawVaultResetDiscardsOnlyRawParts(t *testing.T) {
 	ctx := context.Background()
 	store := newRawAccessFixture(t, nil).store
-	vault := newTestRawVault(store, false, nil)
+	vault := newTestRawVault(store, nil)
 	mustSetRawPassword(t, vault, rawTestPassword, RawProof{})
-	resealAll(t, store)
+	captureRawTestParts(t, store)
 	if _, err := vault.Unlock(ctx, passwordProof(rawTestPassword)); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := vault.ChangePassword(ctx, RawPasswordReset, nil, RawProof{}); !errors.Is(err, ErrRawPasswordRequired) {
-		t.Fatalf("reset without a password on a key file platform: %v", err)
+		t.Fatalf("reset without a new password: %v", err)
 	}
 	outcome, err := vault.ChangePassword(ctx, RawPasswordReset, []byte(rawVaultNewPassword), RawProof{})
 	if err != nil || outcome.Reset == nil || outcome.Reset.DeletedParts != 2 || outcome.Reset.AffectedRecords != 1 {
@@ -682,32 +490,6 @@ func TestRawVaultResetDiscardsOnlyRawParts(t *testing.T) {
 		if blob.Exposure != storage.AuditExposureShareable {
 			t.Fatalf("reset kept a %s part", blob.Exposure)
 		}
-	}
-}
-
-func TestRawVaultRunResealsOnceAKeyAppears(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	store := newRawAccessFixture(t, nil).store
-	vault := newTestRawVault(store, false, nil)
-	done := make(chan struct{})
-	go func() { defer close(done); vault.Run(ctx) }()
-	t.Cleanup(func() { cancel(); <-done })
-
-	mustSetRawPassword(t, vault, rawTestPassword, RawProof{})
-	deadline := time.Now().Add(5 * time.Second)
-	for {
-		request := rawPartByDirection(t, store, storage.AuditDirectionRequest)
-		response := rawPartByDirection(t, store, storage.AuditDirectionResponse)
-		if request.Sealing == storage.AuditSealingRawV1 && response.Sealing == storage.AuditSealingRawV1 {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("the background pass did not reseal the raw parts")
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	if upstream := rawPartByDirection(t, store, storage.AuditDirectionUpstreamRequest); upstream.Sealing != storage.AuditSealingAudit {
-		t.Fatal("a shareable part left the audit key")
 	}
 }
 
@@ -741,7 +523,7 @@ func (store *resealSignalStore) ResealRawParts(ctx context.Context, limit int) (
 
 func TestRawVaultRunRetriesAPartTheStoreDeferred(t *testing.T) {
 	store := &resealSignalStore{RawSealingStore: newRawAccessFixture(t, nil).store, passes: make(chan struct{}, 4)}
-	vault := newTestRawVault(store, false, nil)
+	vault := newTestRawVault(store, nil)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() { defer close(done); vault.Run(ctx) }()
@@ -782,7 +564,7 @@ func newRawVaultFixture(t *testing.T) rawVaultFixture {
 	t.Helper()
 	store := newRawAccessFixture(t, nil).store
 	clock := newRawTestClock()
-	vault := newTestRawVault(store, false, clock)
+	vault := newTestRawVault(store, clock)
 	return rawVaultFixture{store: store, vault: vault, clock: clock, handler: newRawAccessHandler(t, store, vault)}
 }
 
@@ -835,9 +617,9 @@ func TestRawSealingRoutes(t *testing.T) {
 	}
 	wantRawStatus(t, rawHTTP(t, handler, rawAsOperator, http.MethodPost, RawUnlockPath,
 		`{"proof":{"password":`+rawTestPasswordJS+`}}`, ""), http.StatusConflict, "raw_access_unavailable")
-	// Raw parts kept before the password was required wait for it.
+	// Raw parts captured before the password are not kept.
 	waiting := readRawAudit(t, handler, rawAsOperator, rawAuditPath(rawTestRequestID), "")
-	if !waiting.RequestBody.Withheld || waiting.RequestBody.Reason != contract.AuditWithheldRawPasswordRequired {
+	if !waiting.RequestBody.Withheld || waiting.RequestBody.Reason != contract.AuditWithheldRawNotKept {
 		t.Fatalf("read before the password=%#v", waiting.RequestBody)
 	}
 
@@ -891,10 +673,10 @@ func TestRawSealingRoutes(t *testing.T) {
 	if strings.TrimSpace(observed.Body.String()) != `{"raw_available":true}` {
 		t.Fatalf("observer view=%s", observed.Body.String())
 	}
-	resealAll(t, fixture.store)
+	captureRawTestParts(t, fixture.store)
 	for _, direction := range []storage.AuditDirection{storage.AuditDirectionRequest, storage.AuditDirectionResponse} {
 		if part := rawPartByDirection(t, fixture.store, direction); part.Sealing != storage.AuditSealingRawV1 {
-			t.Fatalf("%s part after the password = sealing %q", direction, part.Sealing)
+			t.Fatalf("%s part captured after the password = sealing %q", direction, part.Sealing)
 		}
 	}
 
@@ -909,8 +691,8 @@ func TestRawSealingRoutes(t *testing.T) {
 		http.StatusUnprocessableEntity, "raw_proof_required")
 	wantRawStatus(t, rawHTTP(t, handler, rawAsOperator, http.MethodPost, RawUnlockPath, `{}`, ""),
 		http.StatusUnprocessableEntity, "raw_proof_required")
-	wantRawStatus(t, rawHTTP(t, handler, rawAsOperator, http.MethodPost, RawUnlockPath, `{"proof":{"kind":"local_presence"}}`, ""),
-		http.StatusUnprocessableEntity, "raw_proof_required")
+	wantRawStatus(t, rawHTTP(t, handler, rawAsOperator, http.MethodPost, RawUnlockPath, `{"proof":{"passkey":{"credential_id":"AQ","prf":"AQ"}}}`, ""),
+		http.StatusBadRequest, "validation_failed")
 	for attempt := 1; attempt <= 3; attempt++ {
 		wantRawStatus(t, rawHTTP(t, handler, rawAsOperator, http.MethodPost, RawUnlockPath, `{"proof":{"password":"wrong password"}}`, ""),
 			http.StatusForbidden, "raw_password_invalid")
@@ -933,7 +715,7 @@ func TestRawSealingRoutes(t *testing.T) {
 	wantRawStatus(t, rawHTTP(t, handler, rawAsOperator, http.MethodPost, RawVerifyPath, "", ""),
 		http.StatusUnprocessableEntity, "raw_proof_required")
 	wantRawStatus(t, rawHTTP(t, handler, rawAsOperator, http.MethodPost, RawVerifyPath, `{"proof":{"kind":"local_presence"}}`, ""),
-		http.StatusUnprocessableEntity, "raw_proof_required")
+		http.StatusBadRequest, "validation_failed")
 	wantRawStatus(t, rawHTTP(t, handler, rawAsOperator, http.MethodGet, RawVerifyPath, "", ""),
 		http.StatusMethodNotAllowed, "method_not_allowed")
 	verified := rawHTTP(t, handler, rawAsOperator, http.MethodPost, RawVerifyPath, `{"proof":{"password":`+rawTestPasswordJS+`}}`, "")
@@ -1074,13 +856,13 @@ func secondCoreHTTP(t *testing.T, handler *Handler, method, path, body string) *
 // TestAnIndependentCoreCannotReadRawContent starts a second Core on a data
 // directory another Core sealed (plan §5.11): it has local.key, so it opens
 // the database and every data key, but raw parts stay sealed to the raw key,
-// which only the raw password or the desktop's keychain envelope opens.
+// which only the raw password opens.
 func TestAnIndependentCoreCannotReadRawContent(t *testing.T) {
 	ctx := context.Background()
 	directory := t.TempDir()
 	path := filepath.Join(directory, "astrlink.db")
 
-	// Core A captures a request, sets a raw password and reseals, then stops.
+	// Core A sets a raw password, captures a request, then stops.
 	first := newRawAccessFixtureAt(t, path, nil)
 	if _, err := first.store.CreateService(ctx, contract.Service{
 		ID: secondCoreServiceID, Name: "second core", Kind: contract.ServiceKindOpenAI, Enabled: true,
@@ -1092,8 +874,8 @@ func TestAnIndependentCoreCannotReadRawContent(t *testing.T) {
 	}, storage.CredentialMutation{Present: true, Secret: []byte(secondCoreAPIKey)}); err != nil {
 		t.Fatal(err)
 	}
-	mustSetRawPassword(t, newTestRawVault(first.store, false, nil), rawTestPassword, RawProof{})
-	resealAll(t, first.store)
+	mustSetRawPassword(t, newTestRawVault(first.store, nil), rawTestPassword, RawProof{})
+	captureRawTestParts(t, first.store)
 	if err := first.store.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -1109,14 +891,14 @@ func TestAnIndependentCoreCannotReadRawContent(t *testing.T) {
 	}
 	t.Cleanup(func() { clear(localKey) })
 
-	startCore := func(t *testing.T, key []byte, localEnvelope bool) (*sqlite.Store, *Handler) {
+	startCore := func(t *testing.T, key []byte) (*sqlite.Store, *Handler) {
 		t.Helper()
 		store, err := sqlite.Open(ctx, path, sqlite.WithLocalKey(key))
 		if err != nil {
 			t.Fatal(err)
 		}
 		t.Cleanup(func() { _ = store.Close() })
-		vault := NewRawVault(store, RawVaultOptions{LocalEnvelope: localEnvelope, KDF: rawVaultTestKDF})
+		vault := NewRawVault(store, RawVaultOptions{KDF: rawVaultTestKDF})
 		handler, err := NewWithDependencies(contract.DefaultVersionResponse("0.1.0-test", "abc1234"), Dependencies{
 			ServiceStore:   store,
 			RequestRecords: store,
@@ -1151,15 +933,13 @@ func TestAnIndependentCoreCannotReadRawContent(t *testing.T) {
 		}
 		wantRawStatus(t, secondCoreHTTP(t, handler, http.MethodPost, RawUnlockPath, ""),
 			http.StatusUnprocessableEntity, "raw_proof_required")
-		wantRawStatus(t, secondCoreHTTP(t, handler, http.MethodPost, RawUnlockPath, `{"proof":{"kind":"local_presence"}}`),
-			http.StatusUnprocessableEntity, "raw_proof_required")
 		if strings.Contains(secondCoreHTTP(t, handler, http.MethodGet, full, "").Body.String(), rawTestSecret) {
 			t.Fatal("a refused unlock opened raw content")
 		}
 	}
 
 	t.Run("a key file start", func(t *testing.T) {
-		store, handler := startCore(t, localKey, false)
+		store, handler := startCore(t, localKey)
 		// It is its own Core: the first Core's token means nothing here.
 		wantRawStatus(t, rawHTTP(t, handler, rawAsOperator, http.MethodGet, full, "", ""),
 			http.StatusUnauthorized, "")
@@ -1205,16 +985,15 @@ func TestAnIndependentCoreCannotReadRawContent(t *testing.T) {
 		}
 	})
 
-	t.Run("a stdin key start without a keychain envelope", func(t *testing.T) {
+	t.Run("a stdin key start", func(t *testing.T) {
 		key, source, err := localkey.Resolve(localkey.Options{StdinKey: localKey, DataDir: directory})
 		if err != nil || source != localkey.SourceStdin {
 			t.Fatalf("resolve source=%q err=%v", source, err)
 		}
 		defer clear(key)
-		// The desktop would pass LocalEnvelope, but Core A never stored one.
-		_, handler := startCore(t, key, true)
+		_, handler := startCore(t, key)
 		status := operatorRawStatusWith(t, handler)
-		if !status.Configured || status.LocalPresence || status.Unlocked || len(status.Envelopes) != 1 || status.Envelopes[0] != "password" {
+		if !status.Configured || status.Unlocked || len(status.Envelopes) != 1 || status.Envelopes[0] != "password" {
 			t.Fatalf("status=%#v", status)
 		}
 		wantLockedWithoutProof(t, handler)

@@ -3,7 +3,6 @@ package sqlite
 import (
 	"bytes"
 	"context"
-	"database/sql"
 	"path/filepath"
 	"sync"
 	"testing"
@@ -11,7 +10,6 @@ import (
 
 	"github.com/QuantumNous/astrlink/core/contract"
 	storage "github.com/QuantumNous/astrlink/core/internal/storage"
-	"github.com/QuantumNous/astrlink/core/internal/storage/migrate"
 )
 
 func auditPayloadFixture(t *testing.T, store *Store, id contract.RequestID) []byte {
@@ -157,47 +155,15 @@ func TestSharedAuditPayloadPreservesMetadataAndRetention(t *testing.T) {
 func TestAuditPayloadMigrationCompactsLegacyWithoutChangingContent(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "legacy.db")
-	db, err := sql.Open(driverName, sqliteFileDSN(path))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-	migrations := migrate.DefaultMigrations()
-	var old []migrate.Migration
-	for _, migration := range migrations {
-		if migration.Version < 41 {
-			old = append(old, migration)
-		}
-	}
-	runner, err := migrate.New(migrate.SQLDatabase{DB: db}, old)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := runner.Up(ctx); err != nil {
-		t.Fatal(err)
-	}
+	store := openTestStore(t, path)
 	const id = contract.RequestID("request_legacy")
-	// The current record upsert names later columns, so the v40 row is raw SQL.
-	if _, err := db.Exec(`INSERT INTO request_records (id, started_at, status, input_protocol, streaming, audit_json, created_at)
-VALUES (?, '2026-09-19T00:00:00Z', 'succeeded', 'openai.responses', 0, '{}', '2026-09-19T00:00:00Z')`, id); err != nil {
-		t.Fatal(err)
-	}
-	// v40 kept the audit key in plaintext; the key ring adopts it on open.
-	key := bytes.Repeat([]byte{0x5a}, storage.AuditKeyBytes)
-	if _, err := db.Exec(`INSERT INTO audit_keys (id, key_bytes, created_at) VALUES (1, ?, '2026-09-19T00:00:00Z')`, key); err != nil {
-		t.Fatal(err)
-	}
+	key := auditPayloadFixture(t, store, id)
+	// Inline rows, as captured before shared payloads existed.
 	for _, direction := range []storage.AuditDirection{storage.AuditDirectionResponse, storage.AuditDirectionUpstreamResponse} {
-		blob := sealedPayload(t, key, id, direction, "legacy response")
-		if _, err := db.Exec(`INSERT INTO audit_blobs (request_id, direction, media_type, nonce, ciphertext, truncated, captured_bytes, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-			blob.RequestID, blob.Direction, blob.MediaType, blob.Nonce, blob.Ciphertext, 0, blob.CapturedBytes, blob.CreatedAt.Format(time.RFC3339Nano)); err != nil {
+		if err := upsertAuditBlob(ctx, store.db, sealedPayload(t, key, id, direction, "legacy response"), nil); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if err := db.Close(); err != nil {
-		t.Fatal(err)
-	}
-	store := openTestStore(t, path)
 	want := map[storage.AuditDirection]string{storage.AuditDirectionResponse: "legacy response", storage.AuditDirectionUpstreamResponse: "legacy response"}
 	assertAuditPlaintexts(t, store, key, id, want)
 	if _, err := store.SweepExpiredAuditData(ctx); err != nil {

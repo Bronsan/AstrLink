@@ -205,11 +205,6 @@ WHERE id = 'policy_privacy_default'
     1, 0, 0, 1048576, 4194304, 30, 7, NULL,
     strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
 )`,
-				`CREATE TABLE audit_keys (
-    id INTEGER PRIMARY KEY CHECK(id = 1),
-    key_bytes BLOB NOT NULL CHECK(length(key_bytes) = 32),
-    created_at TEXT NOT NULL
-)`,
 				`CREATE TABLE audit_blobs (
     request_id TEXT NOT NULL REFERENCES request_records(id) ON DELETE CASCADE,
     direction TEXT NOT NULL CHECK(direction IN ('request', 'response')),
@@ -712,21 +707,14 @@ WHERE direction IN ('upstream_request', 'upstream_response', 'http_meta', 'upstr
 CHECK(agent_raw_access_enabled IN (0, 1))`,
 		}},
 		{Version: 43, Name: "key_envelopes", Statements: []string{
-			// Data keys wrapped under the local key. Filling it needs the key, so
-			// the store does that after migrating; audit_keys stays until then.
-			// An envelope that no longer opens is renamed to
-			// '<kind>.orphaned.<timestamp>' and kept for recovery.
+			// Data keys wrapped under the local key. An envelope that no longer
+			// opens is renamed to '<kind>.orphaned.<timestamp>' and kept for
+			// recovery.
 			`CREATE TABLE key_envelopes (
     kind TEXT PRIMARY KEY,
     nonce BLOB NOT NULL CHECK(length(nonce) = 12),
     wrapped BLOB NOT NULL,
     created_at TEXT NOT NULL
-)`,
-			// A row asks the next start to rewrite the file so free pages no
-			// longer hold plaintext keys or secrets that were just removed.
-			`CREATE TABLE pending_file_scrub (
-    id INTEGER PRIMARY KEY CHECK(id = 1),
-    requested_at TEXT NOT NULL
 )`,
 		}},
 		{Version: 44, Name: "raw_sealing", Statements: []string{
@@ -738,19 +726,17 @@ CHECK(agent_raw_access_enabled IN (0, 1))`,
     pk_mac BLOB NOT NULL CHECK(length(pk_mac) = 32),
     created_at TEXT NOT NULL
 )`,
-			// The private half, wrapped under the raw password (kdf_json and
-			// salt describe the derivation) or under the local key.
+			// The private half, wrapped under the raw password; kdf_json and
+			// salt describe the derivation.
 			`CREATE TABLE raw_key_envelopes (
     key_id INTEGER NOT NULL REFERENCES raw_sealing_keys(id) ON DELETE CASCADE,
-    kind TEXT NOT NULL CHECK(kind IN ('password', 'local')),
-    kdf_json TEXT,
-    salt BLOB,
+    kind TEXT NOT NULL CHECK(kind IN ('password')),
+    kdf_json TEXT NOT NULL,
+    salt BLOB NOT NULL CHECK(length(salt) = 16),
     nonce BLOB NOT NULL CHECK(length(nonce) = 12),
     wrapped BLOB NOT NULL,
     created_at TEXT NOT NULL,
-    PRIMARY KEY(key_id, kind),
-    CHECK((kind = 'password' AND kdf_json IS NOT NULL AND salt IS NOT NULL AND length(salt) = 16)
-       OR (kind = 'local' AND kdf_json IS NULL AND salt IS NULL))
+    PRIMARY KEY(key_id, kind)
 )`,
 			// raw_v1 payloads are sealed with their own part key, which is
 			// wrapped to the raw sealing public key (80 bytes of HPKE output).
@@ -764,8 +750,8 @@ CHECK((sealing = 'audit' AND key_id IS NULL AND wrapped_key IS NULL)
 		}},
 		{Version: 45, Name: "sealed_secrets", Statements: []string{
 			// Secret values are sealed under dek_secrets as version ‖ nonce ‖
-			// ciphertext ‖ tag, 29 bytes more than the plaintext. sealed = 0
-			// rows are plaintext until the store seals them after migrating.
+			// ciphertext ‖ tag, 29 bytes more than the plaintext. Every write
+			// sets sealed = 1, and the store refuses a row with sealed = 0.
 			// Nothing references either rebuilt table.
 			`CREATE TABLE service_credentials_new (
     service_id TEXT PRIMARY KEY REFERENCES services(id) ON DELETE CASCADE,
@@ -802,5 +788,7 @@ CHECK(sealed IN (0, 1) AND (sealed = 0 OR length(credential_value) >= 30))`,
     updated_at TEXT NOT NULL
 )`,
 		}},
+		// Removed before release; the version stays so databases that ran it still open.
+		{Version: 46, Name: "raw_passkey_envelopes"},
 	}
 }

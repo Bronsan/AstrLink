@@ -8,14 +8,10 @@ const bridgeMocks = vi.hoisted(() => ({
   createAccessToken: vi.fn(),
   deleteAccessToken: vi.fn(),
   listAccessTokenUsage: vi.fn(),
-  revealAccessToken: vi.fn(),
+  copyAccessToken: vi.fn(),
   openCCSwitchImport: vi.fn(),
   listServices: vi.fn(),
   getRoutingSettings: vi.fn(),
-  getRawSealingStatus: vi.fn(),
-  lockRaw: vi.fn(),
-  unlockRaw: vi.fn(),
-  verifyLocalPresence: vi.fn(),
 }));
 
 vi.mock("./bridge", () => bridgeMocks);
@@ -45,7 +41,6 @@ const secondToken: AccessTokenSummary = {
 };
 
 const firstSecret = `astr_${"A".repeat(43)}`;
-const secondSecret = `astr_${"B".repeat(43)}`;
 
 function readyCatalog(items: AccessTokenSummary[]): AccessTokenCatalog {
   return {
@@ -74,20 +69,6 @@ function row(name: string): HTMLElement {
   ].find((candidate) => candidate.textContent?.includes(name));
   if (!match) throw new Error(`Missing token row: ${name}`);
   return match;
-}
-
-/** Confirms the proof dialog a copy opens before the token leaves the app. */
-async function confirmReveal(): Promise<void> {
-  await act(async () => {
-    await Promise.resolve();
-  });
-  await act(async () => {
-    button("复制令牌").click();
-    await Promise.resolve();
-  });
-  await act(async () => {
-    await Promise.resolve();
-  });
 }
 
 async function setInput(selector: string, value: string): Promise<void> {
@@ -123,24 +104,6 @@ describe("AccessTokenManager", () => {
     bridgeMocks.listAccessTokenUsage.mockResolvedValue({ items: [] });
     bridgeMocks.listServices.mockResolvedValue({ items: [] });
     bridgeMocks.getRoutingSettings.mockResolvedValue({ model_redirects: [] });
-    // No raw password and no Touch ID: the copy asks for a plain confirmation.
-    bridgeMocks.getRawSealingStatus.mockResolvedValue({
-      raw_available: false,
-      configured: false,
-      password_set: false,
-      password_required: true,
-      local_presence: false,
-      envelopes: [],
-      key_verified: false,
-      unlocked: false,
-      unlock_expires_at: null,
-      unlock_idle_seconds: 900,
-      retry_after_seconds: 0,
-      password_min_length: 8,
-      password_max_length: 128,
-      presence_available: false,
-      keychain_build: false,
-    });
     container = document.createElement("div");
     document.body.append(container);
     reactRoot = createRoot(container);
@@ -172,58 +135,46 @@ describe("AccessTokenManager", () => {
     });
   };
 
-  it("copies a token without rendering the secret and only keeps the latest copy", async () => {
-    bridgeMocks.revealAccessToken
-      .mockResolvedValueOnce({ access_token: firstSecret })
-      .mockResolvedValueOnce({ access_token: secondSecret });
+  it("has the host copy a token without verification and only keeps the latest copy", async () => {
+    bridgeMocks.copyAccessToken
+      .mockResolvedValueOnce(true)
+      .mockResolvedValueOnce(true);
     await renderManager(readyCatalog([firstToken, secondToken]));
 
     await act(async () => {
       button("复制", row(firstToken.name)).click();
       await Promise.resolve();
     });
-    expect(bridgeMocks.revealAccessToken).not.toHaveBeenCalled();
-    await confirmReveal();
-    expect(navigator.clipboard.writeText).toHaveBeenCalledWith(firstSecret);
-    expect(container.textContent).not.toContain(firstSecret);
+    expect(
+      document.querySelector('[data-slot="proof-confirm-dialog"]'),
+    ).toBeNull();
+    expect(bridgeMocks.copyAccessToken).toHaveBeenCalledExactlyOnceWith(
+      firstToken.id,
+    );
+    // The host writes the clipboard; the secret never reaches the webview.
+    expect(navigator.clipboard.writeText).not.toHaveBeenCalled();
     expect(button("已复制", row(firstToken.name))).toBeTruthy();
 
     await act(async () => {
       button("复制", row(secondToken.name)).click();
       await Promise.resolve();
     });
-    await confirmReveal();
-    expect(navigator.clipboard.writeText).toHaveBeenLastCalledWith(
-      secondSecret,
+    expect(bridgeMocks.copyAccessToken).toHaveBeenLastCalledWith(
+      secondToken.id,
     );
-    expect(container.textContent).not.toContain(secondSecret);
     expect(button("已复制", row(secondToken.name))).toBeTruthy();
     expect(button("复制", row(firstToken.name))).toBeTruthy();
   });
 
-  it("asks for proof before a copy and copies nothing when it is cancelled", async () => {
+  it("asks for a manual copy when the host cannot write the clipboard", async () => {
+    bridgeMocks.copyAccessToken.mockResolvedValueOnce(false);
     await renderManager(readyCatalog([firstToken]));
 
     await act(async () => {
       button("复制", row(firstToken.name)).click();
       await Promise.resolve();
     });
-    await act(async () => {
-      await Promise.resolve();
-    });
-    const proof = document.querySelector('[data-slot="proof-confirm-dialog"]');
-    expect(proof?.textContent).toContain("确认复制访问令牌");
-    expect(bridgeMocks.revealAccessToken).not.toHaveBeenCalled();
-
-    await act(async () => button("取消").click());
-    await act(async () => {
-      await Promise.resolve();
-    });
-    expect(
-      document.querySelector('[data-slot="proof-confirm-dialog"]'),
-    ).toBeNull();
-    expect(bridgeMocks.revealAccessToken).not.toHaveBeenCalled();
-    expect(navigator.clipboard.writeText).not.toHaveBeenCalled();
+    expect(container.textContent).toContain("无法自动复制，请手动选择令牌。");
     expect(button("复制", row(firstToken.name)).disabled).toBe(false);
   });
 
@@ -257,8 +208,7 @@ describe("AccessTokenManager", () => {
       models: { model: "my-route" },
       inferenceUrl: "http://127.0.0.1:8317",
     });
-    expect(bridgeMocks.revealAccessToken).not.toHaveBeenCalled();
-    expect(navigator.clipboard.writeText).not.toHaveBeenCalled();
+    expect(bridgeMocks.copyAccessToken).not.toHaveBeenCalled();
     expect(document.querySelector('[role="dialog"]')).toBeNull();
   });
 
@@ -513,10 +463,10 @@ describe("AccessTokenManager", () => {
   });
 
   it("ignores a copy response from an old Core session", async () => {
-    let resolveReveal: ((value: { access_token: string }) => void) | undefined;
-    bridgeMocks.revealAccessToken.mockReturnValueOnce(
+    let resolveCopy: ((value: boolean) => void) | undefined;
+    bridgeMocks.copyAccessToken.mockReturnValueOnce(
       new Promise((resolve) => {
-        resolveReveal = resolve;
+        resolveCopy = resolve;
       }),
     );
     await renderManager(readyCatalog([firstToken]));
@@ -525,24 +475,21 @@ describe("AccessTokenManager", () => {
       button("复制", row(firstToken.name)).click();
       await Promise.resolve();
     });
-    await confirmReveal();
     await renderManager(readyCatalog([firstToken]), "session-2");
     await act(async () => {
-      resolveReveal?.({ access_token: firstSecret });
+      resolveCopy?.(true);
       await Promise.resolve();
     });
 
-    expect(container.textContent).not.toContain(firstSecret);
-    expect(navigator.clipboard.writeText).not.toHaveBeenCalled();
     expect(button("复制", row(firstToken.name)).disabled).toBe(false);
   });
 
   it("cancels an in-flight copy before refreshing", async () => {
     const onRefresh = vi.fn();
-    let resolveReveal: ((value: { access_token: string }) => void) | undefined;
-    bridgeMocks.revealAccessToken.mockReturnValueOnce(
+    let resolveCopy: ((value: boolean) => void) | undefined;
+    bridgeMocks.copyAccessToken.mockReturnValueOnce(
       new Promise((resolve) => {
-        resolveReveal = resolve;
+        resolveCopy = resolve;
       }),
     );
     await act(async () => {
@@ -563,16 +510,14 @@ describe("AccessTokenManager", () => {
       button("复制", row(firstToken.name)).click();
       await Promise.resolve();
     });
-    await confirmReveal();
 
     await act(async () => button("刷新").click());
     await act(async () => {
-      resolveReveal?.({ access_token: firstSecret });
+      resolveCopy?.(true);
       await Promise.resolve();
     });
 
-    expect(container.textContent).not.toContain(firstSecret);
-    expect(navigator.clipboard.writeText).not.toHaveBeenCalled();
+    expect(button("复制", row(firstToken.name))).toBeTruthy();
     expect(onRefresh).toHaveBeenCalledOnce();
   });
 

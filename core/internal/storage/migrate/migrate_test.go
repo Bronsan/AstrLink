@@ -142,6 +142,26 @@ func TestRunnerAppliesMigrationsInOrderAndRecordsThem(t *testing.T) {
 	}
 }
 
+func TestRunnerRecordsAMigrationWithoutStatements(t *testing.T) {
+	transaction := &fakeTransaction{}
+	runner, err := New(&fakeDatabase{transaction: transaction}, []Migration{
+		{Version: 1, Name: "one", Statements: []string{"CREATE TABLE one (id INTEGER)"}},
+		{Version: 2, Name: "removed"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := runner.Up(context.Background()); err != nil {
+		t.Fatalf("Up: %v", err)
+	}
+	if len(transaction.execCalls) != 4 {
+		t.Fatalf("exec call count = %d, want 4", len(transaction.execCalls))
+	}
+	if got := transaction.execCalls[3].args; len(got) != 3 || got[0] != int64(2) || got[1] != "removed" {
+		t.Fatalf("empty migration record args = %#v", got)
+	}
+}
+
 func TestRunnerSkipsAlreadyAppliedMigrations(t *testing.T) {
 	transaction := &fakeTransaction{currentVersion: 1, recorded: map[int64]string{1: "one"}}
 	runner, err := New(&fakeDatabase{transaction: transaction}, []Migration{
@@ -448,7 +468,7 @@ WHERE name IN ('session_id', 'previous_response_id', 'output_response_id', 'inpu
 	}
 	var auditTables int
 	if err := database.QueryRow(`SELECT COUNT(*) FROM sqlite_master
-WHERE type='table' AND name IN ('audit_settings', 'audit_keys', 'audit_blobs')`).Scan(&auditTables); err != nil || auditTables != 3 {
+WHERE type='table' AND name IN ('audit_settings', 'audit_blobs')`).Scan(&auditTables); err != nil || auditTables != 2 {
 		t.Fatalf("audit tables missing after upgrade: count=%d err=%v", auditTables, err)
 	}
 	var credential []byte

@@ -257,8 +257,6 @@ func TestStartWarnsOnceWithoutARawPassword(t *testing.T) {
 		want   string
 	}{
 		{name: "no raw key", reader: fixedRawStatus{}, want: "astrlink-core raw-password set --data-dir /data --password-stdin"},
-		{name: "local envelope only", reader: fixedRawStatus{status: controlapi.RawVaultStatus{Configured: true, LocalEnvelope: true}},
-			want: "raw request and response content is not recorded"},
 		{name: "raw password set", reader: fixedRawStatus{status: controlapi.RawVaultStatus{Configured: true, PasswordSet: true}}},
 		{name: "unreadable state", reader: fixedRawStatus{err: errors.New("database is locked")}, want: "read raw sealing state"},
 	} {

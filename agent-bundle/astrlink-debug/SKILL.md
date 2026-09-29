@@ -136,9 +136,8 @@ has `raw_available: true` and the shareable parts cannot answer the question:
    your tool allows less, pass `--wait` just under its limit, for example
    `--wait 110s` for a 2-minute limit.
 3. Ask the user to approve it in the AstrLink desktop while the command waits.
-   Approval needs the user's raw password (Touch ID on macOS). Only the user can
-   approve; do not try to click, script, or otherwise complete the approval
-   yourself.
+   Approval needs the user's raw password. Only the user can approve; do not try
+   to click, script, or otherwise complete the approval yourself.
 4. Once approved, the command prints the audit with `content_view: "raw"`. An
    approval for "only this time" allows one read. If the wait ends first, ask
    the user whether they still want to approve before running it again.

@@ -1,7 +1,7 @@
 import { invalidData, type DataProblem } from "./ipc-data-error";
 
 /** Which stored envelopes can open the raw key (plan §5.11). */
-export type RawEnvelope = "password" | "local";
+export type RawEnvelope = "password";
 
 /** Core's operator view of raw sealing. It never carries key material. */
 export interface RawSealingStatus {
@@ -10,13 +10,8 @@ export interface RawSealingStatus {
   /** A raw key pair exists; new raw parts are sealed to it. */
   configured: boolean;
   password_set: boolean;
-  /**
-   * No raw password is set, so raw parts are not kept and the ones kept
-   * before an upgrade stay unreadable until one is (D11).
-   */
+  /** No raw password protects the raw key, so raw parts are not kept. */
   password_required: boolean;
-  /** Core accepts a desktop presence check as proof. */
-  local_presence: boolean;
   envelopes: RawEnvelope[];
   key_verified: boolean;
   /** The operator's own unlock session is open. */
@@ -35,16 +30,8 @@ export interface RawSealingStatus {
   key_replaced: boolean;
 }
 
-/** The sealing state plus whether this build can show the presence prompt. */
-export interface RawSealingState extends RawSealingStatus {
-  presence_available: boolean;
-  /**
-   * A signed macOS build, which keeps the local key and the raw key pins in
-   * the keychain. It accepts a replaced raw key only with its password and a
-   * presence check together.
-   */
-  keychain_build: boolean;
-}
+/** What `raw_sealing_status` returns: Core's status with the host's verdict. */
+export type RawSealingState = RawSealingStatus;
 
 /** What a raw password reset discarded. */
 export interface RawPasswordReset {
@@ -64,34 +51,19 @@ export type RawSealingOutcome =
       reset: RawPasswordReset | null;
     }
   | { outcome: "password_invalid" }
-  | { outcome: "backoff"; retry_after_seconds: number }
-  | { outcome: "presence_cancelled" }
-  | { outcome: "presence_unsupported" };
+  | { outcome: "backoff"; retry_after_seconds: number };
 
-/** The proof a raw action carries to the host. */
-export type RawProof =
-  | { kind: "password"; password: string }
-  | { kind: "local_presence" };
+/** The proof a raw action carries to the host: the raw password. */
+export type RawProof = { kind: "password"; password: string };
 
 export type RawPasswordAction = "set" | "change" | "reset";
 
-export type PresencePurpose =
-  | "approve_raw_access"
-  | "unlock_raw"
-  | "change_raw_password"
-  | "reveal_access_token";
-
-export type PresenceOutcome =
-  | { outcome: "verified" }
-  | { outcome: "presence_cancelled" }
-  | { outcome: "presence_unsupported" };
-
 /** How a proof dialog asks for its proof (D14). */
-export type RawProofMode = "presence" | "password" | "confirm";
+export type RawProofMode = "password" | "confirm";
 
 type JsonObject = Record<string, unknown>;
 
-const envelopes = new Set<RawEnvelope>(["password", "local"]);
+const envelopes = new Set<RawEnvelope>(["password"]);
 const MAX_PASSWORD_BOUND = 4096;
 
 function invalid(
@@ -185,7 +157,6 @@ function parseStatus(value: unknown, path: string): RawSealingStatus {
       status.password_required,
       `${path}.password_required`,
     ),
-    local_presence: boolAt(status.local_presence, `${path}.local_presence`),
     envelopes: envelopesAt(status.envelopes, `${path}.envelopes`),
     key_verified: boolAt(status.key_verified, `${path}.key_verified`),
     unlocked: boolAt(status.unlocked, `${path}.unlocked`),
@@ -226,15 +197,9 @@ function backoffSeconds(value: unknown): number {
   return integerAt(value, "$.retry_after_seconds", 1);
 }
 
-/** Parses `raw_sealing_status`, which adds the host's presence support. */
+/** Parses `raw_sealing_status`. */
 export function parseRawSealingState(value: unknown): RawSealingState {
-  const status = parseStatus(value, "$");
-  const host = objectAt(value, "$");
-  return {
-    ...status,
-    presence_available: boolAt(host.presence_available, "$.presence_available"),
-    keychain_build: boolAt(host.keychain_build, "$.keychain_build"),
-  };
+  return parseStatus(value, "$");
 }
 
 /** Parses a plain Core status, such as the one `lock_raw` returns. */
@@ -254,9 +219,7 @@ export function parseRawSealingOutcome(value: unknown): RawSealingOutcome {
       };
     }
     case "password_invalid":
-    case "presence_cancelled":
-    case "presence_unsupported":
-      return { outcome: outcome.outcome };
+      return { outcome: "password_invalid" };
     case "backoff":
       return {
         outcome: "backoff",
@@ -267,82 +230,26 @@ export function parseRawSealingOutcome(value: unknown): RawSealingOutcome {
   }
 }
 
-export function parsePresenceOutcome(value: unknown): PresenceOutcome {
-  const outcome = objectAt(value, "$");
-  switch (outcome.outcome) {
-    case "verified":
-    case "presence_cancelled":
-    case "presence_unsupported":
-      return { outcome: outcome.outcome };
-    default:
-      return invalid("$.outcome", "unknownOutcome");
-  }
-}
-
-/** Keeps the host's presence support across a status that lacks it. */
-export function withPresence(
-  status: RawSealingStatus,
-  previous: RawSealingState | null,
-): RawSealingState {
-  return {
-    ...status,
-    presence_available: previous?.presence_available ?? false,
-    keychain_build: previous?.keychain_build ?? false,
-  };
-}
-
-/** Core accepts presence and this build can show the prompt. */
-export function presenceUsable(state: RawSealingState): boolean {
-  return state.local_presence && state.presence_available;
-}
-
 /**
- * Picks how to ask for proof (D14): the presence prompt where it works,
- * else the raw password, else a plain confirmation.
+ * Picks how to ask for proof (D14): the raw password, else a plain
+ * confirmation.
  */
 export function rawProofMode(state: RawSealingState): RawProofMode {
-  if (presenceUsable(state)) return "presence";
-  if (state.password_set) return "password";
-  return "confirm";
+  return state.password_set ? "password" : "confirm";
 }
 
 /**
- * Picks the proof a reset takes. Where the local envelope still opens the
- * key, Core wants the proof that opens it, so UI automation alone cannot
- * discard raw content; the presence prompt stays even where it looks
- * unavailable, and asking again is the retry. Only a key nothing here opens
- * any more resets with a plain confirmation.
+ * No raw password is set yet. Core opens the raw key only through it, so no
+ * proof this device can give unlocks raw content or approves an agent's
+ * request.
  */
-export function rawResetProofMode(state: RawSealingState): RawProofMode {
-  if (!state.local_presence) return "confirm";
-  if (!state.presence_available && state.password_set) return "password";
-  return "presence";
-}
-
-/**
- * How the operator accepts a raw key replaced outside the desktop. Its
- * password shows they chose it, and presence alone only shows someone is at
- * this Mac, so a keychain build asks for both; where that build cannot show
- * the prompt, the key cannot be accepted and only a reset is left. Other
- * builds have no presence check and take the password alone.
- */
-export type RawAcknowledgeMode =
-  | "password"
-  | "password_and_presence"
-  | "unavailable";
-
-export function rawAcknowledgeMode(state: RawSealingState): RawAcknowledgeMode {
-  if (!state.keychain_build) return "password";
-  return state.presence_available ? "password_and_presence" : "unavailable";
-}
-
-/**
- * Core opens the raw key to read raw content only once a raw password is set
- * (D11): until then no proof this device can give, not even a presence
- * check on a keychain key, unlocks it or approves an agent's request.
- */
-export function rawKeyUnreachable(state: RawSealingState): boolean {
+export function rawPasswordUnset(state: RawSealingState): boolean {
   return !state.password_set;
+}
+
+/** Raw protection still needs a raw password. */
+export function rawSetupNeeded(state: RawSealingState): boolean {
+  return state.password_required;
 }
 
 /**
@@ -356,13 +263,11 @@ export function unlockCheckDelay(expiresAt: string, now = Date.now()): number {
   return Math.max(Date.parse(expiresAt) - now, 0) + UNLOCK_CHECK_GRACE_MS;
 }
 
-/** Which way the raw key can be opened, for the settings summary. */
-export type RawPasswordState = "unset" | "password" | "keychain_only";
+/** How raw content is protected, for the settings summary. */
+export type RawProtection = "unset" | "password";
 
-export function rawPasswordState(status: RawSealingStatus): RawPasswordState {
-  if (status.password_set) return "password";
-  if (status.configured) return "keychain_only";
-  return "unset";
+export function rawProtection(status: RawSealingStatus): RawProtection {
+  return status.password_set ? "password" : "unset";
 }
 
 /** Core counts Unicode characters, not UTF-16 code units. */

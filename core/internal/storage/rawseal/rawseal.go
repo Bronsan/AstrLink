@@ -1,11 +1,9 @@
 // Package rawseal seals the per-part keys of raw audit content to an X25519
-// public key whose private half exists only inside envelopes: one wrapped
-// under a key derived from the raw password, and on keychain platforms one
-// wrapped under the local key (plan §5.11.9).
+// public key whose private half exists only inside an envelope wrapped under
+// a key derived from the raw password (plan §5.11.9).
 //
 //	k_blob ─HPKE(pk, info=request‖direction)─▶ wrapped_key (80 B)
-//	password ─Argon2id─▶ K_wrap ─AES-256-GCM─▶ private key   ("password")
-//	local key ─AES-256-GCM─▶ private key                     ("local")
+//	password ─Argon2id─▶ K_wrap ─AES-256-GCM─▶ private key ("password")
 //
 // Capture needs only the public key, so the request path never runs a KDF.
 // Go cannot zero the copies crypto/ecdh keeps internally; every byte slice
@@ -49,13 +47,11 @@ const (
 	RecommendedPasswordRunes = 12
 	MaxPasswordRunes         = 128
 
-	// KindPassword and KindLocal name the two private key envelopes.
+	// KindPassword names the private key envelope.
 	KindPassword = "password"
-	KindLocal    = "local"
 
 	blobKeyInfoPrefix = "astrlink/raw-key/v1"
 	passwordAADPrefix = "raw-envelope/password"
-	localAADPrefix    = "raw-envelope/local"
 	publicKeyMACLabel = "raw-sealing/public-key"
 	argon2idVersion   = argon2.Version
 )
@@ -306,28 +302,6 @@ func UnwrapPassword(envelope PasswordEnvelope, password []byte, keyID int64, pub
 	private, err := storage.OpenAES256GCM(wrapKey, envelope.Nonce, envelope.Wrapped, envelopeAAD(passwordAADPrefix, keyID, public))
 	if err != nil {
 		return nil, ErrPassword
-	}
-	return checkedPrivate(private, public)
-}
-
-// WrapLocal wraps the private key under the local key. Only keychain
-// platforms create this envelope; a key file beside the database would
-// otherwise open everything (§5.11.9.2).
-func WrapLocal(localKey, private []byte, keyID int64, public []byte) (nonce, wrapped []byte, err error) {
-	if len(localKey) != storage.AuditKeyBytes || len(private) != PrivateKeyBytes || len(public) != PublicKeyBytes {
-		return nil, nil, fmt.Errorf("%w: raw key envelope fields", storage.ErrInvalidArgument)
-	}
-	return storage.SealAES256GCM(localKey, private, envelopeAAD(localAADPrefix, keyID, public))
-}
-
-// UnwrapLocal reverses WrapLocal and checks the key against public.
-func UnwrapLocal(localKey, nonce, wrapped []byte, keyID int64, public []byte) ([]byte, error) {
-	if len(localKey) != storage.AuditKeyBytes || len(public) != PublicKeyBytes {
-		return nil, fmt.Errorf("%w: local envelope fields", ErrEnvelope)
-	}
-	private, err := storage.OpenAES256GCM(localKey, nonce, wrapped, envelopeAAD(localAADPrefix, keyID, public))
-	if err != nil {
-		return nil, fmt.Errorf("%w: local", ErrEnvelope)
 	}
 	return checkedPrivate(private, public)
 }

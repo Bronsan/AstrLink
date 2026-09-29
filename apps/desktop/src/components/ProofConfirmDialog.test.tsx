@@ -47,7 +47,6 @@ function Harness({
   dismissable,
   onCancel = vi.fn(),
   onSubmit,
-  passwordFallback,
   proof = "password",
   submitDisabled,
   withField = false,
@@ -55,7 +54,6 @@ function Harness({
   dismissable?: boolean;
   onCancel?: () => void;
   onSubmit: Submit;
-  passwordFallback?: boolean;
   proof?: ProofMode;
   submitDisabled?: boolean;
   withField?: boolean;
@@ -87,7 +85,6 @@ function Harness({
         return result;
       }}
       open={open}
-      passwordFallback={passwordFallback}
       proof={proof}
       submitDisabled={submitDisabled}
       title="申请标题"
@@ -145,7 +142,12 @@ describe("ProofConfirmDialog", () => {
     expect(dialog()?.textContent).toContain("申请标题");
     expect(dialog()?.textContent).toContain("申请事实");
     expect(document.activeElement).toBe(passwordInput());
-    expect(passwordInput().autocomplete).toBe("off");
+    // A password manager can fill the current password into its fixed id.
+    expect(passwordInput().autocomplete).toBe("current-password");
+    expect(passwordInput().id).toBe("raw-current-password");
+    expect(
+      document.querySelector('label[for="raw-current-password"]'),
+    ).not.toBeNull();
     expect(passwordInput().hasAttribute("maxlength")).toBe(false);
     expect(button("仅本次").disabled).toBe(true);
     expect(button("15 分钟内").disabled).toBe(true);
@@ -387,103 +389,6 @@ describe("ProofConfirmDialog", () => {
     expect(onSubmit).toHaveBeenCalledExactlyOnceWith("once", {
       kind: "confirm",
     });
-  });
-
-  it("requests a presence check on submit and focuses the default action", async () => {
-    const onSubmit = vi.fn<Submit>().mockResolvedValue({ kind: "done" });
-    await act(async () =>
-      root.render(<Harness onSubmit={onSubmit} proof="presence" />),
-    );
-
-    expect(document.querySelector('input[type="password"]')).toBeNull();
-    expect(
-      document.querySelector('[data-slot="proof-presence"]')?.textContent,
-    ).toContain("Touch ID");
-    expect(dialog()?.textContent).not.toContain("改用原文口令");
-    expect(document.activeElement).toBe(button("仅本次"));
-
-    await act(async () => button("15 分钟内").click());
-
-    expect(onSubmit).toHaveBeenCalledExactlyOnceWith("window_15m", {
-      kind: "presence",
-    });
-  });
-
-  it("keeps the dialog open after a cancelled presence prompt", async () => {
-    const onSubmit = vi
-      .fn<Submit>()
-      .mockResolvedValue({ kind: "presence_cancelled" });
-    await act(async () =>
-      root.render(<Harness onSubmit={onSubmit} proof="presence" />),
-    );
-
-    await act(async () => button("仅本次").click());
-
-    expect(dialog()?.getAttribute("data-state")).toBe("open");
-    expect(
-      document.querySelector('[data-slot="proof-notice"]')?.textContent,
-    ).toContain("已取消验证");
-    expect(button("仅本次").disabled).toBe(false);
-  });
-
-  it("switches between presence and the password when both are set up", async () => {
-    const onSubmit = vi.fn<Submit>().mockResolvedValue({ kind: "done" });
-    await act(async () =>
-      root.render(
-        <Harness onSubmit={onSubmit} passwordFallback proof="presence" />,
-      ),
-    );
-
-    await act(async () => button("改用原文口令").click());
-    expect(document.querySelector('[data-slot="proof-presence"]')).toBeNull();
-    await typePassword("correct horse");
-
-    await act(async () => button("改用 Touch ID").click());
-    expect(document.querySelector('input[type="password"]')).toBeNull();
-
-    await act(async () => button("改用原文口令").click());
-    // Switching away forgets what was typed.
-    expect(passwordInput().value).toBe("");
-    await typePassword("correct horse");
-    await pressEnter();
-
-    expect(onSubmit).toHaveBeenCalledExactlyOnceWith("once", {
-      kind: "password",
-      password: "correct horse",
-    });
-  });
-
-  it("falls back to the password when the host cannot prompt", async () => {
-    const onSubmit = vi
-      .fn<Submit>()
-      .mockResolvedValue({ kind: "presence_unsupported" });
-    await act(async () =>
-      root.render(
-        <Harness onSubmit={onSubmit} passwordFallback proof="presence" />,
-      ),
-    );
-
-    await act(async () => button("仅本次").click());
-
-    expect(passwordInput()).toBeTruthy();
-    expect(dialog()?.textContent).toContain("请改用原文口令");
-    expect(dialog()?.textContent).not.toContain("改用 Touch ID");
-  });
-
-  it("reports an unsupported prompt when there is no password to fall back to", async () => {
-    const onSubmit = vi
-      .fn<Submit>()
-      .mockResolvedValue({ kind: "presence_unsupported" });
-    await act(async () =>
-      root.render(<Harness onSubmit={onSubmit} proof="presence" />),
-    );
-
-    await act(async () => button("仅本次").click());
-
-    expect(document.querySelector('input[type="password"]')).toBeNull();
-    expect(dialog()?.querySelector('[role="alert"]')?.textContent).toBe(
-      "此设备暂时无法使用 Touch ID 验证。",
-    );
   });
 
   it("keeps actions disabled while the caller's fields are invalid", async () => {

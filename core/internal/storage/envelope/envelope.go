@@ -4,8 +4,7 @@
 //	local key ─AES-256-GCM(AAD=kind)─▶ dek_secrets, dek_audit
 //	dek_secrets ─AES-256-GCM(AAD=table‖primary key)─▶ secret columns
 //
-// dek_audit is the former audit_keys value, so audit bodies, content keys
-// and session fingerprints keep working without re-encryption.
+// dek_audit keys audit bodies, content keys and session fingerprints.
 package envelope
 
 import (
@@ -21,7 +20,7 @@ import (
 const (
 	// KindSecrets wraps the key for credentials and local token secrets.
 	KindSecrets = "secrets"
-	// KindAudit wraps the key for captured bodies (the former audit_keys row).
+	// KindAudit wraps the key for captured bodies.
 	KindAudit = "audit"
 	// KeyBytes is the size of the local key and of every data key.
 	KeyBytes = storage.AuditKeyBytes

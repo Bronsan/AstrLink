@@ -29,8 +29,9 @@ const createMigrationsTable = `CREATE TABLE IF NOT EXISTS schema_migrations (
 )`
 
 type Migration struct {
-	Version    int64
-	Name       string
+	Version int64
+	Name    string
+	// Statements may be empty for a removed step that only keeps its version.
 	Statements []string
 }
 
@@ -106,9 +107,6 @@ func validate(migrations []Migration) error {
 		}
 		if strings.TrimSpace(migration.Name) == "" {
 			return fmt.Errorf("migrations[%d]: name is required", index)
-		}
-		if len(migration.Statements) == 0 {
-			return fmt.Errorf("migrations[%d]: at least one statement is required", index)
 		}
 		for statementIndex, statement := range migration.Statements {
 			if strings.TrimSpace(statement) == "" {

@@ -23,7 +23,7 @@ import {
   type RawAccessProofOutcome,
 } from "./raw-access-model";
 import {
-  rawKeyUnreachable,
+  rawPasswordUnset,
   rawProofMode,
   type RawSealingState,
 } from "./raw-sealing-model";
@@ -62,9 +62,8 @@ function messageOf(error: unknown): string {
 
 /**
  * Shows the oldest pending agent raw access request as a proof dialog
- * (plan §5.11.6). Approval needs a fresh proof every time (D14): Touch ID
- * where the host can show it, else the raw password. Nothing here keeps the
- * password after the attempt.
+ * (plan §5.11.6). Approval needs the raw password every time (D14).
+ * Nothing here keeps the password after the attempt.
  */
 export function RawAccessApprovals({
   coreSessionKey,
@@ -117,8 +116,8 @@ export function RawAccessApprovals({
   const requestId = grant?.request_id ?? null;
   const grantId = grant?.grant_id ?? null;
 
-  // Read how to prove on every new request, since the password or presence
-  // support may have changed since the last one.
+  // Read how to prove on every new request, since the raw password may have
+  // been set or reset since the last one.
   useEffect(() => {
     if (grantId === null) return;
     let cancelled = false;
@@ -200,8 +199,6 @@ export function RawAccessApprovals({
         return { kind: "done" };
       case "password_invalid":
       case "backoff":
-      case "presence_cancelled":
-      case "presence_unsupported":
         return refusalResult(outcome);
     }
   };
@@ -231,10 +228,9 @@ export function RawAccessApprovals({
   // The dialog waits for the proof mode rather than switching under the user.
   const currentSealing = sealing?.grantId === grantId ? sealing : null;
   const sealingState = currentSealing?.state ?? null;
-  // Core wants a proof for every approval and reads raw content only once a
-  // raw password is set; until then only denying is left, and no Touch ID
-  // prompt is offered for an approval it could not complete.
-  const unreachable = sealingState !== null && rawKeyUnreachable(sealingState);
+  // Core wants a proof for every approval and reads raw content only through
+  // the raw password; without one only denying is left.
+  const unreachable = sealingState !== null && rawPasswordUnset(sealingState);
   const proofMode: ProofMode = !sealingState
     ? "password"
     : unreachable
@@ -258,7 +254,6 @@ export function RawAccessApprovals({
           : Promise.resolve({ kind: "done" })
       }
       open={grant !== null && currentSealing !== null}
-      passwordFallback={sealingState?.password_set ?? false}
       proof={proofMode}
       submitDisabled={unreachable}
       title={t("rawAccess.title")}

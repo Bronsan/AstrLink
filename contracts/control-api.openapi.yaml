@@ -2444,9 +2444,8 @@ paths:
         passed a privacy decision; raw parts come back withheld. The default
         `view=full` needs the operator role, or an approved raw access grant in
         `X-AstrLink-Raw-Grant`; an observer without a grant receives 403. Until
-        a raw password is set, raw parts are not kept: they come back withheld
-        as `raw_not_kept`, and raw parts kept before an upgrade as
-        `raw_password_required`. Once one is set and raw reading is not
+        a raw password protects the raw key, raw parts are not kept: they come
+        back withheld as `raw_not_kept`. Once one does and raw reading is not
         unlocked, the operator's raw parts are withheld with reason
         `raw_locked`. The grant header is control-plane
         local and is never forwarded upstream. While `agent_raw_access_enabled`
@@ -2497,8 +2496,8 @@ paths:
       summary: Ask the desktop operator to approve one read of a request's raw parts.
       description: |
         Files an in-memory grant awaiting a desktop decision. The returned token is
-        useless until the operator approves with the raw password or local
-        presence; it is shown only in this response and is stored as a hash. A
+        useless until the operator approves with the raw password; it is shown
+        only in this response and is stored as a hash. A
         Core restart invalidates every grant. A new request from the same client
         for the same request replaces the one still awaiting a decision; at most
         16 requests may await a decision.
@@ -2646,17 +2645,14 @@ paths:
       operationId: changeRawPassword
       summary: Set, change, or reset the password that seals raw parts.
       description: |
-        `set` adds the first password; when a desktop keychain key already seals
-        the raw key, `proof` must be local presence. `change` needs the current
-        password or local presence as `proof`. `reset` replaces the key pair and
-        discards every captured raw part sealed to the old key; it always needs a
-        new password. While the desktop keychain key still opens the old key,
-        `reset` needs local presence or the current password as `proof`; only a
-        key nothing on this machine opens any more is reset without one.
+        `set` adds the first password and takes no proof. `change` needs the
+        current password as `proof`. `reset` replaces the key pair and discards
+        every captured raw part sealed to the old key; it always needs a new
+        password and takes no proof, since it is how a forgotten password is
+        recovered from.
         Passwords contain 8 to 128 characters.
-        Raw parts are kept only once a password is set; the first one moves raw
-        parts kept before an upgrade onto the raw key in the background. Wrong
-        passwords back off like raw access decisions.
+        Raw parts are kept only once a password protects the raw key. Wrong
+        proofs back off like raw access decisions.
       requestBody:
         required: true
         content:
@@ -2698,8 +2694,8 @@ paths:
         Opens the raw key with a proof and keeps it in Core memory until 15
         minutes pass without a raw read, `raw-lock` is called, or Core exits.
         Agent raw access grants never use this session. Without a raw password
-        it returns 409 `raw_access_unavailable`, even for local presence.
-        Repeated wrong passwords return 429 with `Retry-After`.
+        it returns 409 `raw_access_unavailable`. Repeated wrong proofs return
+        429 with `Retry-After`.
       requestBody:
         required: true
         content:
@@ -6383,15 +6379,12 @@ components:
         - privacy_pending
         - privacy_unknown
         - raw_locked
-        - raw_password_required
         - raw_not_kept
       description: |
         Why a part was withheld. `privacy_unknown` covers parts captured before
         decisions were recorded; `raw_locked` is returned to the operator until
-        raw reading is unlocked. `raw_password_required` marks raw parts kept
-        before an upgrade, readable only once a raw password is set;
-        `raw_not_kept` marks raw parts captured while no raw password was set,
-        whose content was never stored.
+        raw reading is unlocked. `raw_not_kept` marks raw parts captured before
+        a raw password protected the raw key, whose content was never stored.
     RawAccessRequest:
       type: object
       required: [reason]
@@ -6465,26 +6458,18 @@ components:
           description: Bearer for `X-AstrLink-Raw-Grant`. Returned once; keep it in memory only.
       unevaluatedProperties: false
     RawProof:
-      oneOf:
-        - type: object
-          required: [password]
-          properties:
-            kind:
-              type: string
-              const: password
-            password:
-              type: string
-              minLength: 1
-              maxLength: 128
-              writeOnly: true
-          additionalProperties: false
-        - type: object
-          required: [kind]
-          properties:
-            kind:
-              type: string
-              const: local_presence
-          additionalProperties: false
+      type: object
+      required: [password]
+      properties:
+        kind:
+          type: string
+          const: password
+        password:
+          type: string
+          minLength: 1
+          maxLength: 128
+          writeOnly: true
+      additionalProperties: false
     RawAccessDecision:
       type: object
       required: [decision]
@@ -6571,7 +6556,6 @@ components:
         - configured
         - password_set
         - password_required
-        - local_presence
         - envelopes
         - key_verified
         - unlocked
@@ -6593,21 +6577,16 @@ components:
         password_required:
           type: boolean
           description: |
-            True until a raw password is set. Until then raw parts are not kept
-            and nothing raw is readable, on every platform; shareable parts and
+            True while no raw password protects the raw key. Until one does raw
+            parts are not kept and nothing raw is readable; shareable parts and
             forwarding are unaffected.
-        local_presence:
-          type: boolean
-          description: |
-            A desktop LocalAuthentication success is accepted as proof once a
-            raw password is set.
         envelopes:
           type: array
-          maxItems: 2
+          maxItems: 1
           uniqueItems: true
           items:
             type: string
-            enum: [password, local]
+            enum: [password]
         key_verified:
           type: boolean
           description: |
@@ -6658,7 +6637,7 @@ components:
           oneOf:
             - $ref: "#/components/schemas/RawProof"
             - type: "null"
-          description: Opens the existing key for `change`, and for `set` or `reset` while a keychain key seals it.
+          description: The current password; required for `change`, ignored for `set` and `reset`.
       additionalProperties: false
     RawPasswordResponse:
       allOf:
@@ -6725,8 +6704,8 @@ components:
         raw_password_required:
           type: boolean
           description: |
-            True while no raw password is set, so the desktop can point at the
-            setup from the tray as well as the main window.
+            True while no raw password protects the raw key, so the desktop can
+            point at the setup from the tray as well as the main window.
       additionalProperties: false
     PurgeRequest:
       type: object

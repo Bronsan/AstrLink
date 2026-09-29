@@ -55,7 +55,7 @@ const bridgeMocks = vi.hoisted(() => ({
   getRequestSession: vi.fn(),
   probePrivacyModel: vi.fn(),
   purgeRequestRecords: vi.fn(),
-  revealAccessToken: vi.fn(),
+  copyAccessToken: vi.fn(),
   restartCore: vi.fn(),
   startCore: vi.fn(),
   stopCore: vi.fn(),
@@ -78,7 +78,6 @@ const bridgeMocks = vi.hoisted(() => ({
   lockRaw: vi.fn(),
   setRawPassword: vi.fn(),
   unlockRaw: vi.fn(),
-  verifyLocalPresence: vi.fn(),
 }));
 
 const updateMocks = vi.hoisted(() => ({
@@ -226,14 +225,13 @@ async function chooseOption(label: string, option: string): Promise<void> {
   });
 }
 
-/** A raw password without Touch ID unless `overrides` says otherwise. */
+/** A raw password unless `overrides` says otherwise. */
 function rawSealing(overrides: Record<string, unknown> = {}) {
   return {
     raw_available: true,
     configured: true,
     password_set: true,
     password_required: false,
-    local_presence: false,
     envelopes: ["password"],
     key_verified: true,
     unlocked: false,
@@ -242,8 +240,6 @@ function rawSealing(overrides: Record<string, unknown> = {}) {
     retry_after_seconds: 0,
     password_min_length: 8,
     password_max_length: 128,
-    presence_available: false,
-    keychain_build: false,
     ...overrides,
   };
 }
@@ -654,24 +650,23 @@ describe("App workspace navigation", () => {
     expect(container.textContent).toContain("已完成 0 / 4 步");
     expect(
       container.querySelector('[aria-current="step"]')?.textContent,
-    ).toContain("设置原文口令");
+    ).toContain("保护请求原文");
     // The guide asks in its own step, so the required dialog waits.
     expect(proofDialog()).toBeNull();
 
-    await act(async () => button("设置原文口令").click());
-    expect(proofDialog()?.textContent).toContain("设置原文口令");
-    expect(proofDialog()?.textContent).not.toContain("设置原文口令后继续");
+    await act(async () => button("开始设置").click());
+    expect(proofDialog()?.textContent).toContain("保护请求原文");
     await act(async () => button("取消").click());
     expect(proofDialog()).toBeNull();
 
     // Skipping the guide does not skip the password.
     await act(async () => button("稍后设置").click());
     expect(workspaceHeading().textContent).toBe("运行概览");
-    expect(proofDialog()?.textContent).toContain("设置原文口令后继续");
+    expect(proofDialog()?.textContent).toContain("设置口令并继续");
     expect(queryButton("取消", proofDialog()!)).toBeNull();
 
     await typeNewPassword("correct horse");
-    await act(async () => button("设置口令").click());
+    await act(async () => button("设置口令并继续").click());
     expect(bridgeMocks.setRawPassword).toHaveBeenCalledExactlyOnceWith(
       "set",
       "correct horse",
@@ -698,8 +693,8 @@ describe("App workspace navigation", () => {
     // The workspace is there behind it; the gateway keeps serving.
     expect(workspaceHeading().textContent).toBe("运行概览");
     const dialog = proofDialog();
-    expect(dialog?.textContent).toContain("设置原文口令后继续");
-    expect(dialog?.textContent).toContain("设置前不会记录请求和响应的原文正文");
+    expect(dialog?.textContent).toContain("设置口令并继续");
+    expect(dialog?.textContent).toContain("新请求的原文不会保存");
     expect(dialog?.textContent).toContain("忘记后只能重置");
     expect(queryButton("取消", dialog!)).toBeNull();
     await pressEscape();
@@ -711,7 +706,7 @@ describe("App workspace navigation", () => {
     expect(proofDialog()).not.toBeNull();
 
     await typeNewPassword("correct horse");
-    await act(async () => button("设置口令").click());
+    await act(async () => button("设置口令并继续").click());
     expect(bridgeMocks.setRawPassword).toHaveBeenCalledExactlyOnceWith(
       "set",
       "correct horse",
@@ -841,36 +836,22 @@ describe("App workspace navigation", () => {
     },
   );
 
-  it("reveals a setup token only when copying and does not persist the secret", async () => {
+  it("has the host copy a setup token without verification", async () => {
     localStorage.setItem(ONBOARDING_STORAGE_KEY, "active");
     const writeText = vi.fn().mockResolvedValue(undefined);
     vi.spyOn(navigator.clipboard, "writeText").mockImplementation(writeText);
-    bridgeMocks.revealAccessToken.mockResolvedValue({
-      access_token: "setup-secret",
-    });
-    // Touch ID proves the copy, so no password is typed.
-    bridgeMocks.getRawSealingStatus.mockResolvedValue(
-      rawSealing({
-        envelopes: ["password", "local"],
-        local_presence: true,
-        presence_available: true,
-      }),
-    );
-    bridgeMocks.verifyLocalPresence.mockResolvedValue({ outcome: "verified" });
+    bridgeMocks.copyAccessToken.mockResolvedValue(true);
+    bridgeMocks.getRawSealingStatus.mockResolvedValue(rawSealing());
     await renderApp();
-    expect(bridgeMocks.revealAccessToken).not.toHaveBeenCalled();
+    expect(bridgeMocks.copyAccessToken).not.toHaveBeenCalled();
     await act(async () => button("复制访问令牌").click());
-    expect(bridgeMocks.revealAccessToken).not.toHaveBeenCalled();
     expect(
-      document.querySelector('[data-slot="proof-presence"]'),
-    ).not.toBeNull();
-    await act(async () => button("复制令牌").click());
-    expect(bridgeMocks.verifyLocalPresence).toHaveBeenCalledWith(
-      "reveal_access_token",
+      document.querySelector('[data-slot="proof-confirm-dialog"]'),
+    ).toBeNull();
+    expect(bridgeMocks.copyAccessToken).toHaveBeenCalledExactlyOnceWith(
+      "token_01",
     );
-    expect(bridgeMocks.revealAccessToken).toHaveBeenCalledWith("token_01");
-    expect(writeText).toHaveBeenCalledWith("setup-secret");
-    expect(container.textContent).not.toContain("setup-secret");
+    expect(writeText).not.toHaveBeenCalled();
     expect(localStorage.getItem(ONBOARDING_STORAGE_KEY)).toBe("active");
   });
 

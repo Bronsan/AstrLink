@@ -400,8 +400,7 @@ func writeRawGrantError(writer http.ResponseWriter, err error) bool {
 // auditReader opens the parts one audit read may see. Shareable parts open
 // with the audit key; the rest open only in the full view, through an
 // approved grant or the operator's unlock session. Until a raw password is
-// set, nobody reads them: parts kept from before it was required wait for
-// it, and parts captured since were never kept.
+// set, nobody reads them: parts captured before then were never kept.
 type auditReader struct {
 	handler *Handler
 	request *http.Request
@@ -462,11 +461,11 @@ func (reader *auditReader) open(blob storage.AuditBlob) ([]byte, contract.AuditW
 		}
 		if reader.lease == nil && !reader.sealing.PasswordSet {
 			// No audit-key fallback: the local key alone must not read raw
-			// content, even content kept from before the password.
+			// content.
 			if blob.Exposure == storage.AuditExposurePending {
 				return nil, contract.AuditWithheldPrivacyPending, nil
 			}
-			return nil, contract.AuditWithheldRawPasswordRequired, nil
+			return nil, contract.AuditWithheldRawNotKept, nil
 		}
 		if reader.lease == nil && !reader.sessionChecked {
 			// Looked up once per read: a raw read is what keeps the

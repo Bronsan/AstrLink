@@ -40,9 +40,6 @@ type RawSealingStatus struct {
 	// PasswordRequired is true until a raw password is set: no raw content
 	// is kept or read before then, on any platform.
 	PasswordRequired bool `json:"password_required"`
-	// LocalPresence is true when a desktop LocalAuthentication success is
-	// accepted as proof.
-	LocalPresence bool `json:"local_presence"`
 	// Envelopes lists the stored private key envelopes.
 	Envelopes []string `json:"envelopes"`
 	// KeyVerified is false while raw captures are not kept until a proof
@@ -98,7 +95,6 @@ func (handler *Handler) rawSealingStatus(request *http.Request, status RawVaultS
 		Configured:        status.Configured,
 		PasswordSet:       status.PasswordSet,
 		PasswordRequired:  !status.PasswordSet,
-		LocalPresence:     status.LocalPresence,
 		Envelopes:         []string{},
 		KeyVerified:       status.KeyVerified,
 		Unlocked:          status.Unlocked,
@@ -111,9 +107,6 @@ func (handler *Handler) rawSealingStatus(request *http.Request, status RawVaultS
 	}
 	if status.PasswordSet {
 		view.Envelopes = append(view.Envelopes, rawseal.KindPassword)
-	}
-	if status.LocalEnvelope {
-		view.Envelopes = append(view.Envelopes, rawseal.KindLocal)
 	}
 	if status.PasswordSet {
 		enabled, err := handler.agentRawAccessEnabled(request.Context())
@@ -210,7 +203,7 @@ func (handler *Handler) postRawPassword(writer http.ResponseWriter, request *htt
 	proof, err := parseRawProof(members["proof"])
 	if err != nil {
 		writeValidationFailed(writer, "proof is invalid", []errorDetail{{
-			Field: "proof", Reason: "must be {password} or {kind: \"local_presence\"}",
+			Field: "proof", Reason: "must be {password}",
 		}})
 		return
 	}
@@ -283,7 +276,7 @@ func (handler *Handler) postRawProof(
 	if !ok {
 		return
 	}
-	proofRequired := verb + " requires the raw password or local presence"
+	proofRequired := verb + " requires the raw password"
 	if request.ContentLength == 0 {
 		writeError(writer, http.StatusUnprocessableEntity, "raw_proof_required", proofRequired)
 		return
@@ -296,7 +289,7 @@ func (handler *Handler) postRawProof(
 	proof, err := parseRawProof(members["proof"])
 	if err != nil {
 		writeValidationFailed(writer, "proof is invalid", []errorDetail{{
-			Field: "proof", Reason: "must be {password} or {kind: \"local_presence\"}",
+			Field: "proof", Reason: "must be {password}",
 		}})
 		return
 	}

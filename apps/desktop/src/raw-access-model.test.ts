@@ -24,12 +24,7 @@ describe("raw access proof outcomes", () => {
         grant: { ...grant, status: "approved", decision: "once" },
       }),
     ).toMatchObject({ outcome: "decided", grant: { decision: "once" } });
-    for (const outcome of [
-      "password_invalid",
-      "not_pending",
-      "presence_cancelled",
-      "presence_unsupported",
-    ]) {
+    for (const outcome of ["password_invalid", "not_pending"]) {
       expect(parseRawAccessProofOutcome({ outcome })).toEqual({ outcome });
     }
     expect(

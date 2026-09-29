@@ -7,10 +7,9 @@ import (
 
 // RawKeyEnvelope is one stored wrapping of the raw sealing private key.
 type RawKeyEnvelope struct {
-	// Kind is "password" or "local".
+	// Kind is "password".
 	Kind string
-	// KDFJSON and Salt describe the password derivation; both are empty for
-	// a local envelope.
+	// KDFJSON and Salt are the Argon2id parameters and salt.
 	KDFJSON   string
 	Salt      []byte
 	Nonce     []byte
@@ -28,7 +27,6 @@ type RawSealingState struct {
 	// pair is intact.
 	MACValid bool
 	Password *RawKeyEnvelope
-	Local    *RawKeyEnvelope
 }
 
 // NewRawSealingKey is a key pair ready to store, already wrapped.
@@ -72,15 +70,11 @@ type RawSealingStore interface {
 	ReplaceRawSealingKey(context.Context, NewRawSealingKey) (RawResetResult, error)
 	// ResealRawParts moves every raw part still sealed under the audit key
 	// onto the raw sealing key, committing at most limit parts at a time.
-	// Without a raw password it first drops the content of pending parts
-	// whose request ended, since nothing will settle them any more.
+	// Without a raw password it only drops the content of pending parts whose
+	// request ended, since nothing will settle them any more.
 	ResealRawParts(context.Context, int) (RawResealResult, error)
 	// OnResealDeferred registers retry, which the store calls when a part
 	// that settled as raw could not be moved onto the raw sealing key at
 	// once. nil unregisters it.
 	OnResealDeferred(retry func())
-	// WrapLocalRawKey and OpenLocalRawKey wrap the private key under the
-	// store's local key. Neither touches the database.
-	WrapLocalRawKey(keyID int64, public, private []byte) (RawKeyEnvelope, error)
-	OpenLocalRawKey(state RawSealingState) ([]byte, error)
 }

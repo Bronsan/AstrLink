@@ -9,8 +9,6 @@ use reqwest::{Method, StatusCode};
 use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
 
-use crate::raw_presence::{Presence, PresenceVerifier};
-
 pub const RAW_ACCESS_PATH: &str = "/control/v1/audit/raw-access";
 pub const RAW_SEALING_PATH: &str = "/control/v1/audit/raw-sealing";
 pub const RAW_PASSWORD_PATH: &str = "/control/v1/audit/raw-password";
@@ -43,10 +41,6 @@ pub enum ProofOutcome {
         retry_after_seconds: u64,
     },
     NotPending,
-    /// The LocalAuthentication prompt was dismissed; nothing reached Core.
-    PresenceCancelled,
-    /// This build cannot check local presence; use the password instead.
-    PresenceUnsupported,
 }
 
 /// The proof the dialog collected. The password is wiped when this drops.
@@ -54,32 +48,11 @@ pub enum ProofOutcome {
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ProofArg {
     Password { password: Zeroizing<String> },
-    // A struct variant, so deny_unknown_fields also covers it.
-    LocalPresence {},
 }
 
-/// A proof ready for Core. `LocalPresence` exists only after the system
-/// prompt succeeded on this machine.
+/// A proof ready for Core. The password is wiped when this drops.
 pub enum Proof {
     Password(Zeroizing<String>),
-    LocalPresence,
-}
-
-/// Runs LocalAuthentication for a presence proof; a password passes
-/// through without a prompt. Blocks while the prompt is open.
-pub fn confirm_proof(
-    arg: ProofArg,
-    presence: &dyn PresenceVerifier,
-    reason: &str,
-) -> Result<Proof, ProofOutcome> {
-    match arg {
-        ProofArg::Password { password } => Ok(Proof::Password(password)),
-        ProofArg::LocalPresence {} => match presence.verify(reason) {
-            Presence::Verified => Ok(Proof::LocalPresence),
-            Presence::Cancelled => Err(ProofOutcome::PresenceCancelled),
-            Presence::Unsupported => Err(ProofOutcome::PresenceUnsupported),
-        },
-    }
 }
 
 pub fn validate_grant_id(id: &str) -> Result<(), String> {
@@ -115,28 +88,23 @@ pub fn is_proof_request(method: &Method, path: &str) -> bool {
 }
 
 #[derive(Serialize)]
-#[serde(untagged)]
-enum ProofBody<'a> {
-    Password { password: &'a str },
-    LocalPresence { kind: &'static str },
+struct ProofBody<'a> {
+    password: &'a str,
 }
 
 impl Proof {
     fn body(&self) -> Result<ProofBody<'_>, String> {
         match self {
-            Proof::Password(password) => Ok(ProofBody::Password {
+            Proof::Password(password) => Ok(ProofBody {
                 password: checked_password(password)?,
-            }),
-            Proof::LocalPresence => Ok(ProofBody::LocalPresence {
-                kind: "local_presence",
             }),
         }
     }
 
+    /// Everything the body carries besides fixed text.
     fn secret_len(&self) -> usize {
         match self {
             Proof::Password(password) => password.len(),
-            Proof::LocalPresence => 0,
         }
     }
 }
@@ -167,9 +135,9 @@ pub fn decision_body(
     validate_grant_id(grant_id)?;
     let proof = match decision {
         "deny" => None,
-        "once" | "window_15m" => Some(proof.ok_or_else(|| {
-            "approving raw access requires the raw password or local presence".to_string()
-        })?),
+        "once" | "window_15m" => Some(
+            proof.ok_or_else(|| "approving raw access requires the raw password".to_string())?,
+        ),
         _ => return Err("raw access decision must be once, window_15m, or deny".to_string()),
     };
     let secret_len = proof.map_or(0, Proof::secret_len);
@@ -322,7 +290,6 @@ pub fn parse_list(body: &[u8]) -> Result<serde_json::Value, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::raw_presence::testing::FakePresence;
 
     const GRANT: &str = "rawgrant_0123456789abcdef";
 
@@ -357,10 +324,10 @@ mod tests {
             json(&body),
             serde_json::json!({"decision":"once","proof":{"password":"pa\"ss"}})
         );
-        let body = decision_body(GRANT, "window_15m", Some(&Proof::LocalPresence)).unwrap();
+        let body = decision_body(GRANT, "window_15m", Some(&password("secret"))).unwrap();
         assert_eq!(
             json(&body),
-            serde_json::json!({"decision":"window_15m","proof":{"kind":"local_presence"}})
+            serde_json::json!({"decision":"window_15m","proof":{"password":"secret"}})
         );
         let body = decision_body(GRANT, "deny", Some(&password("ignored"))).unwrap();
         assert_eq!(json(&body), serde_json::json!({"decision":"deny"}));
@@ -378,10 +345,6 @@ mod tests {
         assert_eq!(
             json(&unlock_body(&password("open sesame")).unwrap()),
             serde_json::json!({"proof":{"password":"open sesame"}})
-        );
-        assert_eq!(
-            json(&unlock_body(&Proof::LocalPresence).unwrap()),
-            serde_json::json!({"proof":{"kind":"local_presence"}})
         );
         assert!(unlock_body(&password("")).is_err());
 
@@ -417,17 +380,16 @@ mod tests {
     }
 
     #[test]
-    fn proof_arguments_take_the_password_or_local_presence_only() {
+    fn proof_arguments_take_the_password_only() {
         let arg: ProofArg =
             serde_json::from_str(r#"{"kind":"password","password":"open sesame"}"#).unwrap();
         assert!(
             matches!(arg, ProofArg::Password { ref password } if password.as_str() == "open sesame")
         );
-        let arg: ProofArg = serde_json::from_str(r#"{"kind":"local_presence"}"#).unwrap();
-        assert!(matches!(arg, ProofArg::LocalPresence {}));
         for invalid in [
             r#"{"password":"open sesame"}"#,
-            r#"{"kind":"local_presence","password":"x"}"#,
+            r#"{"kind":"password","password":"open sesame","extra":"x"}"#,
+            r#"{"kind":"password"}"#,
             r#"{"kind":"token"}"#,
         ] {
             assert!(
@@ -438,46 +400,12 @@ mod tests {
     }
 
     #[test]
-    fn presence_proofs_need_a_verified_prompt() {
-        let verified = FakePresence::new(Presence::Verified);
-        assert!(matches!(
-            confirm_proof(ProofArg::LocalPresence {}, &verified, "approve"),
-            Ok(Proof::LocalPresence)
-        ));
-        assert_eq!(verified.prompts(), 1);
-
-        let cancelled = FakePresence::new(Presence::Cancelled);
-        assert_eq!(
-            confirm_proof(ProofArg::LocalPresence {}, &cancelled, "approve").err(),
-            Some(ProofOutcome::PresenceCancelled)
-        );
-        let unsupported = FakePresence::new(Presence::Unsupported);
-        assert_eq!(
-            confirm_proof(ProofArg::LocalPresence {}, &unsupported, "approve").err(),
-            Some(ProofOutcome::PresenceUnsupported)
-        );
-
-        // A password never opens the system prompt.
-        let untouched = FakePresence::new(Presence::Verified);
-        let arg = ProofArg::Password {
-            password: Zeroizing::new("open sesame".to_string()),
-        };
-        assert!(matches!(
-            confirm_proof(arg, &untouched, "approve"),
-            Ok(Proof::Password(ref password)) if password.as_str() == "open sesame"
-        ));
-        assert_eq!(untouched.prompts(), 0);
-    }
-
-    #[test]
     fn proof_passwords_are_zeroizing() {
         // The deserialised password is wiped on drop, not just freed.
         fn assert_zeroizing(_: &Zeroizing<String>) {}
-        if let ProofArg::Password { password } =
-            serde_json::from_str(r#"{"kind":"password","password":"p"}"#).unwrap()
-        {
-            assert_zeroizing(&password);
-        }
+        let ProofArg::Password { password } =
+            serde_json::from_str(r#"{"kind":"password","password":"p"}"#).unwrap();
+        assert_zeroizing(&password);
     }
 
     #[test]
@@ -505,8 +433,6 @@ mod tests {
             ),
             None
         );
-        let outcome = serde_json::to_value(ProofOutcome::PresenceCancelled).unwrap();
-        assert_eq!(outcome, serde_json::json!({"outcome":"presence_cancelled"}));
     }
 
     #[test]

@@ -3,10 +3,8 @@ package main
 import (
 	"bytes"
 	"context"
-	"database/sql"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"net"
 	"os"
 	"path/filepath"
@@ -17,9 +15,7 @@ import (
 	"time"
 
 	"github.com/QuantumNous/astrlink/core/contract"
-	"github.com/QuantumNous/astrlink/core/internal/accountauth"
 	"github.com/QuantumNous/astrlink/core/internal/localkey"
-	"github.com/QuantumNous/astrlink/core/internal/secretstore"
 	"github.com/QuantumNous/astrlink/core/internal/storage"
 	"github.com/QuantumNous/astrlink/core/internal/storage/sqlite"
 )
@@ -31,23 +27,15 @@ const (
 )
 
 // newOfflineDataDir writes a database, its local key and one captured
-// request with a shareable upstream body and a raw body kept before the
-// upgrade, still under the audit key: this release keeps no raw capture
-// before a raw password is set.
+// request with a shareable upstream body.
 func newOfflineDataDir(t *testing.T, directory string) string {
 	t.Helper()
 	ctx := context.Background()
-	path := filepath.Join(directory, "astrlink.db")
-	store, err := sqlite.Open(ctx, path)
+	store, err := sqlite.Open(ctx, filepath.Join(directory, "astrlink.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer store.Close()
-	key, err := store.GetOrCreateAuditKey(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer clear(key)
 	if err := store.InsertRequestRecord(ctx, contract.RequestRecord{
 		ID: offlineRequestID, StartedAt: time.Now().UTC(), Status: contract.RequestStatusSucceeded,
 		InputProtocol: contract.ProtocolOpenAIChat,
@@ -55,31 +43,40 @@ func newOfflineDataDir(t *testing.T, directory string) string {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	seal := func(plain string) storage.AuditBlob {
-		nonce, ciphertext, err := storage.SealAuditBlob(key, []byte(plain))
-		if err != nil {
-			t.Fatal(err)
-		}
-		return storage.AuditBlob{RequestID: offlineRequestID, MediaType: "application/json",
-			Nonce: nonce, Ciphertext: ciphertext, CapturedBytes: len(plain)}
-	}
-	upstream := seal(`{"content":"mail <EMAIL_1>"}`)
-	upstream.Direction, upstream.Exposure = storage.AuditDirectionUpstreamRequest, storage.AuditExposureShareable
-	if err := store.InsertAuditBlob(ctx, upstream); err != nil {
-		t.Fatal(err)
-	}
-	history := seal(`{"content":"mail ` + offlineSecret + `"}`)
-	database, err := sql.Open("sqlite", "file:"+path)
+	insertOfflinePart(t, store, storage.AuditDirectionUpstreamRequest, storage.AuditExposureShareable, `{"content":"mail <EMAIL_1>"}`)
+	return directory
+}
+
+// captureOfflineRawBody captures the request's raw body the way Core does:
+// the store seals it to the raw key, or keeps nothing without one.
+func captureOfflineRawBody(t *testing.T, directory string) {
+	t.Helper()
+	store, err := sqlite.Open(context.Background(), filepath.Join(directory, "astrlink.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer database.Close()
-	if _, err := database.Exec(`INSERT INTO audit_blobs (request_id, direction, media_type, nonce, ciphertext, truncated, captured_bytes, created_at, exposure)
-VALUES (?, 'request', 'application/json', ?, ?, 0, ?, '2026-09-20T00:00:00Z', 'raw')`,
-		offlineRequestID, history.Nonce, history.Ciphertext, history.CapturedBytes); err != nil {
+	defer store.Close()
+	insertOfflinePart(t, store, storage.AuditDirectionRequest, storage.AuditExposureRaw, `{"content":"mail `+offlineSecret+`"}`)
+}
+
+func insertOfflinePart(t *testing.T, store *sqlite.Store, direction storage.AuditDirection, exposure storage.AuditExposure, plain string) {
+	t.Helper()
+	ctx := context.Background()
+	key, err := store.GetOrCreateAuditKey(ctx)
+	if err != nil {
 		t.Fatal(err)
 	}
-	return directory
+	defer clear(key)
+	nonce, ciphertext, err := storage.SealAuditBlob(key, []byte(plain))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.InsertAuditBlob(ctx, storage.AuditBlob{
+		RequestID: offlineRequestID, Direction: direction, Exposure: exposure, MediaType: "application/json",
+		Nonce: nonce, Ciphertext: ciphertext, CapturedBytes: len(plain),
+	}); err != nil {
+		t.Fatal(err)
+	}
 }
 
 type offlineRun struct {
@@ -139,10 +136,6 @@ func TestOfflineCommandsRejectBadArguments(t *testing.T) {
 		{[]string{"audit", "list", "--data-dir", directory}, "audit show REQUEST_ID"},
 		{[]string{"audit", "show", "--data-dir", directory}, "audit show REQUEST_ID"},
 		{[]string{"audit", "show", "not a request id", "--data-dir", directory}, "request id"},
-		{[]string{"unseal", "--data-dir", directory}, "--yes"},
-		{[]string{"unseal", "--yes"}, "--data-dir is required"},
-		{[]string{"unseal", "now", "--data-dir", directory, "--yes"}, "takes no arguments"},
-		{[]string{"unseal", "--data-dir", directory, "--yes", "--password", offlinePassword}, "flag provided but not defined"},
 	} {
 		runOffline(t, offlinePassword+"\n", testCase.args...).want(t, 2, testCase.fragment)
 	}
@@ -186,15 +179,15 @@ func TestOfflineCommandsNeverCreateADatabaseOrKey(t *testing.T) {
 
 func TestOfflineRawPasswordSealsAndAuditShowReads(t *testing.T) {
 	directory := newOfflineDataDir(t, t.TempDir())
-	// Before a raw password exists, raw parts kept before the upgrade are
-	// withheld: the local key alone never reads raw content.
+	// Before a raw password exists, raw content is not kept.
+	captureOfflineRawBody(t, directory)
 	before := runOffline(t, "", "audit", "show", string(offlineRequestID), "--data-dir", directory, "--json")
 	before.want(t, 0, "astrlink-core raw-password set")
 	var content contract.AuditContent
 	if err := json.Unmarshal([]byte(before.stdout), &content); err != nil {
 		t.Fatal(err)
 	}
-	if content.RequestBody == nil || !content.RequestBody.Withheld || content.RequestBody.Reason != contract.AuditWithheldRawPasswordRequired ||
+	if content.RequestBody == nil || !content.RequestBody.Withheld || content.RequestBody.Reason != contract.AuditWithheldRawNotKept ||
 		strings.Contains(before.stdout, offlineSecret) {
 		t.Fatalf("request body before set=%#v", content.RequestBody)
 	}
@@ -204,9 +197,10 @@ func TestOfflineRawPasswordSealsAndAuditShowReads(t *testing.T) {
 
 	runOffline(t, "short\n", "raw-password", "set", "--data-dir", directory, "--password-stdin").want(t, 1, "8 to 128")
 	runOffline(t, offlinePassword, "raw-password", "set", "--data-dir", directory, "--password-stdin").
-		want(t, 0, "sealed 1 captured raw part")
+		want(t, 0, "raw password set")
 	runOffline(t, offlinePassword+"\n", "raw-password", "set", "--data-dir", directory, "--password-stdin").
 		want(t, 1, "already set")
+	captureOfflineRawBody(t, directory)
 
 	store, err := sqlite.Open(context.Background(), filepath.Join(directory, "astrlink.db"))
 	if err != nil {
@@ -268,7 +262,8 @@ func TestOfflineRawPasswordSealsAndAuditShowReads(t *testing.T) {
 func TestOfflineAuditShowReadsBesideARunningCore(t *testing.T) {
 	directory := newOfflineDataDir(t, t.TempDir())
 	runOffline(t, offlinePassword+"\n", "raw-password", "set", "--data-dir", directory, "--password-stdin").
-		want(t, 0, "sealed 1 captured raw part")
+		want(t, 0, "raw password set")
+	captureOfflineRawBody(t, directory)
 	path := filepath.Join(directory, "astrlink.db")
 	serving, err := sqlite.Open(context.Background(), path)
 	if err != nil {
@@ -330,149 +325,6 @@ func TestOfflineRawPasswordRefusesARunningCore(t *testing.T) {
 	_ = os.WriteFile(filepath.Join(directory, "control.sock"), nil, 0o600)
 	runOffline(t, offlinePassword+"\n", "raw-password", "set", "--data-dir", directory, "--password-stdin").
 		want(t, 0, "raw password set")
-}
-
-// offlineKeyring stands in for the OS keystore; the tests never reach a
-// real one. Put fails once failAfter entries were written, unless negative.
-type offlineKeyring struct {
-	*accountauth.MemoryCredentialStore
-	failAfter     int
-	puts, deletes int
-}
-
-func useOfflineKeyring(t *testing.T, failAfter int) *offlineKeyring {
-	t.Helper()
-	keyring := &offlineKeyring{MemoryCredentialStore: accountauth.NewMemoryCredentialStore(), failAfter: failAfter}
-	previous := unsealKeyring
-	unsealKeyring = func() accountauth.AccountCredentialStore { return keyring }
-	t.Cleanup(func() { unsealKeyring = previous })
-	return keyring
-}
-
-func (keyring *offlineKeyring) Put(ctx context.Context, id contract.SubscriptionAccountID, tokens accountauth.AccountTokens) error {
-	if keyring.failAfter >= 0 && keyring.puts >= keyring.failAfter {
-		return accountauth.ErrCredentialStoreUnavailable
-	}
-	keyring.puts++
-	return keyring.MemoryCredentialStore.Put(ctx, id, tokens)
-}
-
-func (keyring *offlineKeyring) Delete(ctx context.Context, id contract.SubscriptionAccountID) error {
-	keyring.deletes++
-	return keyring.MemoryCredentialStore.Delete(ctx, id)
-}
-
-var offlineAccounts = []contract.ServiceID{"service_codex_offline_a", "service_codex_offline_b"}
-
-// addOfflineAccounts connects two accounts whose tokens live in the database.
-func addOfflineAccounts(t *testing.T, directory string) {
-	t.Helper()
-	ctx := context.Background()
-	store, err := sqlite.Open(ctx, filepath.Join(directory, "astrlink.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer store.Close()
-	now := time.Now().UTC()
-	for index, id := range offlineAccounts {
-		if _, err := store.CreateService(ctx, contract.Service{
-			ID: id, Name: fmt.Sprintf("Codex %d", index), Kind: contract.ServiceKindCodexSubscription,
-			Enabled: true, Models: []string{"gpt-5"}, Capabilities: contract.DefaultOpenAICodexCapabilities(),
-			Subscription: &contract.SubscriptionConnection{
-				Provider: contract.SubscriptionProviderOpenAICodex, Status: contract.SubscriptionStatusConnected,
-				ProviderAccountID: fmt.Sprintf("acct_offline_%d23456", index), CredentialRef: accountauth.CredentialRefFor(id), TokenExpiresAt: &now,
-			},
-		}, storage.CredentialMutation{}); err != nil {
-			t.Fatal(err)
-		}
-		tokens, err := offlineTokens(id).MarshalSecret()
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := store.Put(ctx, secretstore.Ref(accountauth.CredentialRefFor(id)), tokens); err != nil {
-			t.Fatal(err)
-		}
-	}
-}
-
-func offlineTokens(id contract.ServiceID) accountauth.AccountTokens {
-	return accountauth.AccountTokens{
-		AccessToken: "access-" + string(id), RefreshToken: "refresh-" + string(id),
-		ExpiresAt: time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC),
-	}
-}
-
-func offlineSchemaVersion(t *testing.T, directory string) int64 {
-	t.Helper()
-	database, err := sql.Open("sqlite", "file:"+filepath.Join(directory, "astrlink.db")+"?mode=ro")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer database.Close()
-	var version int64
-	if err := database.QueryRow(`SELECT MAX(version) FROM schema_migrations`).Scan(&version); err != nil {
-		t.Fatal(err)
-	}
-	return version
-}
-
-func TestOfflineUnsealRollsBackForTheOlderRelease(t *testing.T) {
-	directory := newOfflineDataDir(t, t.TempDir())
-	addOfflineAccounts(t, directory)
-	runOffline(t, offlinePassword+"\n", "raw-password", "set", "--data-dir", directory, "--password-stdin").
-		want(t, 0, "sealed 1 captured raw part")
-
-	// Without the raw password the raw part cannot be carried back, and
-	// nothing changes.
-	keyring := useOfflineKeyring(t, -1)
-	runOffline(t, "", "unseal", "--data-dir", directory, "--yes").
-		want(t, 1, "1 raw part(s) and 0 set-aside data key(s) cannot be carried back; nothing was changed. pass the raw password with --password-stdin")
-	runOffline(t, "wrong password\n", "unseal", "--data-dir", directory, "--yes", "--password-stdin").want(t, 1, "incorrect")
-	if keyring.puts != 0 || offlineSchemaVersion(t, directory) == 41 {
-		t.Fatalf("a refused unseal wrote %d keystore entries or changed the schema", keyring.puts)
-	}
-
-	// The keystore takes the first account and refuses the second: the
-	// database rolls back and the entry already written goes again.
-	keyring = useOfflineKeyring(t, 1)
-	runOffline(t, offlinePassword+"\n", "unseal", "--data-dir", directory, "--yes", "--password-stdin").
-		want(t, 1, "nothing was changed. Connected accounts' tokens need the OS keystore; pass --discard-unreadable")
-	if keyring.puts != 1 || keyring.deletes != 1 || offlineSchemaVersion(t, directory) == 41 {
-		t.Fatalf("after a failed export: %d puts, %d deletes", keyring.puts, keyring.deletes)
-	}
-	for _, id := range offlineAccounts {
-		if _, err := keyring.MemoryCredentialStore.Get(context.Background(), id); !errors.Is(err, accountauth.ErrCredentialNotFound) {
-			t.Fatalf("a failed unseal left %s in the keystore", id)
-		}
-	}
-
-	keyring = useOfflineKeyring(t, -1)
-	run := runOffline(t, offlinePassword+"\n", "unseal", "--data-dir", directory, "--yes", "--password-stdin")
-	run.want(t, 0, "moved 2 account credential(s) to the OS keystore, resealed 1 raw part(s)")
-	run.want(t, 0, "matches migration 41")
-	if strings.Contains(run.stdout+run.stderr, offlineSecret) || strings.Contains(run.stdout+run.stderr, "refresh-") {
-		t.Fatal("unseal printed captured content or a token")
-	}
-	for _, id := range offlineAccounts {
-		if tokens, err := keyring.MemoryCredentialStore.Get(context.Background(), id); err != nil || tokens != offlineTokens(id) {
-			t.Fatalf("keystore tokens of %s = %v", id, err)
-		}
-	}
-	if version := offlineSchemaVersion(t, directory); version != 41 {
-		t.Fatalf("schema version after unseal = %d", version)
-	}
-}
-
-func TestOfflineUnsealDropsAccountsWithoutAKeystore(t *testing.T) {
-	directory := newOfflineDataDir(t, t.TempDir())
-	addOfflineAccounts(t, directory)
-	keyring := useOfflineKeyring(t, 0)
-	run := runOffline(t, "", "unseal", "--data-dir", directory, "--yes", "--discard-unreadable")
-	run.want(t, 0, "discarded 0 credential(s), 2 account credential(s), 0 raw part(s)")
-	run.want(t, 0, "need to sign in again")
-	if keyring.puts != 0 || offlineSchemaVersion(t, directory) != 41 {
-		t.Fatalf("unseal without a keystore: %d puts", keyring.puts)
-	}
 }
 
 func TestReadPasswordLines(t *testing.T) {

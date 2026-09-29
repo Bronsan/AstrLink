@@ -29,7 +29,7 @@ export function useOnboarding({
   catalog: ServiceCatalog;
   tokenCatalog: AccessTokenCatalog;
   usage: UsageState;
-  /** A raw password is set (D11); unknown counts as not yet. */
+  /** Raw protection is set up (D11); unknown counts as not yet. */
   passwordReady: boolean;
 }) {
   const [status, setStatus] = useState(readStatus);

@@ -166,8 +166,12 @@ unless openapi.dig("components", "schemas", "RawSealingStatusFields", "required"
   raise "RawSealingStatus must require password_required"
 end
 # A public key fingerprint identifies the key without being key material.
-leaked_key_fields = raw_sealing_fields.grep(/key(?!_verified|_fingerprint)|secret|salt|nonce|envelope_/)
+leaked_key_fields = raw_sealing_fields.grep(/(?<!pass)key(?!_verified|_fingerprint)|secret|salt|nonce|envelope_/)
 raise "RawSealingStatus must not carry key material: #{leaked_key_fields.join(", ")}" unless leaked_key_fields.empty?
+# The raw password is the only proof that opens the raw key.
+unless openapi.dig("components", "schemas", "RawProof", "properties")&.keys&.sort == %w[kind password]
+  raise "RawProof must carry only the raw password"
+end
 # A wrong password on the desktop's own unlock names no grant or request.
 raw_event_required = openapi.dig("components", "schemas", "RawAccessEvent", "required")
 raise "RawAccessEvent must not require grant_id or request_id" unless (raw_event_required & %w[grant_id request_id]).empty?

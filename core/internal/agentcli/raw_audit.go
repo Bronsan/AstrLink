@@ -51,9 +51,9 @@ func (client *Client) progress(format string, args ...any) {
 }
 
 // requestRawAudit asks the user for a request's raw parts and waits for the
-// decision. The user approves in the desktop with their raw password or
-// Touch ID. The grant token lives only in this process and is never printed,
-// so an interrupted wait leaves nothing behind for the agent to reuse.
+// decision. The user approves in the desktop with their raw password. The
+// grant token lives only in this process and is never printed, so an
+// interrupted wait leaves nothing behind for the agent to reuse.
 func requestRawAudit(ctx context.Context, client *Client, arguments map[string]any) (json.RawMessage, error) {
 	requestID, err := requiredID(arguments)
 	if err != nil {
@@ -89,7 +89,7 @@ func requestRawAudit(ctx context.Context, client *Client, arguments map[string]a
 	case "raw_access_disabled":
 		return nil, errRawAccessDisabled
 	case "raw_access_unavailable":
-		return nil, fmt.Errorf("raw_access_unavailable: the user has not protected raw content with a raw password or Touch ID in AstrLink, so raw content is not kept and cannot be approved; do not ask again")
+		return nil, fmt.Errorf("raw_access_unavailable: the user has not set a raw password in AstrLink, so raw content is not kept and cannot be approved; do not ask again")
 	case "raw_access_limited":
 		return nil, fmt.Errorf("raw_access_limited: too many raw access requests are awaiting the user's decision; wait for the user to decide")
 	default:

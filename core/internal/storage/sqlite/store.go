@@ -94,9 +94,9 @@ func WithExistingDatabase() Option {
 
 // WithReadOnly is for offline readers such as `audit show`, which may run
 // beside a serving Core. It implies WithExistingDatabase, and Open changes
-// nothing: no migration, credential sealing, file scrub, key or token
-// bootstrap, or permission change. A database that needs any of them fails
-// with ErrNeedsCoreStart. Writes through the store fail.
+// nothing: no migration, key or token bootstrap, or permission change. A
+// database that needs any of them fails with ErrNeedsCoreStart. Writes
+// through the store fail.
 func WithReadOnly() Option {
 	return func(options *openOptions) {
 		options.existing = true
@@ -104,8 +104,8 @@ func WithReadOnly() Option {
 	}
 }
 
-// WithLogger receives warnings that do not stop Open, such as a deferred file
-// scrub or a key file readable by other users.
+// WithLogger receives warnings that do not stop Open, such as a key file
+// readable by other users.
 func WithLogger(logf func(format string, args ...any)) Option {
 	return func(options *openOptions) { options.logf = logf }
 }
@@ -152,20 +152,6 @@ func Open(ctx context.Context, path string, options ...Option) (*Store, error) {
 	if err != nil {
 		_ = database.Close()
 		return nil, err
-	}
-	pending, err := filePendingScrub(ctx, store.db)
-	if err != nil {
-		_ = store.Close()
-		return nil, err
-	}
-	if pending {
-		if err := store.scrubFile(ctx, absolutePath); err != nil {
-			if store.db == nil {
-				store.keys.clear()
-				return nil, err
-			}
-			settings.logf("astrlink storage: file scrub deferred to the next start: %v", err)
-		}
 	}
 	if err := restrictDatabaseFiles(absolutePath); err != nil {
 		_ = store.Close()
@@ -258,12 +244,6 @@ func initialize(ctx context.Context, database *sql.DB, settings openOptions) (*S
 	store.keys = keys
 	if len(result.orphaned) > 0 {
 		settings.logf("astrlink storage: saved %s data could not be decrypted on this device and was set aside; stored credentials and captured bodies from before need to be re-entered or restored", strings.Join(result.orphaned, ", "))
-	}
-	if sealed, err := store.SealPlaintextSecrets(ctx); err != nil {
-		keys.clear()
-		return nil, fmt.Errorf("seal stored credentials: %w", err)
-	} else if sealed > 0 {
-		settings.logf("astrlink storage: sealed %d stored credential(s) under the local key", sealed)
 	}
 	if err := store.loadRawPublicKey(ctx, settings.logf); err != nil {
 		keys.clear()

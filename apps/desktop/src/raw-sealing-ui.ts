@@ -3,7 +3,6 @@ import type { ProofInput, ProofResult } from "@/components/ProofConfirmDialog";
 import { i18n } from "./i18n";
 import {
   controlErrorCode,
-  type PresenceOutcome,
   type RawProof,
   type RawSealingOutcome,
 } from "./raw-sealing-model";
@@ -36,17 +35,13 @@ export function rawProofOf(input: ProofInput): RawProof | undefined {
   switch (input.kind) {
     case "password":
       return { kind: "password", password: input.password };
-    case "presence":
-      return { kind: "local_presence" };
     case "confirm":
       return undefined;
   }
 }
 
 /** A refusal the proof dialog can recover from by asking again. */
-export type RawRefusal =
-  | Exclude<RawSealingOutcome, { outcome: "sealing" }>
-  | Exclude<PresenceOutcome, { outcome: "verified" }>;
+export type RawRefusal = Exclude<RawSealingOutcome, { outcome: "sealing" }>;
 
 /** How the proof dialog shows a refusal it can recover from. */
 export function refusalResult(outcome: RawRefusal): ProofResult {
@@ -58,9 +53,5 @@ export function refusalResult(outcome: RawRefusal): ProofResult {
         kind: "backoff",
         retryAfterSeconds: outcome.retry_after_seconds,
       };
-    case "presence_cancelled":
-      return { kind: "presence_cancelled" };
-    case "presence_unsupported":
-      return { kind: "presence_unsupported" };
   }
 }

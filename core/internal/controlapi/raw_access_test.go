@@ -2,7 +2,6 @@ package controlapi
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -16,6 +15,7 @@ import (
 
 	"github.com/QuantumNous/astrlink/core/contract"
 	"github.com/QuantumNous/astrlink/core/internal/storage"
+	"github.com/QuantumNous/astrlink/core/internal/storage/rawseal"
 	"github.com/QuantumNous/astrlink/core/internal/storage/sqlite"
 )
 
@@ -28,7 +28,7 @@ const (
 )
 
 // fakeRawVault stands in for the Phase 1b vault: it checks a fixed
-// password and never holds real key material.
+// password and holds the fixture's raw private key in the clear.
 type fakeRawVault struct {
 	mu        sync.Mutex
 	status    RawVaultStatus
@@ -37,13 +37,43 @@ type fakeRawVault struct {
 	backoff   time.Duration
 	proofs    int
 	opened    int
+	private   []byte
+	keyID     int64
 }
 
 type fakeRawOpener struct{ vault *fakeRawVault }
 
-func (opener fakeRawOpener) OpenBlobKey(storage.AuditBlob) ([]byte, error) {
+func (opener fakeRawOpener) OpenBlobKey(blob storage.AuditBlob) ([]byte, error) {
 	opener.vault.opened++
-	return nil, errors.New("fake vault seals nothing")
+	if opener.vault.private == nil {
+		return nil, errors.New("fake vault holds no raw key")
+	}
+	return openRawBlobKey(opener.vault.private, opener.vault.keyID, blob)
+}
+
+// createKey stores a raw key only this vault holds, so the store seals raw
+// parts to it as it does in Core.
+func (vault *fakeRawVault) createKey(t *testing.T, store *sqlite.Store) {
+	t.Helper()
+	const keyID = 7
+	private, public, err := rawseal.GenerateKeyPair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	wrapped, err := rawseal.WrapPassword(private, []byte(rawTestPassword), rawVaultTestKDF, keyID, public)
+	if err != nil {
+		t.Fatal(err)
+	}
+	envelope, err := storedPasswordEnvelope(wrapped)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.CreateRawSealingKey(context.Background(), storage.NewRawSealingKey{
+		KeyID: keyID, PublicKey: public, Envelopes: []storage.RawKeyEnvelope{envelope},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	vault.private, vault.keyID = private, keyID
 }
 
 func (vault *fakeRawVault) Status(context.Context) (RawVaultStatus, error) {
@@ -66,14 +96,12 @@ func (vault *fakeRawVault) UnlockedOpener() (RawKeyOpener, bool) {
 func (vault *fakeRawVault) WithProof(_ context.Context, proof RawProof, use func(RawKeyOpener) error) error {
 	vault.mu.Lock()
 	vault.proofs++
-	backoff, local := vault.backoff, vault.status.LocalPresence
+	backoff := vault.backoff
 	vault.mu.Unlock()
 	switch {
 	case backoff > 0:
 		return &RawBackoffError{Remaining: backoff}
-	case proof.LocalPresence && !local:
-		return ErrRawProofRequired
-	case !proof.LocalPresence && string(proof.Password) != rawTestPassword:
+	case string(proof.Password) != rawTestPassword:
 		return ErrRawPasswordInvalid
 	}
 	return use(fakeRawOpener{vault})
@@ -89,7 +117,8 @@ type rawAccessFixture struct {
 }
 
 // newRawAccessFixture stores one redacted request: raw request and
-// response bodies, a shareable upstream body, and shareable meta.
+// response bodies, a shareable upstream body, and shareable meta. The raw
+// bodies are kept only when vault is a fake vault with a raw password.
 func newRawAccessFixture(t *testing.T, vault RawVault) rawAccessFixture {
 	t.Helper()
 	return newRawAccessFixtureAt(t, filepath.Join(t.TempDir(), "astrlink.db"), vault)
@@ -123,51 +152,47 @@ func newRawAccessFixtureAt(t *testing.T, path string, vault RawVault) rawAccessF
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, part := range []struct {
-		direction storage.AuditDirection
-		exposure  storage.AuditExposure
-		plain     string
-	}{
-		{storage.AuditDirectionRequest, storage.AuditExposureRaw, `{"content":"mail ` + rawTestSecret + `"}`},
-		{storage.AuditDirectionResponse, storage.AuditExposureRaw, `{"reply":"sent to ` + rawTestSecret + `"}`},
-		{storage.AuditDirectionUpstreamRequest, storage.AuditExposureShareable, `{"content":"mail <EMAIL_1>"}`},
-		{storage.AuditDirectionHTTPMeta, storage.AuditExposureShareable, string(meta)},
-	} {
-		nonce, ciphertext, err := storage.SealAuditBlob(key, []byte(part.plain))
-		if err != nil {
-			t.Fatal(err)
-		}
-		blob := storage.AuditBlob{
-			RequestID: rawTestRequestID, Direction: part.direction, MediaType: "application/json",
-			Nonce: nonce, Ciphertext: ciphertext, CapturedBytes: len(part.plain), Exposure: part.exposure,
-		}
-		if part.exposure == storage.AuditExposureRaw {
-			// The fake vault holds no raw key, so the raw parts are the ones
-			// an earlier release kept under the audit key.
-			insertPreUpgradeRawPart(t, path, blob)
-			continue
-		}
-		if err := store.InsertAuditBlob(ctx, blob); err != nil {
-			t.Fatal(err)
-		}
+	clear(key)
+	insertRawTestParts(t, store, storage.AuditExposureShareable, map[storage.AuditDirection]string{
+		storage.AuditDirectionUpstreamRequest: `{"content":"mail <EMAIL_1>"}`,
+		storage.AuditDirectionHTTPMeta:        string(meta),
+	})
+	if fake, ok := vault.(*fakeRawVault); ok && fake.status.PasswordSet {
+		fake.createKey(t, store)
 	}
+	captureRawTestParts(t, store)
 	return rawAccessFixture{store: store, handler: newRawAccessHandler(t, store, vault)}
 }
 
-// insertPreUpgradeRawPart writes a raw part the way releases before the raw
-// password kept it: inline, under the audit key. This release keeps no new
-// raw capture there.
-func insertPreUpgradeRawPart(t *testing.T, path string, blob storage.AuditBlob) {
+// captureRawTestParts captures the fixture request's raw bodies the way Core
+// does: the store seals them to the raw key, or keeps nothing without one.
+func captureRawTestParts(t *testing.T, store *sqlite.Store) {
 	t.Helper()
-	database, err := sql.Open("sqlite", "file:"+path)
+	insertRawTestParts(t, store, storage.AuditExposureRaw, map[storage.AuditDirection]string{
+		storage.AuditDirectionRequest:  `{"content":"mail ` + rawTestSecret + `"}`,
+		storage.AuditDirectionResponse: `{"reply":"sent to ` + rawTestSecret + `"}`,
+	})
+}
+
+func insertRawTestParts(t *testing.T, store *sqlite.Store, exposure storage.AuditExposure, parts map[storage.AuditDirection]string) {
+	t.Helper()
+	ctx := context.Background()
+	key, err := store.GetOrCreateAuditKey(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer database.Close()
-	if _, err := database.Exec(`INSERT INTO audit_blobs (request_id, direction, media_type, nonce, ciphertext, truncated, captured_bytes, created_at, exposure)
-VALUES (?, ?, ?, ?, ?, 0, ?, '2026-09-20T00:00:00Z', 'raw')`,
-		blob.RequestID, string(blob.Direction), blob.MediaType, blob.Nonce, blob.Ciphertext, blob.CapturedBytes); err != nil {
-		t.Fatal(err)
+	defer clear(key)
+	for direction, plain := range parts {
+		nonce, ciphertext, err := storage.SealAuditBlob(key, []byte(plain))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := store.InsertAuditBlob(ctx, storage.AuditBlob{
+			RequestID: rawTestRequestID, Direction: direction, MediaType: "application/json",
+			Nonce: nonce, Ciphertext: ciphertext, CapturedBytes: len(plain), Exposure: exposure,
+		}); err != nil {
+			t.Fatal(err)
+		}
 	}
 }
 
@@ -376,38 +401,26 @@ func TestPrivacyWithheldReasonCoversEveryDecision(t *testing.T) {
 }
 
 func TestOperatorFullViewFollowsRawUnlock(t *testing.T) {
-	// Until a raw password is set, raw parts kept from before it was
-	// required wait for it: the audit key alone does not open them, and
-	// neither does a key only the local envelope opens.
-	fixture := newRawAccessFixture(t, nil)
-	localOnly := &fakeRawVault{status: RawVaultStatus{Configured: true, KeyVerified: true}, unlocked: true}
-	for name, handler := range map[string]*Handler{
-		"no raw key":          fixture.handler,
-		"local envelope only": newRawAccessHandler(t, fixture.store, localOnly),
+	// Raw parts captured before a raw password is set are not kept.
+	unprotected := newRawAccessFixture(t, nil)
+	content := readRawAudit(t, unprotected.handler, rawAsOperator, rawAuditPath(rawTestRequestID), "")
+	if content.View != contract.AuditContentViewFull {
+		t.Fatalf("view=%q", content.View)
+	}
+	for direction, part := range map[string]*contract.AuditContentPart{
+		"request": content.RequestBody, "response": content.ResponseContent,
 	} {
-		content := readRawAudit(t, handler, rawAsOperator, rawAuditPath(rawTestRequestID), "")
-		if content.View != contract.AuditContentViewFull {
-			t.Fatalf("%s: view=%q", name, content.View)
-		}
-		for direction, part := range map[string]*contract.AuditContentPart{
-			"request": content.RequestBody, "response": content.ResponseContent,
-		} {
-			if part == nil || !part.Withheld || part.Reason != contract.AuditWithheldRawPasswordRequired ||
-				part.RawAvailable == nil || *part.RawAvailable || strings.Contains(part.Content, rawTestSecret) {
-				t.Fatalf("%s: %s part=%#v", name, direction, part)
-			}
-		}
-		if content.UpstreamRequestBody == nil || content.UpstreamRequestBody.Withheld {
-			t.Fatalf("%s: shareable part withheld: %#v", name, content.UpstreamRequestBody)
+		if part == nil || !part.Withheld || part.Reason != contract.AuditWithheldRawNotKept ||
+			part.RawAvailable == nil || *part.RawAvailable || strings.Contains(part.Content, rawTestSecret) {
+			t.Fatalf("unprotected %s part=%#v", direction, part)
 		}
 	}
-	if localOnly.opened != 0 {
-		t.Fatalf("a local-only key opened %d raw part(s)", localOnly.opened)
+	if content.UpstreamRequestBody == nil || content.UpstreamRequestBody.Withheld {
+		t.Fatalf("unprotected read withheld a shareable part: %#v", content.UpstreamRequestBody)
 	}
 
 	vault := configuredRawVault()
-	var content contract.AuditContent
-	locked := newRawAccessHandler(t, fixture.store, vault)
+	locked := newRawAccessFixture(t, vault).handler
 	content = readRawAudit(t, locked, rawAsOperator, rawAuditPath(rawTestRequestID), "")
 	for name, part := range map[string]*contract.AuditContentPart{
 		"request": content.RequestBody, "response": content.ResponseContent,
@@ -566,7 +579,11 @@ func TestRawAccessProofs(t *testing.T) {
 	grant := requestRawGrant(t, handler, rawTestRequestID)
 	for _, body := range []string{
 		`{"decision":"forever","proof":{"password":"x"}}`,
-		`{"decision":"once","proof":{"kind":"local_presence","password":"x"}}`,
+		`{"decision":"once","proof":{"kind":"local_presence"}}`,
+		`{"decision":"once","proof":{"kind":"passkey","password":"x"}}`,
+		`{"decision":"once","proof":{"password":"x","passkey":{"credential_id":"AQ","prf":"AQ"}}}`,
+		`{"decision":"once","proof":{"passkey":{"credential_id":"AQ","prf":"AQ"}}}`,
+		`{"decision":"once","proof":{"password":"x","local_presence":true}}`,
 		`{"decision":"once","proof":{"kind":"password"}}`,
 		`{"decision":"once","proof":{"kind":"retina"}}`,
 		`{"decision":"once","proof":{"password":"x","pin":"1"}}`,
@@ -584,11 +601,11 @@ func TestRawAccessProofs(t *testing.T) {
 	wantRawStatus(t, decideRawGrant(t, handler, "rawgrant_0000000000000000", `{"decision":"deny"}`),
 		http.StatusNotFound, "not_found")
 
-	// Local presence counts only where Core holds the local envelope.
-	presence := `{"decision":"once","proof":{"kind":"local_presence"}}`
-	wantRawStatus(t, decideRawGrant(t, handler, grant.GrantID, presence), http.StatusUnprocessableEntity, "raw_proof_required")
-	vault.status.LocalPresence = true
-	wantRawStatus(t, decideRawGrant(t, handler, grant.GrantID, presence), http.StatusOK, "")
+	// Only the raw password approves.
+	wantRawStatus(t, decideRawGrant(t, handler, grant.GrantID, `{"decision":"once","proof":{"password":"wrong password"}}`),
+		http.StatusForbidden, "raw_password_invalid")
+	wantRawStatus(t, decideRawGrant(t, handler, grant.GrantID, `{"decision":"once","proof":{"password":`+rawTestPasswordJS+`}}`),
+		http.StatusOK, "")
 
 	throttled := requestRawGrant(t, handler, rawTestRequestID)
 	vault.backoff = 2500 * time.Millisecond

@@ -25,7 +25,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { revealAccessToken } from "./bridge";
+import { copyAccessToken } from "./bridge";
 import { CCSwitchImportDialog } from "./CCSwitchImportDialog";
 import { CCSwitchIcon } from "@/components/CCSwitchIcon";
 import type { AppSnapshot } from "./core-model";
@@ -35,13 +35,12 @@ import { PageHeader } from "./PageHeader";
 import type { RawSealingState } from "./raw-sealing-model";
 import {
   RawSealingDialogs,
-  rawPasswordMissing,
+  useRawSetupNeeded,
   type RawDialog,
 } from "./RawSealingControls";
 import { useT } from "./i18n";
 import { notify } from "./notify";
 import type { useOnboarding } from "./use-onboarding";
-import { useRevealProof } from "./use-reveal-proof";
 import type { UsageState } from "./usage-range";
 
 export function GettingStarted({
@@ -80,7 +79,7 @@ export function GettingStarted({
   const t = useT();
   const [selectedStep, setSelectedStep] = useState(onboarding.step);
   const [rawDialog, setRawDialog] = useState<RawDialog | null>(null);
-  const passwordMissing = rawPasswordMissing(rawSealing.status);
+  const passwordMissing = useRawSetupNeeded(rawSealing.status);
   const [protocol, setProtocol] = useState<"openai" | "anthropic">("openai");
   const [tokenId, setTokenId] = useState("");
   const [copying, setCopying] = useState(false);
@@ -100,7 +99,6 @@ export function GettingStarted({
     onboarding.serviceReady &&
     onboarding.tokenReady &&
     Boolean(baseURL);
-  const revealProof = useRevealProof(canConnect);
   const complete =
     onboarding.catalogsReady &&
     onboarding.serviceReady &&
@@ -164,12 +162,11 @@ export function GettingStarted({
     copyPending.current = true;
     setCopying(true);
     try {
-      const proved = await revealProof.prove();
-      if (!proved || !mounted.current) return;
-      const result = await revealAccessToken(token.id);
+      // The host copies the token itself, so it never reaches the webview.
+      const copied = await copyAccessToken(token.id);
       if (!mounted.current) return;
-      await navigator.clipboard.writeText(result.access_token);
-      notify.success(t("onboarding.tokenCopied"));
+      if (copied) notify.success(t("onboarding.tokenCopied"));
+      else notify.error(t("tokens.copyManual"));
     } catch (error) {
       if (mounted.current)
         notify.error(
@@ -324,9 +321,11 @@ export function GettingStarted({
                       </Button>
                     ) : null}
                   </div>
-                  <p className="text-sm leading-relaxed">
-                    {t("onboarding.passwordHelp")}
-                  </p>
+                  {rawSealing.status?.password_required ? (
+                    <p className="text-sm leading-relaxed">
+                      {t("rawSealing.hint.unset")}
+                    </p>
+                  ) : null}
                 </>
               ) : selectedStep === 1 ? (
                 <>
@@ -534,7 +533,6 @@ export function GettingStarted({
           onClose={() => setImportOpen(false)}
         />
       ) : null}
-      {revealProof.dialog}
       <RawSealingDialogs
         dialog={rawDialog}
         onClose={() => setRawDialog(null)}

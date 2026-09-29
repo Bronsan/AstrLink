@@ -214,9 +214,6 @@ const (
 	// AuditWithheldRawLocked is returned to the desktop until it unlocks
 	// raw reading.
 	AuditWithheldRawLocked AuditWithheldReason = "raw_locked"
-	// AuditWithheldRawPasswordRequired covers raw parts kept from before a
-	// raw password was required. Nobody reads them until one is set.
-	AuditWithheldRawPasswordRequired AuditWithheldReason = "raw_password_required"
 	// AuditWithheldRawNotKept covers raw parts captured while no raw
 	// password was set: only the fact of the capture was kept.
 	AuditWithheldRawNotKept AuditWithheldReason = "raw_not_kept"
@@ -226,7 +223,7 @@ func (reason AuditWithheldReason) Valid() bool {
 	switch reason {
 	case AuditWithheldPrivacyRedacted, AuditWithheldPrivacyBlocked, AuditWithheldPrivacyRestored,
 		AuditWithheldPrivacyFailOpen, AuditWithheldPrivacyPending, AuditWithheldPrivacyUnknown,
-		AuditWithheldRawLocked, AuditWithheldRawPasswordRequired, AuditWithheldRawNotKept:
+		AuditWithheldRawLocked, AuditWithheldRawNotKept:
 		return true
 	default:
 		return false

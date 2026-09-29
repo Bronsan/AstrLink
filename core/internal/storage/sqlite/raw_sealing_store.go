@@ -43,8 +43,7 @@ func (cache *rawSealingKey) get() (int64, []byte) {
 }
 
 // captureKey returns the key new raw captures seal to: none until a raw
-// password protects it, so a key only the local envelope opens never takes
-// a capture.
+// password protects it.
 func (cache *rawSealingKey) captureKey() (int64, []byte) {
 	cache.mu.RLock()
 	defer cache.mu.RUnlock()
@@ -188,8 +187,6 @@ FROM raw_key_envelopes WHERE key_id = ?`, state.KeyID)
 		switch envelope.Kind {
 		case rawseal.KindPassword:
 			state.Password = &envelope
-		case rawseal.KindLocal:
-			state.Local = &envelope
 		}
 	}
 	if err := envelopeRows.Err(); err != nil {
@@ -223,10 +220,6 @@ func validateRawKeyEnvelope(envelope storagecontract.RawKeyEnvelope) error {
 	case rawseal.KindPassword:
 		if _, err := rawseal.ParseKDFJSON(envelope.KDFJSON); err != nil || len(envelope.Salt) != rawseal.SaltBytes {
 			return fmt.Errorf("%w: raw password envelope", storagecontract.ErrInvalidArgument)
-		}
-	case rawseal.KindLocal:
-		if envelope.KDFJSON != "" || envelope.Salt != nil {
-			return fmt.Errorf("%w: raw local envelope", storagecontract.ErrInvalidArgument)
 		}
 	default:
 		return fmt.Errorf("%w: raw key envelope kind", storagecontract.ErrInvalidArgument)
@@ -422,31 +415,6 @@ WHERE payload_id IN (SELECT id FROM audit_payloads WHERE sealing = 'raw_v1')`); 
 	return result, nil
 }
 
-func (store *Store) WrapLocalRawKey(keyID int64, public, private []byte) (storagecontract.RawKeyEnvelope, error) {
-	localKey := store.keys.localKey()
-	if localKey == nil {
-		return storagecontract.RawKeyEnvelope{}, fmt.Errorf("%w: local key", storagecontract.ErrNotFound)
-	}
-	defer clear(localKey)
-	nonce, wrapped, err := rawseal.WrapLocal(localKey, private, keyID, public)
-	if err != nil {
-		return storagecontract.RawKeyEnvelope{}, err
-	}
-	return storagecontract.RawKeyEnvelope{Kind: rawseal.KindLocal, Nonce: nonce, Wrapped: wrapped}, nil
-}
-
-func (store *Store) OpenLocalRawKey(state storagecontract.RawSealingState) ([]byte, error) {
-	if state.Local == nil {
-		return nil, fmt.Errorf("%w: local raw key envelope", storagecontract.ErrNotFound)
-	}
-	localKey := store.keys.localKey()
-	if localKey == nil {
-		return nil, fmt.Errorf("%w: local key", storagecontract.ErrNotFound)
-	}
-	defer clear(localKey)
-	return rawseal.UnwrapLocal(localKey, state.Local.Nonce, state.Local.Wrapped, state.KeyID, state.PublicKey)
-}
-
 // withSecureDelete runs fn on one connection with secure_delete on, so the
 // rows it deletes or shrinks are overwritten with zeros rather than left in
 // free pages. checkpoint then folds the WAL back and truncates it, so older
@@ -552,11 +520,11 @@ type resealCandidate struct {
 
 // loadResealCandidate reads one part if it still needs resealing. In-flight
 // requests are skipped: their pending body is settled, and resealed if it
-// becomes raw, by UpdateAuditExposure. Pending parts qualify only with
-// includePending; markers never do, having nothing to seal.
+// becomes raw, by UpdateAuditExposure. Markers never qualify, having nothing
+// to seal.
 func (store *Store) loadResealCandidate(ctx context.Context, query interface {
 	QueryRowContext(context.Context, string, ...any) *sql.Row
-}, rowID int64, includePending bool) (resealCandidate, bool, error) {
+}, rowID int64) (resealCandidate, bool, error) {
 	var (
 		candidate                                            resealCandidate
 		requestID, direction, mediaType, createdAt, exposure string
@@ -570,8 +538,8 @@ FROM audit_blobs b
 LEFT JOIN audit_payloads p ON p.id = b.payload_id
 LEFT JOIN request_records r ON r.id = b.request_id
 WHERE b.rowid = ?1
-  AND (b.exposure = 'raw' OR (?2 AND b.exposure = 'pending' AND COALESCE(r.status, '') <> 'pending'))
-  AND (p.sealing = 'audit' OR (b.payload_id IS NULL AND length(b.ciphertext) > 0))`, rowID, includePending).Scan(
+  AND (b.exposure = 'raw' OR (b.exposure = 'pending' AND COALESCE(r.status, '') <> 'pending'))
+  AND (p.sealing = 'audit' OR (b.payload_id IS NULL AND length(b.ciphertext) > 0))`, rowID).Scan(
 		&candidate.rowID, &candidate.payloadID, &requestID, &direction, &mediaType,
 		&nonce, &ciphertext, &inlineCiphertext, &truncated, &capturedBytes, &createdAt, &exposure,
 	)
@@ -642,27 +610,23 @@ WHERE rowid = ?2 AND payload_id IS ?3 AND nonce = ?4 AND ciphertext = ?5 AND exp
 	return true, nil
 }
 
-// ResealRawParts moves every raw part still sealed under dek_audit — and,
-// once a raw password is set, every pending one whose request is no longer
-// in flight — onto the raw sealing key (§5.11.9.4). Before a raw password
-// is set, those pending parts are dropped instead: they settled as raw, or
-// never settled, while no raw capture could be kept. It is idempotent:
+// ResealRawParts moves every raw part still sealed under dek_audit — a
+// settled one that could not move at once, or a pending one whose request is
+// no longer in flight — onto the raw sealing key (§5.11.9.4). Before a raw
+// password is set, the pending parts are dropped instead: they settled as
+// raw, or never settled, while no raw capture could be kept. It is idempotent:
 // resealed parts no longer qualify, and parts that do not decrypt are
 // skipped, not retried in a loop. limit caps the parts per transaction;
 // zero uses the default.
 func (store *Store) ResealRawParts(ctx context.Context, limit int) (storagecontract.RawResealResult, error) {
 	var result storagecontract.RawResealResult
-	keepsCaptures := store.keepsRawCaptures()
-	if !keepsCaptures {
+	keyID, public := store.rawKey.captureKey()
+	if keyID == 0 {
 		dropped, err := store.dropSettledPendingParts(ctx)
 		if err != nil {
 			return result, err
 		}
-		result.Dropped = dropped
-	}
-	keyID, public := store.rawKey.get()
-	if keyID == 0 {
-		result.Done = true
+		result.Dropped, result.Done = dropped, true
 		return result, nil
 	}
 	auditKey := store.keys.audit()
@@ -679,7 +643,7 @@ func (store *Store) ResealRawParts(ctx context.Context, limit int) (storagecontr
 			if err := ctx.Err(); err != nil {
 				return err
 			}
-			rowIDs, err := resealRowIDs(ctx, conn, cursor, limit, keepsCaptures)
+			rowIDs, err := resealRowIDs(ctx, conn, cursor, limit)
 			if err != nil {
 				return err
 			}
@@ -691,7 +655,7 @@ func (store *Store) ResealRawParts(ctx context.Context, limit int) (storagecontr
 			var batchBytes int
 			for _, rowID := range rowIDs {
 				cursor = rowID
-				candidate, ok, err := store.loadResealCandidate(ctx, conn, rowID, keepsCaptures)
+				candidate, ok, err := store.loadResealCandidate(ctx, conn, rowID)
 				if err != nil {
 					return err
 				}
@@ -738,12 +702,12 @@ WHERE exposure = 'pending' AND NOT EXISTS (
 	return int(dropped), err
 }
 
-func resealRowIDs(ctx context.Context, conn *sql.Conn, cursor int64, limit int, includePending bool) ([]int64, error) {
+func resealRowIDs(ctx context.Context, conn *sql.Conn, cursor int64, limit int) ([]int64, error) {
 	rows, err := conn.QueryContext(ctx, `SELECT b.rowid FROM audit_blobs b
 LEFT JOIN audit_payloads p ON p.id = b.payload_id
-WHERE b.rowid > ?1 AND (b.exposure = 'raw' OR (?2 AND b.exposure = 'pending'))
+WHERE b.rowid > ?1 AND b.exposure IN ('raw', 'pending')
   AND (p.sealing = 'audit' OR (b.payload_id IS NULL AND length(b.ciphertext) > 0))
-ORDER BY b.rowid LIMIT ?3`, cursor, includePending, limit)
+ORDER BY b.rowid LIMIT ?2`, cursor, limit)
 	if err != nil {
 		return nil, fmt.Errorf("list raw parts to reseal: %w", err)
 	}
@@ -807,7 +771,7 @@ func (store *Store) resealSettledPart(ctx context.Context, id contract.RequestID
 		if err != nil {
 			return fmt.Errorf("find settled audit part: %w", err)
 		}
-		candidate, ok, err := store.loadResealCandidate(ctx, conn, rowID, true)
+		candidate, ok, err := store.loadResealCandidate(ctx, conn, rowID)
 		if err != nil || !ok {
 			return err
 		}

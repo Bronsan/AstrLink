@@ -26,13 +26,12 @@ import { i18n, useT } from "./i18n";
 import { notify } from "./notify";
 import {
   newPasswordIssue,
-  presenceUsable,
-  rawAcknowledgeMode,
-  rawPasswordState,
+  rawPasswordUnset,
   rawProofMode,
-  rawResetProofMode,
-  withPresence,
+  rawProtection,
+  rawSetupNeeded,
   type RawPasswordAction,
+  type RawProtection,
   type RawSealingOutcome,
   type RawSealingState,
 } from "./raw-sealing-model";
@@ -45,7 +44,7 @@ import { useRawSealingStatus } from "./use-raw-sealing-status";
 
 /**
  * A raw sealing dialog the page asks for; `capture` also turns capture on,
- * `required` is the one the app keeps up until a password is set, and
+ * `required` is the one the app keeps up until a raw password is set, and
  * `replaced` the one it keeps up for a key replaced outside the desktop.
  */
 export type RawDialog =
@@ -62,12 +61,17 @@ export function unlockIdleMinutes(status: RawSealingState): number {
   return Math.max(1, Math.round(status.unlock_idle_seconds / 60));
 }
 
-/**
- * No raw password is set: raw parts are not kept, and the ones kept before
- * the upgrade stay unreadable until one is (D11).
- */
+/** No raw password protects the raw key, so raw parts are not kept. */
 export function rawPasswordMissing(status: RawSealingState | null): boolean {
   return status?.password_required === true;
+}
+
+/**
+ * A raw password still needs setting (see `rawSetupNeeded`); unknown while
+ * the status is.
+ */
+export function useRawSetupNeeded(status: RawSealingState | null): boolean {
+  return status !== null && rawSetupNeeded(status);
 }
 
 /**
@@ -92,25 +96,14 @@ export function RawPasswordPanel({
 }) {
   const t = useT();
   const titleId = useId();
-  const state = status ? rawPasswordState(status) : null;
+  const state = status ? rawProtection(status) : null;
   const missing = rawPasswordMissing(status);
   // Unknown is not missing: a failed read leaves the toggle as it was.
-  const noPassword = status !== null && !status.password_set;
+  const unprotected = status !== null && rawPasswordUnset(status);
 
-  const tone: StatusTone =
-    state === "password" ? "positive" : missing ? "pending" : "neutral";
-  const label =
-    state === "password"
-      ? t("rawSealing.state.password")
-      : state === null
-        ? t("rawSealing.state.unknown")
-        : t("rawSealing.state.unset");
-  const hint =
-    state === "password"
-      ? status && presenceUsable(status)
-        ? t("rawSealing.hint.passwordPresence")
-        : t("rawSealing.hint.password")
-      : null;
+  const tone = protectionTone(state, missing);
+  const label = rawProtectionLabel(state);
+  const hint = state === "password" ? t("rawSealing.hint.password") : null;
 
   const action = (id: RawPasswordAction, text: string) => (
     <Button
@@ -130,9 +123,7 @@ export function RawPasswordPanel({
           action("change", t("rawSealing.change")),
           action("reset", t("rawSealing.reset")),
         ]
-      : state === "keychain_only"
-        ? [action("reset", t("rawSealing.reset"))]
-        : null;
+      : null;
 
   return (
     <Panel
@@ -161,11 +152,7 @@ export function RawPasswordPanel({
             data-slot="raw-password-missing"
             tone="warning"
           >
-            <span className="min-w-0">
-              {state === "keychain_only"
-                ? t("rawSealing.hint.keychainOnly")
-                : t("rawSealing.hint.unset")}
-            </span>
+            <span className="min-w-0">{t("rawSealing.hint.unset")}</span>
             <Button
               disabled={busy}
               onClick={() => onAction("set")}
@@ -173,7 +160,7 @@ export function RawPasswordPanel({
               type="button"
               variant="outline"
             >
-              {t("rawSealing.setAction")}
+              {t("rawSealing.setupAction")}
             </Button>
           </FormMessage>
         ) : hint ? (
@@ -183,13 +170,13 @@ export function RawPasswordPanel({
         ) : null}
         {onAgentAccessChange ? (
           <CapabilityToggle
-            checked={agentAccess && !noPassword}
+            checked={agentAccess && !unprotected}
             description={
-              noPassword
+              unprotected
                 ? t("rawSealing.agentAccessNeedsPassword")
                 : t("rawSealing.agentAccessHint")
             }
-            disabled={busy || noPassword}
+            disabled={busy || unprotected}
             label={t("rawSealing.agentAccess")}
             onCheckedChange={onAgentAccessChange}
             size="default"
@@ -200,8 +187,29 @@ export function RawPasswordPanel({
   );
 }
 
+/** Protected is positive; unprotected, or unknown, waits for setting up. */
+function protectionTone(
+  state: RawProtection | null,
+  missing: boolean,
+): StatusTone {
+  if (state === "password") return "positive";
+  return missing ? "pending" : "neutral";
+}
+
+/** The label for how raw content is protected; null while unknown. */
+function rawProtectionLabel(state: RawProtection | null): string {
+  switch (state) {
+    case "password":
+      return i18n.t("rawSealing.state.password");
+    case "unset":
+      return i18n.t("rawSealing.state.unset");
+    case null:
+      return i18n.t("rawSealing.state.unknown");
+  }
+}
+
 /**
- * The raw password in a page header, such as the Security page's: its state
+ * Raw protection in a page header, such as the Security page's: its state
  * at a glance, and the summary with its actions one click away.
  */
 export function RawPasswordEntry({
@@ -219,16 +227,9 @@ export function RawPasswordEntry({
   const [open, setOpen] = useState(false);
   const [dialog, setDialog] = useState<RawDialog | null>(null);
   if (!isReady) return null;
-  const tone: StatusTone = status?.password_set
-    ? "positive"
-    : rawPasswordMissing(status)
-      ? "pending"
-      : "neutral";
-  const stateLabel = status?.password_set
-    ? t("rawSealing.state.password")
-    : rawPasswordMissing(status)
-      ? t("rawSealing.state.unset")
-      : t("rawSealing.state.unknown");
+  const state = status ? rawProtection(status) : null;
+  const tone = protectionTone(state, rawPasswordMissing(status));
+  const stateLabel = rawProtectionLabel(state);
   return (
     <>
       <Popover onOpenChange={setOpen} open={open}>
@@ -270,11 +271,10 @@ export function RawPasswordEntry({
 }
 
 /**
- * Keeps the required raw password dialog up while none is set (D11): only
- * setting one closes it, and the gateway keeps serving meanwhile. A key
+ * Keeps the raw password setup up until it is done: only setting a raw
+ * password closes it, and the gateway keeps serving meanwhile. A key
  * replaced outside the desktop keeps its own warning up the same way, until
- * the operator confirms it with its password (and, on a keychain build, a
- * presence check) or resets it.
+ * the operator confirms it with its password or resets it.
  * `suspended` holds it back while the first-run guide asks for the password
  * in its own step, or before it is known whether that guide opens.
  */
@@ -287,8 +287,9 @@ export function RawPasswordGate({
   status: RawSealingState | null;
   suspended: boolean;
 }) {
+  const setupNeeded = useRawSetupNeeded(status);
   const replaced = !suspended && status?.key_replaced === true;
-  const required = !suspended && rawPasswordMissing(status);
+  const required = !suspended && setupNeeded;
   return (
     <RawSealingDialogs
       dialog={
@@ -322,9 +323,8 @@ export function RawSealingDialogs({
   const [password, setPassword] = useState("");
   const [confirmation, setConfirmation] = useState("");
   const [resetStep, setResetStep] = useState<"confirm" | "password">("confirm");
-  // Replacing the keychain key instead of setting a password on it, or a key
-  // replaced outside the desktop: the destructive confirmation first, then
-  // the new password.
+  // Resetting a key replaced outside the desktop: the destructive
+  // confirmation first, then the new password.
   const [replaceStep, setReplaceStep] = useState<"confirm" | "password" | null>(
     null,
   );
@@ -355,7 +355,7 @@ export function RawSealingDialogs({
     if (outcome.outcome !== "sealing") {
       return { done: false, result: refusalResult(outcome) };
     }
-    onStatus(withPresence(outcome.status, status));
+    onStatus(outcome.status);
     return { done: true };
   };
 
@@ -404,12 +404,12 @@ export function RawSealingDialogs({
   };
 
   const submitAcknowledge = async (input: ProofInput): Promise<ProofResult> => {
-    // Only the replaced key's password shows the operator set it; a
-    // keychain build's host adds its presence check on top.
-    if (input.kind !== "password") return { kind: "password_invalid" };
+    // Only the replaced key's own password shows the operator set it.
+    const proof = rawProofOf(input);
+    if (!proof) return { kind: "password_invalid" };
     let outcome: RawSealingOutcome;
     try {
-      outcome = await acknowledgeRawKey(input.password);
+      outcome = await acknowledgeRawKey(proof);
     } catch (error) {
       return { kind: "error", message: rawSealingErrorMessage(error) };
     }
@@ -423,219 +423,117 @@ export function RawSealingDialogs({
   const invalidNew =
     status !== null &&
     newPasswordIssue(password, confirmation, status) !== null;
+  const settingUp = kind === "capture" || kind === "set" || kind === "required";
   const fields = status ? (
     <RawPasswordFields
       confirmation={confirmation}
       inputRef={newPasswordRef}
+      labels={
+        settingUp
+          ? {
+              confirmation: t("rawSealing.confirmField"),
+              password: t("rawSealing.passwordField"),
+            }
+          : undefined
+      }
       onConfirmationChange={setConfirmation}
       onPasswordChange={setPassword}
       password={password}
       policy={status}
     />
   ) : null;
+  const passwordWarning = (
+    <FormMessage data-slot="raw-password-warning" tone="warning">
+      {t("rawSealing.passwordWarning")}
+    </FormMessage>
+  );
 
   let proofDialog: ProofDialogCopy | null = null;
   if (status === null || kind === null) {
     proofDialog = null;
-  } else if (kind === "capture" || kind === "set" || kind === "required") {
-    // An unconfigured key needs no proof. A keychain key is opened with a
-    // presence check before a password can open it too. Replacing it
-    // instead discards what it sealed: that takes the destructive
-    // confirmation and, while the local envelope opens the key, the same
-    // presence check, which Core wants for a reset too.
-    const keychainKey = status.configured && !status.password_set;
-    const keyOpens = keychainKey && status.local_presence;
-    const replacing = keychainKey ? replaceStep : null;
-    const intro =
-      kind === "required" ? (
-        <>
-          <p>{t("rawSealing.requiredBody")}</p>
-          <p>{t("rawSealing.requiredForget")}</p>
-        </>
-      ) : kind === "capture" ? (
-        <>
-          <p>{t("records.enableCaptureBody")}</p>
-          <p>{t("rawSealing.captureNeedsPassword")}</p>
-        </>
-      ) : (
-        <p>{t("rawSealing.setDescription")}</p>
-      );
+  } else if (settingUp) {
+    // Nothing opens the key yet, so setting the password needs no proof and
+    // ends the setup.
+    const description = (
+      <>
+        {kind === "capture" ? (
+          <>
+            <p>{t("records.enableCaptureBody")}</p>
+            <p>{t("rawSealing.captureNeedsPassword")}</p>
+          </>
+        ) : (
+          <>
+            <p>{t("rawSealing.setupBody")}</p>
+            {status.password_required ? (
+              <p data-slot="raw-setup-pending">{t("rawSealing.hint.unset")}</p>
+            ) : null}
+          </>
+        )}
+      </>
+    );
     const title =
-      kind === "required"
-        ? t("rawSealing.requiredTitle")
-        : kind === "capture"
-          ? t("records.enableCaptureTitle")
-          : t("rawSealing.setTitle");
-    if (replacing === "password") {
-      proofDialog = {
-        action: t("rawSealing.resetAction"),
-        cancelLabel: t("common.back"),
-        description: (
-          <>
-            {intro}
-            <FormMessage data-slot="raw-replace-key" tone="warning">
-              {t("rawSealing.replaceKeyWarning")}
-            </FormMessage>
-          </>
-        ),
-        focusNew: true,
-        onCancel: () => {
-          clearNewPassword();
-          setReplaceStep(null);
-        },
-        proof: rawResetProofMode(status),
-        submit: (input) => submitPassword("reset", input),
-        title,
-        withFields: true,
-      };
-    } else if (replacing === null && keychainKey && !keyOpens) {
-      // Nothing here opens this key any more, so only replacing it is left.
-      proofDialog = {
-        action: t("rawSealing.replaceStart"),
-        description: (
-          <>
-            {intro}
-            <FormMessage data-slot="raw-replace-key" tone="warning">
-              {t("rawSealing.hint.keychainUnreachable")}
-            </FormMessage>
-          </>
-        ),
-        dismissable: kind !== "required",
-        focusNew: false,
-        proof: "confirm",
-        submit: () => {
-          setReplaceStep("confirm");
-          return Promise.resolve(done);
-        },
-        title,
-        withFields: false,
-      };
-    } else if (replacing === null) {
-      proofDialog = {
-        action:
-          kind === "capture"
-            ? t("records.confirmEnable")
-            : t("rawSealing.setAction"),
-        description: (
-          <>
-            {intro}
-            {keyOpens && !presenceUsable(status) ? (
-              // Asking again is the retry; the key and what it sealed stay.
-              <FormMessage data-slot="raw-presence-unavailable" tone="warning">
-                {t("rawSealing.hint.presenceUnavailable")}
-              </FormMessage>
-            ) : null}
-            {keyOpens ? (
-              <p className="flex flex-wrap items-center gap-x-2">
-                <span>{t("rawSealing.setKeychainDescription")}</span>
-                <Button
-                  className="h-auto px-0"
-                  onClick={() => {
-                    clearNewPassword();
-                    setReplaceStep("confirm");
-                  }}
-                  size="xs"
-                  type="button"
-                  variant="link"
-                >
-                  {t("rawSealing.replaceKey")}
-                </Button>
-              </p>
-            ) : null}
-          </>
-        ),
-        dismissable: kind !== "required",
-        withFields: true,
-        focusNew: true,
-        proof: keyOpens ? "presence" : "confirm",
-        submit: (input) => submitPassword("set", input),
-        title,
-      };
-    }
+      kind === "capture"
+        ? t("records.enableCaptureTitle")
+        : t("rawSealing.setupTitle");
+    proofDialog = {
+      action:
+        kind === "capture"
+          ? t("records.confirmEnable")
+          : t("rawSealing.setupPasswordAction"),
+      description,
+      dismissable: kind !== "required",
+      focusNew: true,
+      note: passwordWarning,
+      proof: "confirm",
+      submit: (input) => submitPassword("set", input),
+      title,
+      withFields: true,
+    };
   } else if (kind === "replaced" && replaceStep === "password") {
-    const proof = rawResetProofMode(status);
+    // The destructive confirmation was the proof; a reset opens nothing.
     proofDialog = {
       action: t("rawSealing.resetAction"),
       cancelLabel: t("common.back"),
       description: <p>{t("rawSealing.resetPasswordDescription")}</p>,
-      focusNew: proof !== "password",
+      focusNew: true,
       onCancel: () => {
         clearNewPassword();
         setReplaceStep(null);
       },
-      passwordLabel: t("rawSealing.currentPassword"),
-      proof,
+      proof: "confirm",
       submit: (input) => submitPassword("reset", input),
       title: t("rawSealing.resetPasswordTitle"),
       withFields: true,
     };
   } else if (kind === "replaced" && replaceStep === null) {
-    const mode = rawAcknowledgeMode(status);
-    const warning = (
-      <FormMessage data-slot="raw-key-replaced" tone="warning">
-        {t("rawSealing.replaced.warning")}
-      </FormMessage>
-    );
-    proofDialog =
-      mode === "unavailable"
-        ? {
-            // A keychain build accepts the key only with a presence check
-            // as well; where it cannot show one, a reset is all that is left.
-            action: t("rawSealing.replaceStart"),
-            description: (
-              <>
-                {warning}
-                <FormMessage
-                  data-slot="raw-acknowledge-unavailable"
-                  tone="warning"
-                >
-                  {t("rawSealing.replaced.presenceUnavailable")}
-                </FormMessage>
-              </>
-            ),
-            dismissable: false,
-            focusNew: false,
-            proof: "confirm",
-            submit: () => {
-              setReplaceStep("confirm");
-              return Promise.resolve(done);
-            },
-            title: t("rawSealing.replaced.title"),
-            withFields: false,
-          }
-        : {
-            // The password shows the operator chose it; presence alone only
-            // shows someone is at this Mac. A keychain build's host checks
-            // presence too once the password is submitted.
-            action: t("rawSealing.replaced.acknowledge"),
-            description: (
-              <>
-                {warning}
-                <p>{t("rawSealing.replaced.cli")}</p>
-                {mode === "password_and_presence" ? (
-                  <p data-slot="raw-acknowledge-presence">
-                    {t("rawSealing.replaced.presence")}
-                  </p>
-                ) : null}
-                <Button
-                  className="h-auto px-0"
-                  onClick={() => setReplaceStep("confirm")}
-                  size="xs"
-                  type="button"
-                  variant="link"
-                >
-                  {t("rawSealing.replaced.reset")}
-                </Button>
-              </>
-            ),
-            dismissable: false,
-            focusNew: false,
-            passwordLabel: t("rawSealing.replaced.passwordLabel"),
-            proof: "password",
-            submit: submitAcknowledge,
-            title: t("rawSealing.replaced.title"),
-            withFields: false,
-          };
+    // The key's own password shows the operator chose it.
+    proofDialog = {
+      action: t("rawSealing.replaced.acknowledge"),
+      description: (
+        <>
+          <FormMessage data-slot="raw-key-replaced" tone="warning">
+            {t("rawSealing.replaced.warning")}
+          </FormMessage>
+          <p>{t("rawSealing.replaced.cli")}</p>
+          <Button
+            className="h-auto px-0"
+            onClick={() => setReplaceStep("confirm")}
+            size="xs"
+            type="button"
+            variant="link"
+          >
+            {t("rawSealing.replaced.reset")}
+          </Button>
+        </>
+      ),
+      dismissable: false,
+      focusNew: false,
+      passwordLabel: t("rawSealing.replaced.passwordLabel"),
+      proof: "password",
+      submit: submitAcknowledge,
+      title: t("rawSealing.replaced.title"),
+      withFields: false,
+    };
   } else if (kind === "change") {
     const proof = rawProofMode(status);
     proofDialog = {
@@ -649,16 +547,13 @@ export function RawSealingDialogs({
       title: t("rawSealing.changeTitle"),
     };
   } else if (kind === "reset" && resetStep === "password") {
-    // Core wants the proof that opens the key while the local envelope
-    // does; a password set here counts as well.
-    const proof = rawResetProofMode(status);
+    // The destructive confirmation was the proof; a reset opens nothing.
     proofDialog = {
       action: t("rawSealing.resetAction"),
       description: <p>{t("rawSealing.resetPasswordDescription")}</p>,
       withFields: true,
-      focusNew: proof !== "password",
-      passwordLabel: t("rawSealing.currentPassword"),
-      proof,
+      focusNew: true,
+      proof: "confirm",
       submit: (input) => submitPassword("reset", input),
       title: t("rawSealing.resetPasswordTitle"),
     };
@@ -682,12 +577,6 @@ export function RawSealingDialogs({
 
   const resetConfirmOpen =
     status !== null && kind === "reset" && resetStep === "confirm";
-  const replaceConfirmOpen =
-    status !== null &&
-    status.configured &&
-    !status.password_set &&
-    (kind === "capture" || kind === "set" || kind === "required") &&
-    replaceStep === "confirm";
   const replacedResetConfirmOpen =
     status !== null && kind === "replaced" && replaceStep === "confirm";
   return (
@@ -712,36 +601,31 @@ export function RawSealingDialogs({
         open={resetConfirmOpen}
         title={t("rawSealing.resetTitle")}
       />
-      <ConfirmDialog
-        confirmLabel={t("rawSealing.resetConfirm")}
-        description={
-          <>
-            <p>{t("rawSealing.replaceDescription")}</p>
-            {status?.local_presence ? (
-              <p>{t("rawSealing.replaceNeedsPresence")}</p>
-            ) : null}
-          </>
-        }
-        destructive
-        // Back to setting a password; a required one stays required.
-        onCancel={() => setReplaceStep(null)}
-        onConfirm={() => setReplaceStep("password")}
-        open={replaceConfirmOpen}
-        title={t("rawSealing.replaceTitle")}
-      />
       <ProofConfirmDialog
         actions={[{ id: "submit", label: proofDialog?.action ?? "" }]}
         cancelLabel={proofDialog?.cancelLabel}
         description={proofDialog?.description ?? null}
         dismissable={proofDialog?.dismissable ?? true}
-        fields={proofDialog?.withFields ? fields : undefined}
+        fields={
+          proofDialog?.withFields ? (
+            <>
+              {fields}
+              <p
+                className="text-xs text-muted-foreground"
+                data-slot="raw-password-manager-hint"
+              >
+                {t("rawSealing.passwordManagerHint")}
+              </p>
+              {proofDialog.note}
+            </>
+          ) : undefined
+        }
         initialFocusRef={proofDialog?.focusNew ? newPasswordRef : undefined}
         onCancel={proofDialog?.onCancel ?? (() => close(false))}
         onSubmit={(_, input) =>
           proofDialog ? proofDialog.submit(input) : Promise.resolve(done)
         }
         open={proofDialog !== null}
-        passwordFallback={status?.password_set ?? false}
         passwordLabel={proofDialog?.passwordLabel}
         proof={proofDialog?.proof ?? "confirm"}
         submitDisabled={proofDialog?.withFields === true && invalidNew}
@@ -759,6 +643,8 @@ interface ProofDialogCopy {
   dismissable?: boolean;
   /** Focus the new password instead of the proof on open. */
   focusNew: boolean;
+  /** Follows the new password fields. */
+  note?: ReactNode;
   /** Replaces closing the dialog, e.g. to step back within it. */
   onCancel?: () => void;
   passwordLabel?: string;

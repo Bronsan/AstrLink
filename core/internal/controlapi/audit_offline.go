@@ -38,9 +38,9 @@ func (provenRawVault) WithProof(context.Context, RawProof, func(RawKeyOpener) er
 
 // ReadFullAudit returns the full audit view of one request as an unlocked
 // operator sees it. opener is the raw key the caller proved with the raw
-// password, or nil when none is set; raw parts are then withheld as
-// raw_password_required. It serves `astrlink-core audit show`, so the private key only
-// lives in that short-lived process.
+// password, or nil when none is set; no raw part was kept then. It serves
+// `astrlink-core audit show`, so the private key only lives in that
+// short-lived process.
 func ReadFullAudit(ctx context.Context, store OfflineAuditStore, opener RawKeyOpener, id contract.RequestID) (contract.AuditContent, error) {
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, RequestsPath, nil)
 	if err != nil {

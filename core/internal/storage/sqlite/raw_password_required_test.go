@@ -10,22 +10,6 @@ import (
 	storage "github.com/QuantumNous/astrlink/core/internal/storage"
 )
 
-// createLocalOnlyRawKey stores a raw sealing key only the local envelope
-// opens, as the signed macOS app creates before a raw password is set.
-func createLocalOnlyRawKey(t *testing.T, store *Store, id int64) rawTestKey {
-	t.Helper()
-	key, stored := newRawTestKey(t, id)
-	local, err := store.WrapLocalRawKey(key.id, key.public, key.private)
-	if err != nil {
-		t.Fatal(err)
-	}
-	stored.Envelopes = []storage.RawKeyEnvelope{local}
-	if err := store.CreateRawSealingKey(context.Background(), stored); err != nil {
-		t.Fatal(err)
-	}
-	return key
-}
-
 // checkpoint folds the WAL into the database file, as the next checkpoint
 // would, so fileContains sees only what is still stored.
 func checkpoint(t *testing.T, store *Store) {
@@ -58,7 +42,6 @@ func TestRawCapturesAreNotKeptWithoutARawPassword(t *testing.T) {
 		setup func(*testing.T, *Store)
 	}{
 		{name: "no raw key", setup: func(*testing.T, *Store) {}},
-		{name: "local envelope only", setup: func(t *testing.T, store *Store) { createLocalOnlyRawKey(t, store, 61) }},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "astrlink.db")
@@ -279,123 +262,5 @@ func TestAPartAFailedSettleLeftPendingGoesWithItsRequestsEnd(t *testing.T) {
 				t.Fatalf("late settle: remembered=%v passes=%d", waiting, passes)
 			}
 		})
-	}
-}
-
-func TestMigratedRawHistoryWaitsForTheRawPassword(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "astrlink.db")
-	store := openWithKey(t, path, testLocalKey(t, 0x83), nil)
-	defer store.Close()
-	ctx := context.Background()
-	const id = contract.RequestID("request_before_upgrade")
-	auditKey := auditPayloadFixture(t, store, id)
-	// Raw parts an earlier release kept under the audit key: one inline and
-	// one in a shared payload.
-	inlineBody := "HISTORY-" + strings.Repeat("inline raw prompt ", 32)
-	inline := sealedPayload(t, auditKey, id, storage.AuditDirectionRequest, inlineBody)
-	insertInlineBlob(t, store.db, inline, storage.AuditExposureRaw)
-	shared := sealedPayload(t, auditKey, id, storage.AuditDirectionResponse, "HISTORY-"+strings.Repeat("shared raw answer ", 32))
-	insertRawTestBlob(t, store, shared, storage.AuditExposurePending)
-	if _, err := store.db.Exec(`UPDATE audit_blobs SET exposure = 'raw' WHERE request_id = ? AND direction = 'response'`, id); err != nil {
-		t.Fatal(err)
-	}
-
-	// Without a raw key the history is kept as it is, not dropped.
-	if result, err := store.ResealRawParts(ctx, 0); err != nil || result.Resealed != 0 || result.Dropped != 0 {
-		t.Fatalf("reseal without a key = %+v, %v", result, err)
-	}
-	for direction, blob := range blobsByDirection(t, store, id) {
-		if blob.Sealing != storage.AuditSealingAudit || blob.Exposure != storage.AuditExposureRaw {
-			t.Fatalf("%s history = sealing %q exposure %q", direction, blob.Sealing, blob.Exposure)
-		}
-	}
-
-	// A local-only key takes the history off dek_audit, though nothing reads
-	// it until a raw password is set.
-	key := createLocalOnlyRawKey(t, store, 62)
-	result, err := store.ResealRawParts(ctx, 0)
-	if err != nil || result.Resealed != 2 || !result.Done {
-		t.Fatalf("reseal with a local-only key = %+v, %v", result, err)
-	}
-	blobs := blobsByDirection(t, store, id)
-	if got := openRawPart(t, key, blobs[storage.AuditDirectionRequest]); got != inlineBody {
-		t.Fatalf("resealed history = %q", got)
-	}
-	if count := countRows(t, store, `audit_blobs b LEFT JOIN audit_payloads p ON p.id = b.payload_id
-WHERE b.exposure = 'raw' AND length(b.ciphertext) > 0 OR p.sealing = 'audit' AND b.exposure = 'raw'`); count != 0 {
-		t.Fatalf("%d raw part(s) left under dek_audit", count)
-	}
-	if fileContains(t, path, inline.Ciphertext) || fileContains(t, path, shared.Ciphertext) {
-		t.Fatal("the database or its WAL still holds the history's old ciphertext")
-	}
-}
-
-func TestMigratedRawHistoryMovesOnceARawPasswordIsSet(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "astrlink.db")
-	store := openWithKey(t, path, testLocalKey(t, 0x84), nil)
-	defer store.Close()
-	ctx := context.Background()
-	const id = contract.RequestID("request_before_upgrade")
-	auditKey := auditPayloadFixture(t, store, id)
-	historyBody := "HISTORY-" + strings.Repeat("raw prompt ", 32)
-	history := sealedPayload(t, auditKey, id, storage.AuditDirectionRequest, historyBody)
-	insertInlineBlob(t, store.db, history, storage.AuditExposureRaw)
-
-	key := createRawTestKey(t, store, 63)
-	if !store.keepsRawCaptures() {
-		t.Fatal("a key with a raw password does not keep raw captures")
-	}
-	result, err := store.ResealRawParts(ctx, 0)
-	if err != nil || result.Resealed != 1 || result.Dropped != 0 {
-		t.Fatalf("ResealRawParts = %+v, %v", result, err)
-	}
-	if got := openRawPart(t, key, blobsByDirection(t, store, id)[storage.AuditDirectionRequest]); got != historyBody {
-		t.Fatalf("resealed history = %q", got)
-	}
-	if fileContains(t, path, history.Ciphertext) {
-		t.Fatal("the database or its WAL still holds the history under dek_audit")
-	}
-	// New raw captures are kept, sealed to the raw key.
-	capture := sealedPayload(t, auditKey, id, storage.AuditDirectionResponse, "kept raw answer")
-	insertRawTestBlob(t, store, capture, storage.AuditExposureRaw)
-	if got := openRawPart(t, key, blobsByDirection(t, store, id)[storage.AuditDirectionResponse]); got != "kept raw answer" {
-		t.Fatalf("raw capture = %q", got)
-	}
-}
-
-func TestUnsealDropsPartsThatWereNotKept(t *testing.T) {
-	ctx := context.Background()
-	path := filepath.Join(t.TempDir(), "astrlink.db")
-	store := openWithKey(t, path, testLocalKey(t, 0x85), nil)
-	auditKey := auditPayloadFixture(t, store, unsealRequestID)
-	if _, err := store.db.Exec(`UPDATE request_records SET audit_json = json_set(audit_json,
-    '$.request_body_captured', json('true'), '$.upstream_request_body_captured', json('true')) WHERE id = ?`, unsealRequestID); err != nil {
-		t.Fatal(err)
-	}
-	insertRawTestBlob(t, store, sealedPayload(t, auditKey, unsealRequestID, storage.AuditDirectionRequest, unsealRawPrompt), storage.AuditExposureRaw)
-	insertRawTestBlob(t, store, sealedPayload(t, auditKey, unsealRequestID, storage.AuditDirectionUpstreamRequest, "shareable prompt"), storage.AuditExposureShareable)
-	assertRawMarker(t, store, unsealRequestID, storage.AuditDirectionRequest)
-
-	result, err := store.Unseal(ctx, UnsealOptions{})
-	if err != nil || result.RawParts != 0 || result.Discarded != (UnsealUnreadable{}) {
-		t.Fatalf("Unseal = %+v, %v", result, err)
-	}
-	if err := store.Close(); err != nil {
-		t.Fatal(err)
-	}
-	database := openUnsealedDatabase(t, path)
-	assertReleasedSchema(t, database)
-	parts := auditPartsUnderKey(t, database, auditKey)
-	if len(parts) != 1 || parts[storage.AuditDirectionUpstreamRequest] != "shareable prompt" {
-		t.Fatalf("parts after unseal = %q", parts)
-	}
-	var markers int
-	if err := database.QueryRow(`SELECT COUNT(*) FROM audit_blobs WHERE payload_id IS NULL AND length(ciphertext) = 0`).Scan(&markers); err != nil || markers != 0 {
-		t.Fatalf("unseal left %d marker(s), %v", markers, err)
-	}
-	var captured, upstreamCaptured bool
-	if err := database.QueryRow(`SELECT json_extract(audit_json, '$.request_body_captured'), json_extract(audit_json, '$.upstream_request_body_captured')
-FROM request_records WHERE id = ?`, unsealRequestID).Scan(&captured, &upstreamCaptured); err != nil || captured || !upstreamCaptured {
-		t.Fatalf("capture flags after unseal = %t, %t, %v", captured, upstreamCaptured, err)
 	}
 }

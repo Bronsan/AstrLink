@@ -89,8 +89,8 @@ import {
   type RawDialog,
 } from "./RawSealingControls";
 import {
+  rawPasswordUnset,
   unlockCheckDelay,
-  withPresence,
   type RawSealingState,
 } from "./raw-sealing-model";
 import { rawSealingErrorMessage } from "./raw-sealing-ui";
@@ -109,7 +109,6 @@ import {
   type RecordFilters,
 } from "./request-live-model";
 import {
-  holdsPasswordRequiredPart,
   holdsRawPart,
   isModelDiscoveryProtocol,
   statusLabel,
@@ -740,13 +739,8 @@ export function RequestRecords({
     void getRequestAuditContent(selected.id)
       .then((content) => {
         if (auditGenerationRef.current !== generation) return;
-        // Raw parts show only while unlocked, and parts waiting for a raw
-        // password become readable once one is set.
-        if (
-          cacheable &&
-          !holdsRawPart(content) &&
-          !holdsPasswordRequiredPart(content)
-        ) {
+        // Raw parts show only while unlocked.
+        if (cacheable && !holdsRawPart(content)) {
           cacheInsert(selected.id, content);
         }
         setAuditContent(content);
@@ -834,16 +828,17 @@ export function RequestRecords({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [coreSessionKey, isReady]);
 
-  // A first raw password, set here or anywhere else, turns the parts that
+  // Raw protection, set up here or anywhere else, turns the parts that
   // waited for it into locked ones.
-  const rawPasswordSet = rawSealing?.password_set;
-  const rawPasswordSetRef = useRef(rawPasswordSet);
+  const rawProtected =
+    rawSealing === null ? undefined : !rawSealing.password_required;
+  const rawProtectedRef = useRef(rawProtected);
   useEffect(() => {
-    const previous = rawPasswordSetRef.current;
-    rawPasswordSetRef.current = rawPasswordSet;
-    if (previous === false && rawPasswordSet === true) reloadAudit();
+    const previous = rawProtectedRef.current;
+    rawProtectedRef.current = rawProtected;
+    if (previous === false && rawProtected === true) reloadAudit();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [rawPasswordSet]);
+  }, [rawProtected]);
 
   const openDetail = (sessionId: string) => {
     selectedFocusRef.current = sessionId;
@@ -1120,17 +1115,16 @@ export function RequestRecords({
     setAuditNonce((current) => current + 1);
   };
 
-  // Without a raw password, turning capture on must set one in the same
-  // confirmation (D11), on every platform: a keychain key alone keeps no raw
-  // content. This decides on Core's state, not the platform.
+  // Without a raw password, turning capture on must set one up in the same
+  // confirmation. This decides on Core's state, not the platform.
   const confirmCaptureEnable = async () => {
     const generation = generationRef.current;
     setSettingsBusy(true);
     const current = await refreshRawSealing();
     setSettingsBusy(false);
     if (generationRef.current !== generation) return;
-    // Without a fresh sealing state D11 cannot be decided; refuse rather than
-    // decide on the last one, which may predate a reset.
+    // Without a fresh sealing state this cannot be decided; refuse rather
+    // than decide on the last one, which may predate a reset.
     if (!current) {
       const message = i18n.t("records.captureSealingUnknown");
       if (settingsOpen) {
@@ -1140,7 +1134,7 @@ export function RequestRecords({
       }
       return;
     }
-    if (!current.password_set) {
+    if (rawPasswordMissing(current)) {
       setRawDialog({ kind: "capture" });
       return;
     }
@@ -1198,14 +1192,14 @@ export function RequestRecords({
       reloadAudit();
       return;
     }
-    // Nothing unlocks raw content until a raw password is set (D11).
-    setRawDialog({ kind: current.password_set ? "unlock" : "set" });
+    // Only the raw password unlocks raw content.
+    setRawDialog({ kind: rawPasswordUnset(current) ? "set" : "unlock" });
   };
 
   const lockRawContent = async () => {
     try {
       const current = await lockRaw();
-      setRawSealing((previous) => withPresence(current, previous));
+      setRawSealing(current);
     } catch (requestError: unknown) {
       notify.error(
         i18n.t("rawSealing.lockFailed", {

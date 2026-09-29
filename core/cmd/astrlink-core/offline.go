@@ -16,7 +16,6 @@ import (
 	"time"
 
 	"github.com/QuantumNous/astrlink/core/contract"
-	"github.com/QuantumNous/astrlink/core/internal/accountauth"
 	"github.com/QuantumNous/astrlink/core/internal/controlapi"
 	"github.com/QuantumNous/astrlink/core/internal/localkey"
 	"github.com/QuantumNous/astrlink/core/internal/storage"
@@ -48,8 +47,6 @@ func runOfflineCommand(ctx context.Context, args []string, stdin io.Reader, stdo
 		err = runRawPassword(ctx, args[1:], stdin, stdout, stderr)
 	case "audit":
 		err = runAudit(ctx, args[1:], stdin, stdout, stderr)
-	case "unseal":
-		err = runUnseal(ctx, args[1:], stdin, stdout, stderr)
 	default:
 		return 0, false
 	}
@@ -159,10 +156,6 @@ func runRawPassword(ctx context.Context, args []string, stdin io.Reader, stdout,
 	if err != nil {
 		return describeRawError(err)
 	}
-	result, err := store.ResealRawParts(ctx, 100)
-	if err != nil {
-		return fmt.Errorf("move captured raw parts onto the new key: %w", err)
-	}
 	switch action {
 	case controlapi.RawPasswordSet:
 		fmt.Fprintln(stdout, "raw password set")
@@ -171,9 +164,6 @@ func runRawPassword(ctx context.Context, args []string, stdin io.Reader, stdout,
 	case controlapi.RawPasswordReset:
 		fmt.Fprintf(stdout, "raw password reset; discarded %d raw part(s) from %d request(s)\n",
 			outcome.Reset.DeletedParts, outcome.Reset.AffectedRecords)
-	}
-	if result.Resealed > 0 {
-		fmt.Fprintf(stdout, "sealed %d captured raw part(s) to the raw key\n", result.Resealed)
 	}
 	return nil
 }
@@ -230,7 +220,7 @@ func runAudit(ctx context.Context, args []string, stdin io.Reader, stdout, stder
 			return readErr
 		})
 	default:
-		fmt.Fprintln(stderr, "astrlink-core audit show: no raw password is set; raw content stays withheld until one is set with `astrlink-core raw-password set`")
+		fmt.Fprintln(stderr, "astrlink-core audit show: no raw password is set; raw content is not kept until one is set with `astrlink-core raw-password set`")
 		content, err = controlapi.ReadFullAudit(ctx, store, nil, id)
 	}
 	if err != nil {
@@ -245,139 +235,6 @@ func runAudit(ctx context.Context, args []string, stdin io.Reader, stdout, stder
 		return encoder.Encode(content)
 	}
 	writeAuditText(stdout, content)
-	return nil
-}
-
-// unsealKeyring opens the OS keystore the older release reads OAuth tokens
-// from. Tests replace it so they never reach a real keystore.
-var unsealKeyring = func() accountauth.AccountCredentialStore { return accountauth.NewKeyringCredentialStore() }
-
-// runUnseal rolls the database back for the release before local data
-// protection (plan §5.6).
-func runUnseal(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) error {
-	var options offlineFlags
-	confirmed, discard := false, false
-	flags := newOfflineFlagSet("unseal", stderr, &options)
-	flags.BoolVar(&confirmed, "yes", false, "confirm that credentials are stored in plaintext again")
-	flags.BoolVar(&discard, "discard-unreadable", false, "drop credentials, account tokens and raw parts that cannot be carried back instead of stopping")
-	flags.Usage = func() {
-		fmt.Fprintln(stderr, "usage: astrlink-core unseal --data-dir DIR --yes [--password-stdin] [--discard-unreadable] [--kek-file FILE]")
-		fmt.Fprintln(stderr, "  Rolls the database back to migration 41 so the previous release opens it: credentials")
-		fmt.Fprintln(stderr, "  become plaintext, account tokens move to the OS keystore, and raw parts are sealed by the")
-		fmt.Fprintln(stderr, "  audit key again. Raw parts need the raw password on stdin line 1.")
-		flags.PrintDefaults()
-	}
-	positional, err := parseInterspersed(flags, args)
-	if err != nil {
-		return err
-	}
-	if len(positional) != 0 {
-		flags.Usage()
-		return fmt.Errorf("%w: unseal takes no arguments", errUsage)
-	}
-	if !confirmed {
-		return fmt.Errorf("%w: unseal stores every credential in plaintext again; pass --yes to confirm", errUsage)
-	}
-	if err := refuseRunningCore(options.dataDir); err != nil {
-		return err
-	}
-	var password, buffer []byte
-	if options.passwordStdin {
-		passwords, lineBuffer, err := readPasswordLines(stdin, 1)
-		if err != nil {
-			return err
-		}
-		password, buffer = passwords[0], lineBuffer
-	}
-	defer clear(buffer)
-	store, err := openOfflineStore(ctx, options, stderr)
-	if err != nil {
-		return err
-	}
-	defer store.Close()
-
-	// The keystore is only touched when an account has tokens to carry back.
-	keyring := unsealKeyring()
-	var written []contract.SubscriptionAccountID
-	keystoreRefused := false
-	exportSubscription := func(ctx context.Context, id contract.SubscriptionAccountID, raw []byte) error {
-		tokens, err := accountauth.UnmarshalAccountTokens(raw)
-		if err != nil {
-			return err
-		}
-		if err := keyring.Put(ctx, id, tokens); err != nil {
-			keystoreRefused = errors.Is(err, accountauth.ErrCredentialStoreUnavailable)
-			return fmt.Errorf("write the OS keystore: %w", err)
-		}
-		written = append(written, id)
-		return nil
-	}
-	var result sqlite.UnsealResult
-	unseal := func(openRawPart func(storage.AuditBlob) ([]byte, error)) error {
-		unsealOptions := sqlite.UnsealOptions{OpenRawPart: openRawPart, ExportSubscription: exportSubscription, DiscardUnreadable: discard}
-		var err error
-		result, err = store.Unseal(ctx, unsealOptions)
-		if err == nil {
-			return nil
-		}
-		// The database rolled back; so do the keystore entries it wrote.
-		for _, id := range written {
-			_ = keyring.Delete(context.Background(), id)
-		}
-		written = nil
-		if !keystoreRefused || !discard {
-			return err
-		}
-		// Without a keystore the accounts' tokens are unreadable to the
-		// previous release too; drop them like anything else unreadable.
-		fmt.Fprintln(stderr, "astrlink-core unseal: the OS keystore is unavailable; connected accounts will need to sign in again")
-		unsealOptions.ExportSubscription = nil
-		result, err = store.Unseal(ctx, unsealOptions)
-		return err
-	}
-	vault := controlapi.NewRawVault(store, controlapi.RawVaultOptions{Logf: log.New(stderr, "astrlink-core: ", 0).Printf})
-	status, err := vault.Status(ctx)
-	if err != nil {
-		return fmt.Errorf("read raw sealing state: %w", err)
-	}
-	switch {
-	case status.PasswordSet && password != nil:
-		err = vault.WithProof(ctx, controlapi.RawProof{Password: password}, func(opener controlapi.RawKeyOpener) error {
-			return unseal(opener.OpenBlobKey)
-		})
-	default:
-		if password != nil {
-			fmt.Fprintln(stderr, "astrlink-core unseal: no raw password is set; the password on stdin is not used")
-		}
-		err = unseal(nil)
-	}
-	if err != nil {
-		var unreadable *sqlite.UnsealUnreadableError
-		switch {
-		case errors.As(err, &unreadable):
-			hint := "pass --discard-unreadable to drop it"
-			switch {
-			case unreadable.Unreadable.RawParts == 0:
-			case status.PasswordSet && password == nil:
-				hint = "pass the raw password with --password-stdin to carry raw parts back, or --discard-unreadable to drop what cannot be read"
-			case !status.PasswordSet && status.Configured:
-				hint = "raw parts are sealed to a key that has no raw password yet; set one in the AstrLink app and pass it with --password-stdin, or pass --discard-unreadable to drop what cannot be read"
-			}
-			return fmt.Errorf("%v; nothing was changed. %s", err, hint)
-		case keystoreRefused:
-			return fmt.Errorf("%v; nothing was changed. Connected accounts' tokens need the OS keystore; pass --discard-unreadable to sign them out instead", err)
-		case errors.Is(err, storage.ErrPrecondition):
-			return err
-		}
-		return describeRawError(err)
-	}
-	fmt.Fprintf(stdout, "restored %d credential(s) in plaintext, moved %d account credential(s) to the OS keystore, resealed %d raw part(s) under the audit key\n",
-		result.Credentials, result.Subscriptions, result.RawParts)
-	if discarded := result.Discarded; discarded != (sqlite.UnsealUnreadable{}) {
-		fmt.Fprintf(stdout, "discarded %d credential(s), %d account credential(s), %d raw part(s) and %d set-aside data key(s)\n",
-			discarded.Credentials, discarded.Subscriptions, discarded.RawParts, discarded.SetAsideKeys)
-	}
-	fmt.Fprintln(stdout, "the database now matches migration 41 (shared_audit_payloads); the previous release can open it")
 	return nil
 }
 

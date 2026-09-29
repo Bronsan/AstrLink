@@ -168,7 +168,7 @@ func commandCatalog() []command {
 			Summary: "Ask the user to approve reading withheld raw parts, then wait.",
 			Detail: "Ask the user to let you read the raw audit parts that audit withheld for one request. Use it only when a withheld part says raw_available: true and the shareable parts are not enough. " +
 				"Raw content enters your context and is sent to the model provider you use, so first tell the user why you need it and pass that as --reason. " +
-				"The command then waits while the user approves in the AstrLink desktop with their raw password or Touch ID; never try to approve it yourself. " +
+				"The command then waits while the user approves in the AstrLink desktop with their raw password; never try to approve it yourself. " +
 				"It prints the audit with content_view raw once approved, or exits with an error if the user denies it, raw access is unavailable, or the wait ends. An approval may allow only one read.",
 			Flags: []commandFlag{
 				{Name: "reason", Key: "reason", Usage: "why you need the raw parts, as you told the user; shown in the approval dialog (required)"},
@@ -251,15 +251,14 @@ var auditBodyParts = []string{"request_body", "response_content", "upstream_requ
 
 // withheldReasonDetails explains each withheld reason to the agent.
 var withheldReasonDetails = map[string]string{
-	"privacy_redacted":      "The privacy policy redacted this before it went upstream; the upstream parts show what the model saw, with placeholders.",
-	"privacy_blocked":       "The privacy policy blocked this request.",
-	"privacy_restored":      "Placeholders in this response were restored to the original values.",
-	"privacy_fail_open":     "Privacy inspection failed and the request went upstream uninspected.",
-	"privacy_pending":       "Privacy inspection had not finished when this was read.",
-	"privacy_unknown":       "Captured before AstrLink recorded privacy decisions, or its inspection never finished.",
-	"raw_locked":            "Raw reading is locked in the desktop.",
-	"raw_password_required": "Kept before an upgrade; readable only after the user protects raw content with a raw password or Touch ID in AstrLink.",
-	"raw_not_kept":          "Captured before the user protected raw content with a raw password or Touch ID, so the raw content was not kept.",
+	"privacy_redacted":  "The privacy policy redacted this before it went upstream; the upstream parts show what the model saw, with placeholders.",
+	"privacy_blocked":   "The privacy policy blocked this request.",
+	"privacy_restored":  "Placeholders in this response were restored to the original values.",
+	"privacy_fail_open": "Privacy inspection failed and the request went upstream uninspected.",
+	"privacy_pending":   "Privacy inspection had not finished when this was read.",
+	"privacy_unknown":   "Captured before AstrLink recorded privacy decisions, or its inspection never finished.",
+	"raw_locked":        "Raw reading is locked in the desktop.",
+	"raw_not_kept":      "Captured before the user set a raw password in AstrLink, so the raw content was not kept.",
 }
 
 // annotateAudit wraps a shareable audit read for the agent.
@@ -317,7 +316,7 @@ func annotateAuditPayload(raw json.RawMessage, view string) (map[string]any, err
 		wrapped["hint"] = "Some parts are withheld. Work from the shareable parts and privacy_findings first. If you still need the raw parts, tell the user why, then run `astrlink raw-audit <id> --reason <why>`; the user must approve it in the AstrLink desktop."
 	case len(withheld) > 0:
 		wrapped["withheld_parts"] = withheld
-		wrapped["hint"] = "Some parts are withheld and raw access is not available: the user has not protected raw content with a raw password or Touch ID, or has turned off agent raw access requests. Do not run raw-audit; work from the shareable parts and privacy_findings."
+		wrapped["hint"] = "Some parts are withheld and raw access is not available: the user has not set a raw password, or has turned off agent raw access requests. Do not run raw-audit; work from the shareable parts and privacy_findings."
 	}
 	return wrapped, nil
 }

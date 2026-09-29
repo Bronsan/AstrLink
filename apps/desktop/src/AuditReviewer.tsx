@@ -398,8 +398,6 @@ export function withheldHint(
   switch (withheld.reason) {
     case "raw_locked":
       return i18n.t("rawSealing.lockedDetail");
-    case "raw_password_required":
-      return i18n.t("rawSealing.passwordRequiredDetail");
     case "raw_not_kept":
       return i18n.t("rawSealing.notKeptDetail");
     default:
@@ -423,16 +421,12 @@ export function AuditPartSection({
   copyFeedback: CopyFeedback;
   /** Why a captured part is missing from this read, if it is. */
   withheld?: AuditWithheldPart | null;
-  /**
-   * Opens the raw unlock for a part sealed with the raw key, or sets the
-   * raw password for one that waits for it.
-   */
+  /** Opens the raw unlock for a part sealed with the raw key. */
   onUnlock?: () => void;
 }) {
   const t = i18n.t.bind(i18n);
   const reason = part === null ? withheld?.reason : undefined;
   const locked = reason === "raw_locked";
-  const awaitsPassword = reason === "raw_password_required";
   return (
     <DetailBlock
       actions={
@@ -445,14 +439,14 @@ export function AuditPartSection({
           >
             {copyButtonLabel(copyFeedback, sectionKey)}
           </Button>
-        ) : (locked || awaitsPassword) && onUnlock ? (
+        ) : locked && onUnlock ? (
           <Button
             className="h-auto px-0 text-xs"
             onClick={onUnlock}
             type="button"
             variant="link"
           >
-            {locked ? t("rawSealing.unlock") : t("rawSealing.setAction")}
+            {t("rawSealing.unlock")}
           </Button>
         ) : null
       }
@@ -467,10 +461,6 @@ export function AuditPartSection({
         >
           {locked ? (
             <StatusBadge tone="neutral">{t("rawSealing.locked")}</StatusBadge>
-          ) : awaitsPassword ? (
-            <StatusBadge tone="pending">
-              {t("rawSealing.passwordRequired")}
-            </StatusBadge>
           ) : reason === "raw_not_kept" ? (
             <StatusBadge tone="neutral">{t("rawSealing.notKept")}</StatusBadge>
           ) : null}

@@ -346,14 +346,14 @@ func TestGetRequestAuditExplainsRawPartsThatWereNotKept(t *testing.T) {
 	}
 	request := auditPart(t, wrapped, "request_body")
 	if request["reason"] != "raw_not_kept" || request["raw_available"] != false ||
-		!strings.Contains(fmt.Sprint(request["reason_detail"]), "raw password or Touch ID") {
+		!strings.Contains(fmt.Sprint(request["reason_detail"]), "set a raw password") {
 		t.Fatalf("request_body=%v", request)
 	}
 	if upstream := auditPart(t, wrapped, "upstream_request_body"); upstream["content_view"] != "shareable" {
 		t.Fatalf("upstream_request_body=%v", upstream)
 	}
 	if outcome := runRawAudit(fixture.client, map[string]any{"id": cliRawRequestID, "reason": "debug"}); outcome.err == nil ||
-		!strings.Contains(outcome.err.Error(), "has not protected raw content") {
+		!strings.Contains(outcome.err.Error(), "has not set a raw password") {
 		t.Fatalf("raw request err=%v", outcome.err)
 	}
 }

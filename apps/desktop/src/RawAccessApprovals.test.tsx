@@ -56,7 +56,6 @@ function sealing(overrides: Partial<RawSealingState> = {}): RawSealingState {
     configured: true,
     password_set: true,
     password_required: overrides.password_set === false,
-    local_presence: false,
     envelopes: ["password"],
     key_verified: true,
     unlocked: false,
@@ -66,8 +65,6 @@ function sealing(overrides: Partial<RawSealingState> = {}): RawSealingState {
     password_min_length: 8,
     password_max_length: 128,
     key_replaced: false,
-    presence_available: false,
-    keychain_build: false,
     ...overrides,
   };
 }
@@ -310,77 +307,6 @@ describe("RawAccessApprovals", () => {
     expect(dialog()?.textContent).toContain("「Claude Code」请求查看");
   });
 
-  it("approves with Touch ID where the host can prompt, focusing only this time", async () => {
-    mocks.listRawAccess.mockResolvedValue([grant()]);
-    mocks.getRawSealingStatus.mockResolvedValue(
-      sealing({
-        envelopes: ["password", "local"],
-        local_presence: true,
-        presence_available: true,
-      }),
-    );
-    mocks.decideRawAccess.mockResolvedValue({
-      outcome: "decided",
-      grant: grant({ status: "approved", decision: "once" }),
-    });
-    await render();
-
-    expect(document.querySelector('input[type="password"]')).toBeNull();
-    expect(dialog()?.textContent).toContain("Touch ID");
-    expect(document.activeElement).toBe(button("仅本次"));
-
-    await act(async () => button("仅本次").click());
-    await act(async () => {});
-
-    expect(mocks.decideRawAccess).toHaveBeenCalledExactlyOnceWith(
-      "rawgrant_0123456789abcdef",
-      "once",
-      { kind: "local_presence" },
-    );
-    expect(dialog()).toBeNull();
-  });
-
-  it("keeps the request open when the Touch ID prompt is cancelled", async () => {
-    mocks.listRawAccess.mockResolvedValue([grant()]);
-    mocks.getRawSealingStatus.mockResolvedValue(
-      sealing({ local_presence: true, presence_available: true }),
-    );
-    mocks.decideRawAccess.mockResolvedValue({ outcome: "presence_cancelled" });
-    await render();
-
-    await act(async () => button("仅本次").click());
-
-    expect(dialog()?.getAttribute("data-state")).toBe("open");
-    expect(dialog()?.textContent).toContain("已取消验证");
-    expect(mocks.toastSuccess).not.toHaveBeenCalled();
-  });
-
-  it("lets a user with a password use it instead of Touch ID", async () => {
-    mocks.listRawAccess.mockResolvedValue([grant()]);
-    mocks.getRawSealingStatus.mockResolvedValue(
-      sealing({
-        envelopes: ["password", "local"],
-        local_presence: true,
-        presence_available: true,
-      }),
-    );
-    mocks.decideRawAccess.mockResolvedValue({
-      outcome: "decided",
-      grant: grant({ status: "approved", decision: "once" }),
-    });
-    await render();
-
-    await act(async () => button("改用原文口令").click());
-    await typePassword("correct horse");
-    await act(async () => button("仅本次").click());
-
-    expect(mocks.decideRawAccess).toHaveBeenCalledWith(
-      "rawgrant_0123456789abcdef",
-      "once",
-      passwordProof,
-    );
-  });
-
   it("asks for the password when the sealing state cannot be read", async () => {
     mocks.listRawAccess.mockResolvedValue([grant()]);
     mocks.getRawSealingStatus.mockRejectedValue(new Error("核心未响应"));
@@ -389,14 +315,14 @@ describe("RawAccessApprovals", () => {
     expect(document.querySelector('input[type="password"]')).not.toBeNull();
   });
 
-  it("offers only denial when a keychain-only key cannot be opened", async () => {
+  it("offers only denial until a raw password is set", async () => {
     mocks.listRawAccess.mockResolvedValue([grant()]);
     mocks.getRawSealingStatus.mockResolvedValue(
       sealing({
+        configured: false,
         password_set: false,
-        envelopes: ["local"],
-        local_presence: true,
-        presence_available: false,
+        password_required: true,
+        envelopes: [],
       }),
     );
     await render();
@@ -423,29 +349,6 @@ describe("RawAccessApprovals", () => {
     );
   });
 
-  it("offers only denial for a keychain-only key even with Touch ID", async () => {
-    // Presence opens no raw key without a password envelope (D11).
-    mocks.listRawAccess.mockResolvedValue([grant()]);
-    mocks.getRawSealingStatus.mockResolvedValue(
-      sealing({
-        password_set: false,
-        envelopes: ["local"],
-        local_presence: true,
-        presence_available: true,
-      }),
-    );
-    await render();
-
-    expect(
-      document.querySelector('[data-testid="raw-access-unreachable"]')
-        ?.textContent,
-    ).toContain("尚未设置原文口令，此设备无法批准该申请");
-    expect(dialog()?.querySelector('[data-slot="proof-presence"]')).toBeNull();
-    expect(button("仅本次").disabled).toBe(true);
-    expect(button("本请求 15 分钟内").disabled).toBe(true);
-    expect(button("拒绝").disabled).toBe(false);
-  });
-
   it("explains a refusal from the core in plain words", async () => {
     mocks.listRawAccess.mockResolvedValue([grant()]);
     mocks.decideRawAccess.mockRejectedValue(
@@ -458,7 +361,7 @@ describe("RawAccessApprovals", () => {
 
     await act(async () => button("仅本次").click());
 
-    expect(dialog()?.textContent).toContain("尚未设置原文口令。");
+    expect(dialog()?.textContent).toContain("还没设置原文保护。");
   });
 
   it("polls for new requests while ready", async () => {

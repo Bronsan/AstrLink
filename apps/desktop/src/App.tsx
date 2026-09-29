@@ -52,7 +52,7 @@ import { RouteManager } from "./RouteManager";
 import { SafetyPolicy } from "./SafetyPolicy";
 import { AgentDebugSettings } from "./AgentDebugSettings";
 import { RawAccessApprovals } from "./RawAccessApprovals";
-import { RawPasswordGate } from "./RawSealingControls";
+import { RawPasswordGate, useRawSetupNeeded } from "./RawSealingControls";
 import { useRawSealingStatus } from "./use-raw-sealing-status";
 import { LocalDataNotice } from "./LocalDataNotice";
 import { SettingsCenter } from "./SettingsCenter";
@@ -300,13 +300,13 @@ export default function App() {
       ? `${snapshot.pid ?? "none"}|${snapshot.ready.control_url}|${snapshot.ready.inference_url}`
       : null;
   const rawSealing = useRawSealingStatus(coreSessionKey, isReady);
+  const rawSetupNeeded = useRawSetupNeeded(rawSealing.status);
   const onboarding = useOnboarding({
     isReady,
     catalog,
     tokenCatalog,
     usage,
-    passwordReady:
-      rawSealing.status !== null && !rawSealing.status.password_required,
+    passwordReady: rawSealing.status !== null && !rawSetupNeeded,
   });
 
   const refreshServices = useCallback(async () => {
