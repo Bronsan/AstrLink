@@ -64,8 +64,9 @@ type discoveryResult struct {
 // discoveryEntry keeps the upstream's original entry bytes together with the
 // public model ID used for conflict handling.
 type discoveryEntry struct {
-	id  string
-	raw json.RawMessage
+	id           string
+	raw          json.RawMessage
+	codexCatalog json.RawMessage
 }
 
 // aggregateModelDiscovery serves a model listing from every capable enabled
@@ -142,7 +143,11 @@ func (handler *Handler) aggregateModelDiscovery(
 	merged, err := appendRedirectDiscoveryEntries(classified.Protocol, visible, redirects)
 	var body []byte
 	if err == nil {
-		body, err = encodeDiscoveryList(classified.Protocol, merged)
+		if wantsCodexModelCatalog(request, classified.Protocol) {
+			body, err = encodeCodexModelCatalog(merged)
+		} else {
+			body, err = encodeDiscoveryList(classified.Protocol, merged)
+		}
 	}
 	if err != nil {
 		writeInferenceError(
@@ -348,27 +353,17 @@ func (handler *Handler) fetchModelDiscovery(
 			endpointID: candidate.Service.ID,
 		}}
 	}
+	var entries []discoveryEntry
+	var entriesErr error
 	if candidate.Service.Kind == contract.ServiceKindCodexSubscription {
 		list, decodeErr := subscription.DecodeCodexModels(discoveryBody)
-		if decodeErr != nil {
-			health.Failure()
-			return discoveryResult{outcome: discoveryOutcomeFailed, failure: executionFailure{
-				kind:       executionFailureUpstream,
-				err:        decodeErr,
-				endpointID: candidate.Service.ID,
-			}}
+		entriesErr = decodeErr
+		if entriesErr == nil {
+			entries, entriesErr = codexCatalogDiscoveryEntries(list)
 		}
-		discoveryBody, decodeErr = subscription.EncodeOpenAIModelDiscovery(list)
-		if decodeErr != nil {
-			health.Failure()
-			return discoveryResult{outcome: discoveryOutcomeFailed, failure: executionFailure{
-				kind:       executionFailureUpstream,
-				err:        decodeErr,
-				endpointID: candidate.Service.ID,
-			}}
-		}
+	} else {
+		entries, entriesErr = parseDiscoveryEntries(classified.Protocol, discoveryBody)
 	}
-	entries, entriesErr := parseDiscoveryEntries(classified.Protocol, discoveryBody)
 	if entriesErr != nil {
 		health.Failure()
 		return discoveryResult{outcome: discoveryOutcomeFailed, failure: executionFailure{
@@ -483,6 +478,15 @@ func parseDiscoveryEntries(protocol contract.ProtocolID, body []byte) ([]discove
 	if err := json.Unmarshal(body, &envelope); err != nil || envelope == nil {
 		return nil, errDiscoveryResponseInvalid
 	}
+	if protocol == contract.ProtocolOpenAIModels {
+		if _, ok := envelope["models"]; ok {
+			list, err := subscription.DecodeCodexCatalog(body)
+			if err != nil {
+				return nil, err
+			}
+			return codexCatalogDiscoveryEntries(list)
+		}
+	}
 	var elements []json.RawMessage
 	if rawList, exists := envelope[listKey]; exists {
 		if err := json.Unmarshal(rawList, &elements); err != nil {
@@ -551,10 +555,13 @@ func appendRedirectDiscoveryEntries(
 		return entries, nil
 	}
 	listed := make(map[string]struct{}, len(entries))
+	catalogs := make(map[string]json.RawMessage, len(entries))
 	for _, entry := range entries {
 		listed[discoveryModelID(protocol, entry.id)] = struct{}{}
+		catalogs[discoveryModelID(protocol, entry.id)] = entry.codexCatalog
 	}
 	sources := make([]string, 0)
+	sourceCatalogs := make(map[string]json.RawMessage)
 	for _, redirect := range redirects {
 		if !redirect.Enabled || redirect.From == "" || redirect.From == contract.AstrLinkAutoModelID {
 			continue
@@ -570,6 +577,7 @@ func appendRedirectDiscoveryEntries(
 		}
 		listed[redirect.From] = struct{}{}
 		sources = append(sources, redirect.From)
+		sourceCatalogs[redirect.From] = catalogs[redirect.To]
 	}
 	if len(sources) == 0 {
 		return entries, nil
@@ -577,6 +585,9 @@ func appendRedirectDiscoveryEntries(
 	synthesized, err := synthesizeDiscoveryEntries(protocol, sources)
 	if err != nil {
 		return nil, err
+	}
+	for index := range synthesized {
+		synthesized[index].codexCatalog = sourceCatalogs[discoveryModelID(protocol, synthesized[index].id)]
 	}
 	entries = append(entries, synthesized...)
 	sort.Slice(entries, func(left, right int) bool {
