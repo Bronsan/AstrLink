@@ -24,6 +24,7 @@ pub fn lock() -> MutexGuard<'static, ()> {
 #[derive(Default)]
 pub struct WriteOptions<'a> {
     /// Tightens the file to owner-only access after writing (Unix).
+    #[cfg_attr(not(unix), allow(dead_code))]
     pub secret: bool,
     /// The contents the edit was computed from, `None` for a missing file.
     /// The write is abandoned when the file no longer holds them.
