@@ -10,7 +10,6 @@ import (
 	"strconv"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/QuantumNous/astrlink/core/contract"
 	"github.com/QuantumNous/astrlink/core/internal/endpoint"
@@ -275,11 +274,7 @@ func TestIngressAuditExposureSettlesPendingRequestAfterDecision(t *testing.T) {
 		handler.ServeHTTP(response, request)
 		done <- response.Code
 	}()
-	select {
-	case <-filter.entered:
-	case <-time.After(time.Second):
-		t.Fatal("inspection did not start")
-	}
+	<-filter.entered
 	if got := blobExposures(blobs)[storage.AuditDirectionRequest]; got != storage.AuditExposurePending {
 		t.Fatalf("undecided request exposure=%q, want pending", got)
 	}

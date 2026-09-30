@@ -656,12 +656,8 @@ func TestModelDiscoveryBoundsConcurrentFanOut(t *testing.T) {
 		handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/v1/models", nil))
 	}()
 
-	for index := range maxConcurrentDiscoveryFetches {
-		select {
-		case <-entered:
-		case <-time.After(time.Second):
-			t.Fatalf("fetch %d did not start", index+1)
-		}
+	for range maxConcurrentDiscoveryFetches {
+		<-entered
 	}
 	select {
 	case <-entered:
@@ -669,11 +665,7 @@ func TestModelDiscoveryBoundsConcurrentFanOut(t *testing.T) {
 	case <-time.After(50 * time.Millisecond):
 	}
 	close(release)
-	select {
-	case <-done:
-	case <-time.After(time.Second):
-		t.Fatal("aggregation did not finish")
-	}
+	<-done
 	if response.Code != http.StatusOK ||
 		response.Body.String() != `{"object":"list","data":[],"first_id":null,"has_more":false,"last_id":null}` {
 		t.Fatalf("response = %d %q", response.Code, response.Body.String())

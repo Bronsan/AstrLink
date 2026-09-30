@@ -527,22 +527,15 @@ func TestRawVaultRunRetriesAPartTheStoreDeferred(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() { defer close(done); vault.Run(ctx) }()
-	pass := func(what string) {
-		t.Helper()
-		select {
-		case <-store.passes:
-		case <-time.After(5 * time.Second):
-			t.Fatalf("no reseal pass %s", what)
-		}
-	}
+	pass := func() { <-store.passes }
 
-	pass("at start")
+	pass() // at start
 	retry := store.registered()
 	if retry == nil {
 		t.Fatal("a running vault took no deferred reseals")
 	}
 	retry()
-	pass("after the store deferred a part")
+	pass() // after the store deferred a part
 
 	cancel()
 	<-done

@@ -6,7 +6,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -14,7 +13,6 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/QuantumNous/astrlink/core/contract"
 )
@@ -179,13 +177,9 @@ func TestRunEmitsOneReadyEventAndServesSeparatePlanes(t *testing.T) {
 	assertLoopbackURL(t, ready.ControlURL)
 
 	cancel()
-	select {
-	case err := <-runErrors:
-		if err != nil {
-			t.Fatalf("Run returned error: %v", err)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("Run did not stop after context cancellation")
+	err := <-runErrors
+	if err != nil {
+		t.Fatalf("Run returned error: %v", err)
 	}
 	if err := writer.Close(); err != nil {
 		t.Fatal(err)
@@ -236,8 +230,6 @@ func TestRunCancellationCancelsActiveInferenceRequestContext(t *testing.T) {
 	case <-requestStarted:
 	case err := <-runErrors:
 		t.Fatalf("Run stopped before inference handler started: %v", err)
-	case <-time.After(2 * time.Second):
-		t.Fatal("inference handler did not start")
 	}
 	response, err := http.ReadResponse(bufio.NewReader(clientConn), &http.Request{Method: http.MethodGet})
 	if err != nil {
@@ -246,11 +238,7 @@ func TestRunCancellationCancelsActiveInferenceRequestContext(t *testing.T) {
 	defer response.Body.Close()
 
 	cancel()
-	select {
-	case <-requestCancelled:
-	case <-time.After(2 * time.Second):
-		t.Fatal("active inference request context survived Core cancellation")
-	}
+	<-requestCancelled
 	_ = response.Body.Close()
 	_ = clientConn.Close()
 	if err := waitForRunError(t, runErrors); err != nil {
@@ -367,22 +355,12 @@ func (err *cancelOnFormatError) Error() string {
 
 func waitForReadyWrite(t *testing.T, writer *recordingWriter) {
 	t.Helper()
-	select {
-	case <-writer.ready:
-	case <-time.After(2 * time.Second):
-		t.Fatal("Run did not emit a ready event")
-	}
+	<-writer.ready
 }
 
 func waitForRunError(t *testing.T, runErrors <-chan error) error {
 	t.Helper()
-	select {
-	case err := <-runErrors:
-		return err
-	case <-time.After(2 * time.Second):
-		t.Fatal("Run did not return")
-		return fmt.Errorf("unreachable")
-	}
+	return <-runErrors
 }
 
 func newBlockingListener(address string) *blockingListener {

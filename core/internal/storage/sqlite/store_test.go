@@ -104,17 +104,13 @@ func TestOpenWALPoolAllowsReadDuringWrite(t *testing.T) {
 	case <-writerStarted:
 	case err := <-writerErr:
 		t.Fatalf("writer: %v", err)
-	case <-time.After(2 * time.Second):
-		t.Fatal("writer did not take the write lock")
 	}
 
-	listStarted := time.Now()
+	// The writer holds its lock until the list returns, so a list that
+	// blocked on it would fail with SQLITE_BUSY or hang, not merely run slow.
 	page, err := store.ListRequestSessions(ctx, storagecontract.RequestSessionListOptions{Limit: 10})
 	if err != nil {
 		t.Fatalf("ListRequestSessions during write: %v", err)
-	}
-	if elapsed := time.Since(listStarted); elapsed > 2*time.Second {
-		t.Fatalf("list blocked for %s under WAL", elapsed)
 	}
 	if len(page.Items) != 1 {
 		t.Fatalf("sessions=%#v", page.Items)

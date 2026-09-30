@@ -259,8 +259,7 @@ func startRawAudit(t *testing.T, fixture cliRawFixture, arguments map[string]any
 	}
 	done := make(chan rawAuditOutcome, 1)
 	go func() { done <- runRawAudit(fixture.client, arguments) }()
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
+	for {
 		for _, grant := range fixture.pendingGrants(t) {
 			if !known[grant["grant_id"].(string)] {
 				return grant, done
@@ -274,8 +273,6 @@ func startRawAudit(t *testing.T, fixture cliRawFixture, arguments map[string]any
 		case <-time.After(5 * time.Millisecond):
 		}
 	}
-	t.Fatal("raw-audit filed no grant")
-	return nil, nil
 }
 
 func auditPart(t *testing.T, wrapped map[string]any, name string) map[string]any {

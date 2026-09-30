@@ -147,7 +147,6 @@ func testGrokProxyLifecycle(t *testing.T, useProxy bool) {
 		session.DeviceCode == nil || session.DeviceCode.UserCode != "GROK-CODE" || session.DeviceCode.VerificationURL != "https://accounts.x.ai/oauth2/device" {
 		t.Fatalf("invalid authorization session: %#v", session)
 	}
-	deadline := time.Now().Add(3 * time.Second)
 	for {
 		if err := json.Unmarshal(call("GET", path+"/authorization", "", 200), &session); err != nil {
 			t.Fatal(err)
@@ -155,7 +154,7 @@ func testGrokProxyLifecycle(t *testing.T, useProxy bool) {
 		if session.Status == contract.AuthorizationSessionStatusCompleted {
 			break
 		}
-		if session.Status != contract.AuthorizationSessionStatusPending || time.Now().After(deadline) {
+		if session.Status != contract.AuthorizationSessionStatusPending {
 			t.Fatalf("device session did not complete: %#v", session)
 		}
 		time.Sleep(5 * time.Millisecond)

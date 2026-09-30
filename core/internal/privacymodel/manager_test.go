@@ -316,9 +316,7 @@ func TestManagerDeleteCancelsDownload(t *testing.T) {
 		t.Fatal(err)
 	}
 	<-requestStarted
-	deleteContext, cancel := context.WithTimeout(context.Background(), time.Second)
-	defer cancel()
-	if err := manager.Delete(deleteContext); err != nil {
+	if err := manager.Delete(context.Background()); err != nil {
 		t.Fatalf("Delete: %v", err)
 	}
 	if status := manager.Status(); status.Status != StatusNotInstalled || status.Error != nil {

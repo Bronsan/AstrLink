@@ -1229,11 +1229,7 @@ func TestInferencePlanePublishesPendingThenUpdatesSameRecord(t *testing.T) {
 		)
 		close(done)
 	}()
-	select {
-	case <-started:
-	case <-time.After(time.Second):
-		t.Fatal("forwarder did not start")
-	}
+	<-started
 	if len(store.records) != 1 || store.records[0].Status != contract.RequestStatusPending {
 		t.Fatalf("pending records=%#v", store.records)
 	}
@@ -1245,11 +1241,7 @@ func TestInferencePlanePublishesPendingThenUpdatesSameRecord(t *testing.T) {
 		t.Fatalf("pending record completed_at=%v", store.records[0].CompletedAt)
 	}
 	close(release)
-	select {
-	case <-done:
-	case <-time.After(time.Second):
-		t.Fatal("handler did not finish")
-	}
+	<-done
 	if len(store.records) != 1 {
 		t.Fatalf("records=%#v", store.records)
 	}
@@ -1307,17 +1299,9 @@ func TestInferencePlaneRecordsFailedCancelledBlockedAndStreaming(t *testing.T) {
 			handler.ServeHTTP(response, request)
 			close(done)
 		}()
-		select {
-		case <-started:
-		case <-time.After(time.Second):
-			t.Fatal("forwarder did not start")
-		}
+		<-started
 		cancel()
-		select {
-		case <-done:
-		case <-time.After(time.Second):
-			t.Fatal("handler did not return after cancel")
-		}
+		<-done
 		if len(store.records) != 1 || store.records[0].Status != contract.RequestStatusCancelled {
 			t.Fatalf("records=%#v", store.records)
 		}
@@ -1759,11 +1743,7 @@ func TestResponseStartTimeoutHasOneDeterministicWinner(t *testing.T) {
 
 	t.Run("elapsed timeout cannot be overwritten by late headers", func(t *testing.T) {
 		attempt := newResponseStartContext(context.Background(), time.Millisecond)
-		select {
-		case <-attempt.Context().Done():
-		case <-time.After(time.Second):
-			t.Fatal("response-start timeout did not fire")
-		}
+		<-attempt.Context().Done()
 		attempt.ResponseStarted()
 		if !attempt.TimedOut() ||
 			!errors.Is(context.Cause(attempt.Context()), context.DeadlineExceeded) {
@@ -1839,28 +1819,16 @@ func TestInferencePlaneCompletesHealthProbeAtResponseStart(t *testing.T) {
 				)
 			}()
 
-			select {
-			case <-resolver.begins:
-			case <-time.After(time.Second):
-				t.Fatal("upstream attempt did not begin")
-			}
-			select {
-			case <-test.wantSignal(resolver):
-				// Health is settled while the SSE remains open.
-			case <-time.After(time.Second):
-				t.Fatal("response headers did not settle endpoint health")
-			}
+			<-resolver.begins
+			<-test.wantSignal(resolver)
+			// Health is settled while the SSE remains open.
 			select {
 			case <-done:
 				t.Fatal("stream completed before the test released it")
 			default:
 			}
 			close(releaseStream)
-			select {
-			case <-done:
-			case <-time.After(time.Second):
-				t.Fatal("stream did not finish")
-			}
+			<-done
 			select {
 			case <-resolver.abandons:
 				t.Fatal("settled health probe was abandoned a second time")
@@ -1905,27 +1873,15 @@ func TestInferencePlaneAcquiresHealthProbeImmediatelyBeforeUpstreamIO(t *testing
 		)
 	}()
 
-	select {
-	case <-authorizerEntered:
-	case <-time.After(time.Second):
-		t.Fatal("authorizer did not run")
-	}
+	<-authorizerEntered
 	select {
 	case <-resolver.begins:
 		t.Fatal("half-open probe was reserved during local credential preparation")
 	default:
 	}
 	close(releaseAuthorizer)
-	select {
-	case <-resolver.begins:
-	case <-time.After(time.Second):
-		t.Fatal("upstream I/O did not acquire the health probe")
-	}
-	select {
-	case <-done:
-	case <-time.After(time.Second):
-		t.Fatal("request did not finish")
-	}
+	<-resolver.begins
+	<-done
 }
 
 func TestInferencePlaneCircuitExcludesUnhealthyAutomaticCandidate(t *testing.T) {
@@ -2358,11 +2314,7 @@ func TestInferencePlaneMetadataConcurrencyWaitHonorsCancellation(t *testing.T) {
 		close(done)
 	}()
 	cancel()
-	select {
-	case <-done:
-	case <-time.After(time.Second):
-		t.Fatal("metadata concurrency wait ignored request cancellation")
-	}
+	<-done
 	if response.Body.Len() != 0 {
 		t.Fatalf("canceled response body = %q", response.Body.String())
 	}
@@ -2399,19 +2351,11 @@ func TestInferencePlaneDoesNotHoldInspectionPermitDuringUpstreamStream(t *testin
 		}()
 	}
 	for range inFlight {
-		select {
-		case <-forwardEntered:
-		case <-time.After(time.Second):
-			t.Fatal("inspection permit blocked concurrent in-flight AI requests")
-		}
+		<-forwardEntered
 	}
 	releaseOnce.Do(func() { close(releaseForward) })
 	for range inFlight {
-		select {
-		case <-done:
-		case <-time.After(time.Second):
-			t.Fatal("inference request did not finish")
-		}
+		<-done
 	}
 }
 

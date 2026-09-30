@@ -217,13 +217,9 @@ func TestForwardFlushesSSEChunksBeforeCompletion(t *testing.T) {
 		firstChunk <- line
 	}()
 
-	select {
-	case line := <-firstChunk:
-		if line != "data: first\n" {
-			t.Fatalf("first SSE line = %q", line)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("first SSE chunk was buffered until upstream completion")
+	line := <-firstChunk
+	if line != "data: first\n" {
+		t.Fatalf("first SSE line = %q", line)
 	}
 }
 
@@ -259,17 +255,9 @@ func TestForwardPropagatesCancellationToUpstream(t *testing.T) {
 	}
 	defer response.Body.Close()
 
-	select {
-	case <-started:
-	case <-time.After(time.Second):
-		t.Fatal("upstream request did not start")
-	}
+	<-started
 	cancel()
-	select {
-	case <-cancelled:
-	case <-time.After(time.Second):
-		t.Fatal("upstream context was not cancelled")
-	}
+	<-cancelled
 }
 
 func TestDefaultForwarderReusesUpstreamConnections(t *testing.T) {

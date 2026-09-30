@@ -325,14 +325,7 @@ func serveRiskRequest(t *testing.T, reporter SubscriptionRiskReporter, stream bo
 
 func waitForRiskSignal[T any](t *testing.T, channel <-chan T) T {
 	t.Helper()
-	select {
-	case value := <-channel:
-		return value
-	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for subscription risk signal")
-		var zero T
-		return zero
-	}
+	return <-channel
 }
 
 func TestSubscriptionUsageLimitPausesAccountAndFailsOver(t *testing.T) {

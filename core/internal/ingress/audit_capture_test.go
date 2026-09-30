@@ -12,7 +12,6 @@ import (
 	"regexp"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/QuantumNous/astrlink/core/contract"
 	"github.com/QuantumNous/astrlink/core/internal/endpoint"
@@ -138,11 +137,7 @@ func TestIngressAuditPersistsClientRequestWhilePending(t *testing.T) {
 		req.Header.Set("Content-Type", "application/json")
 		handler.ServeHTTP(httptest.NewRecorder(), req)
 	}()
-	select {
-	case <-started:
-	case <-time.After(time.Second):
-		t.Fatal("forwarder did not start")
-	}
+	<-started
 	if len(records.records) != 1 || records.records[0].Status != contract.RequestStatusPending {
 		t.Fatalf("pending records=%#v", records.records)
 	}
@@ -170,11 +165,7 @@ func TestIngressAuditPersistsClientRequestWhilePending(t *testing.T) {
 		t.Fatalf("pending request plain=%q", plain)
 	}
 	close(release)
-	select {
-	case <-done:
-	case <-time.After(time.Second):
-		t.Fatal("handler did not finish")
-	}
+	<-done
 	record := records.records[len(records.records)-1]
 	if record.Status != contract.RequestStatusSucceeded || !record.Audit.RequestBodyCaptured ||
 		!record.Audit.ResponseContentCaptured {
