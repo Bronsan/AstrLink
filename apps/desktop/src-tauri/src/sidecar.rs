@@ -2491,6 +2491,15 @@ impl CoreManager {
         Ok(value)
     }
 
+    /// Learned and built-in Codex and Claude Code identity versions.
+    pub async fn get_client_identities(&self) -> Result<serde_json::Value, String> {
+        let (_, body) = self
+            .authenticated_control(Method::GET, "/control/v1/client-identities", None, None)
+            .await?;
+        serde_json::from_slice(&body)
+            .map_err(|error| format!("client identities returned invalid JSON: {error}"))
+    }
+
     pub async fn get_audit_settings(&self) -> Result<serde_json::Value, String> {
         let (_, body) = self
             .authenticated_control(Method::GET, "/control/v1/audit-settings", None, None)

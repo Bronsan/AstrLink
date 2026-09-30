@@ -5,7 +5,9 @@ import {
 } from "./service-test-model";
 import { parseChannelBindingAudit } from "./channel-binding-model";
 import {
+  parseClientIdentities,
   parseRoutingSettings,
+  type ClientIdentities,
   type RoutingSettings,
 } from "./failure-policy-model";
 import { invoke as invokeCommand } from "@tauri-apps/api/core";
@@ -1078,6 +1080,10 @@ export async function updateRoutingSettings(
   return parseRoutingSettings(
     await invoke<unknown>("update_routing_settings", { patch }),
   );
+}
+export async function getClientIdentities(): Promise<ClientIdentities> {
+  requireNativeBridge();
+  return parseClientIdentities(await invoke<unknown>("get_client_identities"));
 }
 
 export async function builtinToolAction(

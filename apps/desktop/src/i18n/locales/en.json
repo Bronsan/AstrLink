@@ -2326,6 +2326,8 @@
       "claudeVersion": "Minimum Claude Code version",
       "claudeVersionHint": "A version newer than the current identity replaces the version in User-Agent; an older one never downgrades it.",
       "claudeVersionInvalid": "Enter a version such as 2.1.300.",
+      "learnedVersion": "Learned version {{version}}",
+      "notLearned": "Nothing learned yet; built-in version {{version}}",
       "versionPlaceholder": "Leave empty to use the learned or built-in version"
     },
     "retryTitle": "Retry limits and delays",

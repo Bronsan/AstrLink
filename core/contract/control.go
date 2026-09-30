@@ -32,6 +32,22 @@ type LocalDataStatus struct {
 	AuditKeyMissing bool `json:"audit_key_missing"`
 }
 
+// ClientIdentities reports the Codex and Claude Code identities AstrLink
+// supplies when it must provide one itself.
+type ClientIdentities struct {
+	Codex  ClientIdentityStatus `json:"codex"`
+	Claude ClientIdentityStatus `json:"claude"`
+}
+
+// ClientIdentityStatus pairs the version learned from official client
+// requests with the built-in version used until one is learned.
+type ClientIdentityStatus struct {
+	// LearnedVersion is empty until an official client request is learned. It
+	// is reported even while learning is off.
+	LearnedVersion string `json:"learned_version,omitempty"`
+	BuiltinVersion string `json:"builtin_version"`
+}
+
 type VersionResponse struct {
 	CoreVersion             string `json:"core_version"`
 	ControlAPIVersion       string `json:"control_api_version"`

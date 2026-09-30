@@ -1471,6 +1471,13 @@ async fn update_routing_settings(
 }
 
 #[tauri::command]
+async fn get_client_identities(
+    manager: State<'_, Arc<CoreManager>>,
+) -> Result<serde_json::Value, String> {
+    manager.get_client_identities().await
+}
+
+#[tauri::command]
 async fn get_audit_settings(
     manager: State<'_, Arc<CoreManager>>,
 ) -> Result<serde_json::Value, String> {
@@ -1910,6 +1917,7 @@ pub fn run() {
             builtin_tool_action,
             get_routing_settings,
             update_routing_settings,
+            get_client_identities,
             get_audit_settings,
             update_audit_settings,
             local_data_status,

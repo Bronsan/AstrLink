@@ -1,5 +1,6 @@
 import { Fragment, useEffect, useId, useState } from "react";
 
+import { getClientIdentities } from "./bridge";
 import { CapabilityToggle } from "./components/CapabilityToggle";
 import { DataRow } from "./components/DataRow";
 import { Field } from "./components/Field";
@@ -10,8 +11,10 @@ import {
   maxIdentityVersionLength,
   subscriptionProtectionKeys,
   validIdentityVersion,
+  type ClientIdentities,
   type IdentityLearningKey,
   type IdentityVersionKey,
+  type LearnedClient,
   type RoutingSettings,
 } from "./failure-policy-model";
 import { useT } from "./i18n";
@@ -27,7 +30,7 @@ const protectionLabels = {
 } as const;
 
 const learnedClients: readonly {
-  client: "codex" | "claude";
+  client: LearnedClient;
   learn: IdentityLearningKey;
   version: IdentityVersionKey;
 }[] = [
@@ -124,6 +127,29 @@ export function UpstreamIdentitySettings({
   onChange: (value: RoutingSettings) => void;
 }) {
   const t = useT();
+  const [identities, setIdentities] = useState<ClientIdentities | null>(null);
+  useEffect(() => {
+    let active = true;
+    // Only annotates the switches; they work without it.
+    void getClientIdentities().then(
+      (next) => {
+        if (active) setIdentities(next);
+      },
+      () => undefined,
+    );
+    return () => {
+      active = false;
+    };
+  }, []);
+  const learnedStatus = (client: LearnedClient) => {
+    const status = identities?.[client];
+    if (!status) return undefined;
+    return status.learned_version
+      ? t("routing.learning.learnedVersion", {
+          version: status.learned_version,
+        })
+      : t("routing.learning.notLearned", { version: status.builtin_version });
+  };
   return (
     <>
       <Panel data-testid="upstream-identity-settings">
@@ -187,6 +213,7 @@ export function UpstreamIdentitySettings({
                 checked={value[learn] ?? true}
                 label={t(`routing.learning.${client}`)}
                 description={t(`routing.learning.${client}Hint`)}
+                status={learnedStatus(client)}
                 onCheckedChange={(next) =>
                   onChange({ ...value, [learn]: next })
                 }

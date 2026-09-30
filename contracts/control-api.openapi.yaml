@@ -120,6 +120,7 @@ x-astrlink-implementation:
     - POST /control/v1/audit/raw-lock
     - POST /control/v1/audit/raw-verify
     - GET /control/v1/local-data
+    - GET /control/v1/client-identities
     - GET /control/v1/observers
     - GET /control/v1/audit-settings
     - PATCH /control/v1/audit-settings
@@ -2239,6 +2240,31 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "422":
           $ref: "#/components/responses/UnprocessableEntity"
+  /control/v1/client-identities:
+    x-astrlink-implementation-status: implemented
+    get:
+      x-astrlink-role: observer
+      tags: [Routes]
+      operationId: getClientIdentities
+      summary: Read the learned and built-in subscription client versions.
+      description: |
+        Reports the Codex and Claude Code versions learned from official client
+        requests next to the built-in versions used until one is learned. A
+        learned version is reported even while learning is switched off.
+      responses:
+        "200":
+          description: Learned and built-in client identity versions.
+          headers:
+            Cache-Control:
+              $ref: "#/components/headers/NoStore"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ClientIdentities"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
   /control/v1/audit-settings:
     x-astrlink-implementation-status: implemented
     get:
@@ -3997,6 +4023,28 @@ components:
         duration_ms: { type: integer, minimum: 0 }
         result_count: { type: integer, minimum: 0 }
         usage: { type: [object, "null"], additionalProperties: true }
+    ClientIdentities:
+      type: object
+      required: [codex, claude]
+      properties:
+        codex:
+          $ref: "#/components/schemas/ClientIdentityStatus"
+        claude:
+          $ref: "#/components/schemas/ClientIdentityStatus"
+      additionalProperties: false
+    ClientIdentityStatus:
+      type: object
+      required: [builtin_version]
+      properties:
+        learned_version:
+          type: string
+          maxLength: 64
+          description: Version learned from official client requests; absent until one is learned.
+        builtin_version:
+          type: string
+          maxLength: 64
+          description: Version of the built-in identity used until one is learned.
+      additionalProperties: false
     RoutingSettings:
       type: object
       required:

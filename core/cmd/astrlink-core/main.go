@@ -310,6 +310,7 @@ func main() {
 			AuditBlobs:         store,
 			RawVault:           rawVault,
 			LocalData:          store,
+			ClientIdentities:   identities,
 			Subscriptions:      subscriptionManager,
 			CodingPlans:        codingplan.New(store, nil),
 			ServiceModels:      servicemodel.New(store, subscriptionManager, nil),

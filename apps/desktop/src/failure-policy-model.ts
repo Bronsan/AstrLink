@@ -406,6 +406,44 @@ function parseModelRedirects(value: unknown): ModelRedirect[] {
   return redirects;
 }
 
+export type LearnedClient = "codex" | "claude";
+
+/** A client's version learned from official requests and its built-in one. */
+export interface ClientIdentityStatus {
+  /** Absent until an official request is learned, even while learning is off. */
+  learned_version?: string;
+  builtin_version: string;
+}
+
+export type ClientIdentities = Record<LearnedClient, ClientIdentityStatus>;
+
+export function parseClientIdentities(value: unknown): ClientIdentities {
+  const identities = object(value, "client_identities");
+  keys(identities, ["codex", "claude"], [], "client_identities");
+  const parse = (client: LearnedClient): ClientIdentityStatus => {
+    const path = `client_identities.${client}`;
+    const status = object(identities[client], path);
+    keys(status, ["builtin_version"], ["learned_version"], path);
+    for (const key of ["builtin_version", "learned_version"]) {
+      if (!Object.hasOwn(status, key)) continue;
+      const version = status[key];
+      if (
+        typeof version !== "string" ||
+        version === "" ||
+        !validIdentityVersion(`${client}_identity_version`, version)
+      )
+        throw Error(`${path}.${key}: invalid client version`);
+    }
+    return {
+      ...(status.learned_version === undefined
+        ? {}
+        : { learned_version: status.learned_version as string }),
+      builtin_version: status.builtin_version as string,
+    };
+  };
+  return { codex: parse("codex"), claude: parse("claude") };
+}
+
 export function parseRoutingSettings(value: unknown): RoutingSettings {
   const settings = object(value, "routing_settings");
   keys(

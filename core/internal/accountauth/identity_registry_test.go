@@ -347,6 +347,37 @@ func TestIdentityRegistryResolutionLayers(t *testing.T) {
 	}
 }
 
+func TestIdentityRegistryReportsLearnedAndBuiltinVersions(t *testing.T) {
+	builtin := contract.ClientIdentities{
+		Codex:  contract.ClientIdentityStatus{BuiltinVersion: DefaultCodexIdentity().Version},
+		Claude: contract.ClientIdentityStatus{BuiltinVersion: DefaultClaudeIdentity().Version},
+	}
+	var none *IdentityRegistry
+	if got := none.ClientIdentities(); got != builtin {
+		t.Fatalf("nil registry reported %+v", got)
+	}
+	registry := NewIdentityRegistry(nil, nil)
+	if got := registry.ClientIdentities(); got != builtin {
+		t.Fatalf("empty registry reported %+v", got)
+	}
+	ctx := context.Background()
+	if _, err := registry.LearnCodex(ctx, codexClientHeaders("0.160.0")); err != nil {
+		t.Fatal(err)
+	}
+	want := builtin
+	want.Codex.LearnedVersion = "0.160.0"
+	if got := registry.ClientIdentities(); got != want {
+		t.Fatalf("after learning Codex reported %+v", got)
+	}
+	if _, err := registry.LearnClaude(ctx, claudeClientHeaders("2.1.300")); err != nil {
+		t.Fatal(err)
+	}
+	want.Claude.LearnedVersion = "2.1.300"
+	if got := registry.ClientIdentities(); got != want {
+		t.Fatalf("after learning Claude reported %+v", got)
+	}
+}
+
 func TestNilIdentityRegistryResolvesBaselineWithFloor(t *testing.T) {
 	var registry *IdentityRegistry
 	settings := contract.DefaultRoutingSettings()

@@ -5,6 +5,7 @@ import {
   identitySettingKeys,
   identityVersionKeys,
   modelRedirectIssues,
+  parseClientIdentities,
   parseFailurePolicy,
   parseFailoverPolicy,
   parseRoutingSettings,
@@ -100,6 +101,27 @@ describe("failure policies", () => {
     expect(
       validIdentityVersion("codex_identity_version", "0.144.1-alpha"),
     ).toBe(true);
+  });
+  it("parses learned and built-in client identity versions", () => {
+    const identities = {
+      codex: { learned_version: "0.160.0", builtin_version: "0.155.1" },
+      claude: { builtin_version: "2.1.258" },
+    };
+    expect(parseClientIdentities(identities)).toEqual(identities);
+    for (const invalid of [
+      { ...identities, grok: { builtin_version: "1.0.0" } },
+      { codex: identities.codex },
+      { ...identities, claude: { builtin_version: "2.1.258", source: "x" } },
+      { ...identities, claude: {} },
+      { ...identities, claude: { builtin_version: "" } },
+      {
+        ...identities,
+        claude: { builtin_version: "2.1.258", learned_version: "" },
+      },
+      { ...identities, codex: { builtin_version: "v0.155.1" } },
+      { ...identities, codex: { builtin_version: 1 } },
+    ])
+      expect(() => parseClientIdentities(invalid)).toThrow();
   });
   it("preserves the optional thinking signature recovery switch", () => {
     for (const enabled of [false, true]) {

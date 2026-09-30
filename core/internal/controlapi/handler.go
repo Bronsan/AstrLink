@@ -59,8 +59,10 @@ type Dependencies struct {
 	// by the runtime; see RawVault.
 	RawVault RawVault
 	// LocalData reports saved data this device cannot decrypt. Optional.
-	LocalData     storage.LocalDataStore
-	Subscriptions *subscription.Manager
+	LocalData storage.LocalDataStore
+	// ClientIdentities reports learned client identity versions. Optional.
+	ClientIdentities ClientIdentityReporter
+	Subscriptions    *subscription.Manager
 	// CodingPlans reads first-party plan quotas for API-key coding plan
 	// services (Kimi, GLM, MiniMax, OpenCode Go). Optional.
 	CodingPlans      CodingPlanUsage
@@ -122,6 +124,7 @@ type Handler struct {
 	rawVault          RawVault
 	rawGrants         *rawGrantManager
 	localData         storage.LocalDataStore
+	clientIdentities  ClientIdentityReporter
 	subscriptions     *subscription.Manager
 	codingPlans       CodingPlanUsage
 	serviceModels     ServiceModelProber
@@ -171,6 +174,7 @@ func newHandler(version contract.VersionResponse, dependencies Dependencies) (*H
 	routingSettings, _ := dependencies.ServiceStore.(storage.RoutingSettingsStore)
 	handler := &Handler{
 		builtinToolTester: dependencies.BuiltinToolTester,
+		clientIdentities:  dependencies.ClientIdentities,
 		pricingStore:      dependencies.PricingStore, pricingManager: dependencies.PricingManager,
 		routingSettings: routingSettings,
 		version:         version,
@@ -259,6 +263,9 @@ func newHandler(version contract.VersionResponse, dependencies Dependencies) (*H
 	}
 	if handler.localData != nil {
 		handler.registerLocalDataRoutes()
+	}
+	if handler.clientIdentities != nil {
+		handler.registerClientIdentityRoutes()
 	}
 	handler.mux.HandleFunc("/", func(writer http.ResponseWriter, _ *http.Request) {
 		writeError(writer, http.StatusNotFound, "not_found", "control API path not found")

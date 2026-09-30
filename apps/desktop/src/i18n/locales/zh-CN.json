@@ -2326,6 +2326,8 @@
       "claudeVersion": "Claude Code 最低版本",
       "claudeVersionHint": "高于当前身份的版本时，替换 User-Agent 中的版本号；低于时不会降级。",
       "claudeVersionInvalid": "请输入形如 2.1.300 的版本号。",
+      "learnedVersion": "已学到版本 {{version}}",
+      "notLearned": "尚未学到，内置版本 {{version}}",
       "versionPlaceholder": "留空则使用已学习或内置版本"
     },
     "retryTitle": "重试次数与等待时间",

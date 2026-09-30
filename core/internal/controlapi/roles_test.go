@@ -11,6 +11,7 @@ import (
 
 	"github.com/QuantumNous/astrlink/core/contract"
 	"github.com/QuantumNous/astrlink/core/internal/accesstoken"
+	"github.com/QuantumNous/astrlink/core/internal/accountauth"
 	"github.com/QuantumNous/astrlink/core/internal/storage/sqlite"
 )
 
@@ -59,6 +60,7 @@ func newRoleMatrixHandler(t *testing.T) *Handler {
 		AuditKeys:          store,
 		AuditBlobs:         store,
 		LocalData:          store,
+		ClientIdentities:   accountauth.NewIdentityRegistry(store, store),
 		ControlToken:       testControlToken,
 		ObserverToken:      testObserverToken,
 		Shutdown:           func() {},
@@ -100,6 +102,7 @@ func TestControlRoleMatrix(t *testing.T) {
 		{http.MethodGet, AccessTokensPath, "", RoleObserver},
 		{http.MethodGet, ServiceOrderPath, "", RoleObserver},
 		{http.MethodGet, LocalDataPath, "", RoleObserver},
+		{http.MethodGet, ClientIdentitiesPath, "", RoleObserver},
 
 		{http.MethodGet, AccessTokensPath + "/tok_missing/secret", "", RoleOperator},
 		// The full view needs the operator role or an approved raw grant.

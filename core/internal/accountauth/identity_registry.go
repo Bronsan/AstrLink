@@ -122,6 +122,22 @@ func (registry *IdentityRegistry) CodexIdentityFor(ctx context.Context, baseline
 	return registry.CodexIdentity(registry.routingSettings(ctx), baselineVersion)
 }
 
+// ClientIdentities reports each learned client's learned and built-in
+// version, whatever the settings select.
+func (registry *IdentityRegistry) ClientIdentities() contract.ClientIdentities {
+	identities := contract.ClientIdentities{
+		Codex:  contract.ClientIdentityStatus{BuiltinVersion: DefaultCodexModelsClientVersion},
+		Claude: contract.ClientIdentityStatus{BuiltinVersion: claudeCLIVersion},
+	}
+	if learned, ok := registry.learnedIdentity(contract.SubscriptionProviderOpenAICodex); ok {
+		identities.Codex.LearnedVersion = learned.Version
+	}
+	if learned, ok := registry.learnedIdentity(contract.SubscriptionProviderClaudeCode); ok {
+		identities.Claude.LearnedVersion = learned.Version
+	}
+	return identities
+}
+
 // LearnClaude records the identity of a recognized official Claude Code
 // request. It reports whether the learned identity changed; an error means
 // the change could not be persisted and lasts until restart.
