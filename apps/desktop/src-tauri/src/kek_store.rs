@@ -4,6 +4,9 @@
 //! Everywhere else — Windows, Linux, ad-hoc signed and `make dev` builds — Core
 //! keeps `<data-dir>/local.key` itself.
 
+// The keychain flow runs only on macOS, but its tests run on every platform.
+#![cfg_attr(not(target_os = "macos"), allow(dead_code))]
+
 use std::{
     fs,
     io::{self, Read},
@@ -329,7 +332,10 @@ fn remove_key_file(path: &Path, log: &mut dyn FnMut(&str)) {
         }
         return;
     }
-    #[cfg(unix)]
+    // Windows cannot open a directory as a file to sync it.
+    if !cfg!(unix) {
+        return;
+    }
     if let Some(directory) = path.parent() {
         if let Err(error) = fs::File::open(directory).and_then(|directory| directory.sync_all()) {
             log(&format!(

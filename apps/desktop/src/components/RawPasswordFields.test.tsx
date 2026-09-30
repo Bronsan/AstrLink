@@ -66,16 +66,14 @@ describe("RawPasswordFields", () => {
 
     expect(password.type).toBe("password");
     expect(password.getAttribute("autocomplete")).toBe("new-password");
-    expect(hint().textContent).toBe("长度 8–20 个字符。");
+    expect(hint().textContent).toBe("8–20 个字符。");
 
     await type(password, "short pw");
-    expect(hint().textContent).toBe(
-      "长度 8–20 个字符。 建议 12 位以上或一句短语。",
-    );
+    expect(hint().textContent).toBe("8–20 个字符。 建议 12 位以上或一句短语。");
     expect(password.getAttribute("aria-invalid")).toBeNull();
 
     await type(password, "a longer phrase");
-    expect(hint().textContent).toBe("长度 8–20 个字符。");
+    expect(hint().textContent).toBe("8–20 个字符。");
 
     await type(confirmation, "a longer");
     expect(confirmation.getAttribute("aria-invalid")).toBeNull();
@@ -84,7 +82,7 @@ describe("RawPasswordFields", () => {
     expect(confirmation.getAttribute("aria-invalid")).toBe("true");
 
     await type(confirmation, "a longer phrase");
-    expect(hint().textContent).toBe("长度 8–20 个字符。");
+    expect(hint().textContent).toBe("8–20 个字符。");
   });
 
   it("flags a password over the maximum", async () => {
