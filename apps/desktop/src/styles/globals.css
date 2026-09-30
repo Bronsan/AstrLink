@@ -9,17 +9,18 @@
   initial-value: 0;
 }
 
-/* Animate only opacity and transform, never panel dimensions or spacing.
+/* Fade only, never panel transform, dimensions, or spacing. While a panel's
+ * transform animates, WKWebView draws the scrollers inside it a pixel off,
+ * and their content snaps back when the animation ends.
  * No fill mode or persistent will-change, so layers can be released afterward.
- * Inactive Radix panels have no exit animation and can unmount immediately. */
+ * Inactive Radix panels have no exit animation and can unmount immediately.
+ * Nested panels defer to the outer panel's reveal; see TabsContent. */
 @keyframes panel-reveal {
   from {
     opacity: 0;
-    transform: translateY(4px);
   }
   to {
     opacity: 1;
-    transform: none;
   }
 }
 

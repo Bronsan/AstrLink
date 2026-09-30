@@ -1506,6 +1506,13 @@ async fn copy_access_token(
 }
 
 #[tauri::command]
+async fn cc_switch_installed() -> Result<bool, String> {
+    tauri::async_runtime::spawn_blocking(cc_switch::installed)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
 async fn open_cc_switch_import(
     token_id: String,
     client: cc_switch::Client,
@@ -1762,6 +1769,7 @@ pub fn run() {
             get_usage_summary,
             create_access_token,
             copy_access_token,
+            cc_switch_installed,
             open_cc_switch_import,
             delete_access_token,
             list_privacy_policies,

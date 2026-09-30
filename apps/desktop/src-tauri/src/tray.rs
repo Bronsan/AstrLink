@@ -184,6 +184,8 @@ pub struct WindowDigest {
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct SubscriptionDigest {
     pub name: String,
+    /// Service kind, one of `SUBSCRIPTION_KINDS`; the panel draws its logo.
+    pub kind: String,
     pub windows: Vec<WindowDigest>,
 }
 
@@ -619,7 +621,11 @@ fn window_from(
 /// Every window a plan reports: the primary/secondary pair, then any named
 /// additional limits. Some plans (Kimi monthly, Claude per-model weekly caps)
 /// only have the latter, so dropping them hid those plans entirely.
-fn subscription_from(name: &str, usage: &serde_json::Value) -> Option<SubscriptionDigest> {
+fn subscription_from(
+    name: &str,
+    kind: &str,
+    usage: &serde_json::Value,
+) -> Option<SubscriptionDigest> {
     let mut windows = Vec::new();
     if let Some(window) = usage
         .get("primary")
@@ -656,11 +662,13 @@ fn subscription_from(name: &str, usage: &serde_json::Value) -> Option<Subscripti
     windows.truncate(MAX_WINDOWS_PER_SUBSCRIPTION);
     (!windows.is_empty()).then(|| SubscriptionDigest {
         name: name.to_string(),
+        kind: kind.to_string(),
         windows,
     })
 }
 
-fn subscription_services(services: &serde_json::Value) -> Vec<(String, String)> {
+/// `(id, name, kind)` of every plan-backed service.
+fn subscription_services(services: &serde_json::Value) -> Vec<(String, String, String)> {
     services
         .get("items")
         .and_then(|items| items.as_array())
@@ -669,16 +677,15 @@ fn subscription_services(services: &serde_json::Value) -> Vec<(String, String)> 
                 .iter()
                 // Disabled providers keep their plan; the quota is worth
                 // watching even while the gateway is not routing to them.
-                .filter(|service| {
-                    service
-                        .get("kind")
-                        .and_then(|kind| kind.as_str())
-                        .is_some_and(|kind| SUBSCRIPTION_KINDS.contains(&kind))
-                })
                 .filter_map(|service| {
+                    let kind = service.get("kind")?.as_str()?;
+                    if !SUBSCRIPTION_KINDS.contains(&kind) {
+                        return None;
+                    }
                     Some((
                         service.get("id")?.as_str()?.to_string(),
                         service.get("name")?.as_str()?.to_string(),
+                        kind.to_string(),
                     ))
                 })
                 .take(MAX_SUBSCRIPTION_SERVICES)
@@ -694,11 +701,11 @@ async fn collect_subscriptions(manager: &Arc<CoreManager>, fresh: bool) -> Vec<S
         return Vec::new();
     };
     let mut handles = Vec::new();
-    for (id, name) in subscription_services(&services) {
+    for (id, name, kind) in subscription_services(&services) {
         let manager = Arc::clone(manager);
         handles.push(tauri::async_runtime::spawn(async move {
             match manager.get_service_usage_with(&id, fresh).await {
-                Ok(usage) => subscription_from(&name, &usage),
+                Ok(usage) => subscription_from(&name, &kind, &usage),
                 Err(error) => {
                     // Visible in the dev log; the panel just omits the plan
                     // until the next refresh succeeds.
@@ -1839,6 +1846,7 @@ mod tests {
             month_tokens: None,
             subscriptions: vec![SubscriptionDigest {
                 name: "Codex".to_string(),
+                kind: "codex_subscription".to_string(),
                 windows: vec![WindowDigest {
                     label: None,
                     limit_window_seconds: Some(18_000),
@@ -2259,8 +2267,16 @@ mod tests {
         assert_eq!(
             subscription_services(&services),
             vec![
-                ("svc_codex".to_string(), "Codex".to_string()),
-                ("svc_off".to_string(), "Off".to_string())
+                (
+                    "svc_codex".to_string(),
+                    "Codex".to_string(),
+                    "codex_subscription".to_string()
+                ),
+                (
+                    "svc_off".to_string(),
+                    "Off".to_string(),
+                    "claude_subscription".to_string()
+                )
             ]
         );
 
@@ -2269,12 +2285,18 @@ mod tests {
             "primary": {"used_percent": 62.0, "limit_window_seconds": 18000, "reset_at": "2026-09-22T12:13:00Z"},
             "secondary": {"used_percent": 18.0, "limit_window_seconds": 604800}
         });
-        let digest = subscription_from("Codex", &usage).unwrap();
+        let digest = subscription_from("Codex", "codex_subscription", &usage).unwrap();
+        assert_eq!(digest.kind, "codex_subscription");
         assert_eq!(digest.windows.len(), 2);
         assert!(digest.windows[1].secondary);
         assert!(digest.windows[0].reset_at.is_some());
         assert!(digest.windows[0].label.is_none());
-        assert!(subscription_from("Codex", &serde_json::json!({"service_id": "x"})).is_none());
+        assert!(subscription_from(
+            "Codex",
+            "codex_subscription",
+            &serde_json::json!({"service_id": "x"})
+        )
+        .is_none());
 
         // Kimi-style plans report only a named monthly limit; Claude adds
         // per-model weekly caps next to its primary pair.
@@ -2285,7 +2307,7 @@ mod tests {
                  "primary": {"used_percent": 41.5, "limit_window_seconds": 2592000}}
             ]
         });
-        let digest = subscription_from("Kimi", &monthly_only).unwrap();
+        let digest = subscription_from("Kimi", "kimi_coding", &monthly_only).unwrap();
         assert_eq!(digest.windows.len(), 1);
         assert_eq!(digest.windows[0].label.as_deref(), Some("Monthly"));
         assert_eq!(digest.windows[0].used_percent, 41.5);
@@ -2300,7 +2322,7 @@ mod tests {
                 {"limit_name": "Extra usage", "secondary": {"used_percent": 5.0}}
             ]
         });
-        let digest = subscription_from("Claude", &claude).unwrap();
+        let digest = subscription_from("Claude", "claude_subscription", &claude).unwrap();
         let labels: Vec<Option<&str>> = digest
             .windows
             .iter()
@@ -2344,6 +2366,10 @@ mod tests {
         assert_eq!(
             value["digest"]["subscriptions"][0]["windows"][0]["used_percent"],
             62.0
+        );
+        assert_eq!(
+            value["digest"]["subscriptions"][0]["kind"],
+            "codex_subscription"
         );
         assert_eq!(value["tray"]["pages"][0], "records");
 

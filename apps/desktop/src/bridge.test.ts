@@ -67,6 +67,7 @@ import {
   listServiceRiskEvents,
   logoutService,
   openAuthorizationURL,
+  isCCSwitchInstalled,
   openCCSwitchImport,
   saveTextFile,
   getAgentDebugStatus,
@@ -761,6 +762,12 @@ describe("desktop bridge contract", () => {
     expect(invokeMock).toHaveBeenLastCalledWith("copy_access_token", {
       tokenId: "token_01",
     });
+
+    invokeMock.mockResolvedValueOnce(true);
+    await expect(isCCSwitchInstalled()).resolves.toBe(true);
+    expect(invokeMock).toHaveBeenLastCalledWith("cc_switch_installed");
+    invokeMock.mockResolvedValueOnce("yes");
+    await expect(isCCSwitchInstalled()).resolves.toBe(false);
 
     const ccSwitchInput = {
       tokenId: "token_01",

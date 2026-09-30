@@ -48,6 +48,7 @@ import {
   copyAccessToken,
   createAccessToken,
   deleteAccessToken,
+  isCCSwitchInstalled,
   listAccessTokenUsage,
 } from "./bridge";
 import type { AccessTokenSummary } from "./access-token-model";
@@ -152,6 +153,7 @@ export function AccessTokenManager({
   const [importToken, setImportToken] = useState<AccessTokenSummary | null>(
     null,
   );
+  const [ccSwitchInstalled, setCCSwitchInstalled] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [usageByToken, setUsageByToken] = useWorkspaceSnapshot<
     Record<string, TokenUsageStats>
@@ -180,6 +182,27 @@ export function AccessTokenManager({
   useEffect(() => {
     if (createOpen) nameInput.current?.focus();
   }, [createOpen]);
+
+  useEffect(() => {
+    let active = true;
+    const detect = () => {
+      isCCSwitchInstalled().then(
+        (installed) => {
+          if (active) setCCSwitchInstalled(installed);
+        },
+        () => {
+          if (active) setCCSwitchInstalled(false);
+        },
+      );
+    };
+    detect();
+    // CC Switch is installed or removed outside AstrLink; recheck on return.
+    window.addEventListener("focus", detect);
+    return () => {
+      active = false;
+      window.removeEventListener("focus", detect);
+    };
+  }, []);
 
   const refreshTokenUsage = useCallback(async () => {
     const generation = usageGeneration.current + 1;
@@ -651,30 +674,32 @@ export function AccessTokenManager({
                       />
                     </div>
                     <ActionGroup className="row-start-3 shrink-0 flex-nowrap gap-1 @[480px]/token-list:col-start-2 @[480px]/token-list:row-start-1 @[720px]/token-list:col-start-3">
-                      <Button
-                        size="sm"
-                        variant="ghost"
-                        disabled={
-                          !isReady ||
-                          catalog.status !== "ready" ||
-                          catalog.stale ||
-                          deletingID !== null ||
-                          !inferenceURL
-                        }
-                        onClick={() => setImportToken(token)}
-                        type="button"
-                        aria-label={t("ccSwitch.importToken", {
-                          name: token.name,
-                        })}
-                        title={t("ccSwitch.importToken", {
-                          name: token.name,
-                        })}
-                      >
-                        <CCSwitchIcon size={16} />
-                        <span className="@[720px]/token-list:sr-only @[800px]/token-list:not-sr-only">
-                          CC Switch
-                        </span>
-                      </Button>
+                      {ccSwitchInstalled ? (
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          disabled={
+                            !isReady ||
+                            catalog.status !== "ready" ||
+                            catalog.stale ||
+                            deletingID !== null ||
+                            !inferenceURL
+                          }
+                          onClick={() => setImportToken(token)}
+                          type="button"
+                          aria-label={t("ccSwitch.importToken", {
+                            name: token.name,
+                          })}
+                          title={t("ccSwitch.importToken", {
+                            name: token.name,
+                          })}
+                        >
+                          <CCSwitchIcon size={16} />
+                          <span className="@[720px]/token-list:sr-only @[800px]/token-list:not-sr-only">
+                            CC Switch
+                          </span>
+                        </Button>
+                      ) : null}
                       <Button
                         size="sm"
                         variant="ghost"

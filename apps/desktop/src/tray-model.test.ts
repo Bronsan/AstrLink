@@ -53,6 +53,7 @@ export const readyTrayState = {
     subscriptions: [
       {
         name: "Codex",
+        kind: "codex_subscription",
         windows: [
           {
             label: null,
@@ -201,8 +202,22 @@ describe("tray state IPC contract", () => {
       withDigest({ cost_today: { amount_usd: "0.83", unpriced: 0 } }),
     ).toThrow("$.digest.cost_today.amount_usd");
     expect(() =>
-      withDigest({ subscriptions: [{ name: "Codex", windows: [] }] }),
+      withDigest({
+        subscriptions: [
+          { name: "Codex", kind: "codex_subscription", windows: [] },
+        ],
+      }),
     ).toThrow("$.digest.subscriptions[0].windows");
+    expect(() =>
+      withDigest({
+        subscriptions: [
+          {
+            ...readyTrayState.digest.subscriptions[0],
+            kind: "openai",
+          },
+        ],
+      }),
+    ).toThrow("$.digest.subscriptions[0].kind");
     expect(() =>
       withDigest({
         last_request: {

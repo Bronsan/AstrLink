@@ -160,8 +160,12 @@ describe("TrayPopoverPanel", () => {
     expect(text).toContain("$0.83");
     expect(text).toContain("3 次失败");
     expect(text).toContain("claude-sonnet-4 · 62%");
-    expect(text).toContain("Codex · 5 小时");
-    expect(text).toContain("2 小时后重置");
+    expect(
+      document.querySelector(
+        '[role="progressbar"][aria-label="Codex · 5 小时"]',
+      ),
+    ).not.toBeNull();
+    expect(text).toContain("2 小时后");
     // Off by default.
     expect(text).not.toContain("Cursor");
     expect(text).not.toContain("比昨天");
@@ -282,6 +286,7 @@ describe("TrayPopoverPanel", () => {
   it("folds subscription windows past ten rows and expands on demand", async () => {
     const subscriptions = Array.from({ length: 6 }, (_, index) => ({
       name: `Plan ${index + 1}`,
+      kind: "minimax_coding",
       windows: [
         {
           label: null,
@@ -308,7 +313,6 @@ describe("TrayPopoverPanel", () => {
         '[data-slot="tray-subscriptions"] [data-slot="progress"]',
       ).length;
     expect(rows()).toBe(10);
-    expect(container.textContent).toContain("10/12");
     const toggle = [...document.querySelectorAll("button")].find(
       (button) => button.textContent?.trim() === "展开其余 2 条",
     );
@@ -316,7 +320,6 @@ describe("TrayPopoverPanel", () => {
     expect(toggle?.getAttribute("aria-expanded")).toBe("false");
     act(() => toggle?.click());
     expect(rows()).toBe(12);
-    expect(container.textContent).toContain("12/12");
     const collapse = [...document.querySelectorAll("button")].find(
       (button) => button.textContent?.trim() === "收起",
     );
@@ -334,7 +337,84 @@ describe("TrayPopoverPanel", () => {
     });
     expect(rows()).toBe(10);
     expect(container.textContent).not.toContain("展开其余");
-    expect(container.textContent).not.toContain("10/10");
+  });
+
+  it("groups windows under one plan header and names the columns once", async () => {
+    await render({
+      ...readyTrayState,
+      digest: {
+        ...readyTrayState.digest,
+        subscriptions: [
+          readyTrayState.digest.subscriptions[0],
+          {
+            name: "MiniMax Coding Plan",
+            kind: "minimax_coding",
+            windows: [
+              {
+                label: null,
+                limit_window_seconds: 18_000,
+                secondary: false,
+                used_percent: 0,
+                reset_at: "2026-09-22T11:00:00Z",
+              },
+              {
+                label: null,
+                limit_window_seconds: 604_800,
+                secondary: true,
+                used_percent: 100,
+                reset_at: "2026-09-26T10:00:00Z",
+              },
+            ],
+          },
+        ],
+      },
+    });
+    const list = document.querySelector('[data-slot="tray-subscriptions"]')!;
+    const text = list.textContent ?? "";
+    // The plan name and its logo head the group once, not every row.
+    expect(text.match(/MiniMax Coding Plan/g)).toHaveLength(1);
+    expect(
+      list.querySelector('[role="img"][aria-label="MiniMax Coding Plan"]'),
+    ).not.toBeNull();
+    // The mode and the reset verb live in the column headers.
+    expect(text).toContain("剩余");
+    expect(text).toContain("重置");
+    expect(text).not.toContain("剩余 ");
+    expect(text).not.toContain("后重置");
+    const captions = (row: HTMLElement) => row.lastElementChild?.textContent;
+    const rows = [...list.querySelectorAll<HTMLElement>("[title]")].filter(
+      (row) => row.querySelector('[role="progressbar"]'),
+    );
+    expect(rows.map((row) => row.title)).toEqual([
+      "Codex · 5 小时 · 剩余 38% · 2 小时后重置",
+      "Codex · 7 天 · 剩余 82%",
+      "MiniMax Coding Plan · 5 小时 · 剩余 100% · 59 分钟后重置",
+      "MiniMax Coding Plan · 7 天 · 剩余 0% · 4 天后重置 · 额度已用尽",
+    ]);
+    // Every row fills the reset column; an unknown reset reads as a dash.
+    expect(rows.map(captions)).toEqual([
+      "2 小时后",
+      "—",
+      "59 分钟后",
+      "4 天后",
+    ]);
+
+    // No reset anywhere: the column and its header disappear.
+    await render({
+      ...readyTrayState,
+      digest: {
+        ...readyTrayState.digest,
+        subscriptions: [
+          {
+            ...readyTrayState.digest.subscriptions[0],
+            windows: [readyTrayState.digest.subscriptions[0].windows[1]],
+          },
+        ],
+      },
+    });
+    expect(
+      document.querySelector('[data-slot="tray-subscriptions"]')?.textContent,
+    ).not.toContain("重置");
   });
 
   it("labels provider-named limits and lists disabled plans too", async () => {
@@ -345,6 +425,7 @@ describe("TrayPopoverPanel", () => {
         subscriptions: [
           {
             name: "Kimi",
+            kind: "kimi_coding",
             windows: [
               {
                 label: "Monthly",
@@ -358,8 +439,12 @@ describe("TrayPopoverPanel", () => {
         ],
       },
     });
-    expect(container.textContent).toContain("Kimi · Monthly");
-    expect(container.textContent).toContain("剩余 59%");
+    const meter = container.querySelector(
+      '[role="progressbar"][aria-label="Kimi · Monthly"]',
+    );
+    expect(meter?.getAttribute("aria-valuetext")).toBe("剩余 59%");
+    expect(container.textContent).toContain("Monthly");
+    expect(container.textContent).toContain("59%");
   });
 
   it("flags an agent reading records through the CLI", async () => {

@@ -108,6 +108,90 @@ fn import_url(
     Ok(url)
 }
 
+/// Whether the OS has an app registered for CC Switch's import links.
+#[cfg(target_os = "macos")]
+pub fn installed() -> bool {
+    use core_foundation::{
+        base::{kCFAllocatorDefault, TCFType},
+        error::CFErrorRef,
+        string::CFString,
+        url::{CFURLCreateWithString, CFURLRef, CFURL},
+    };
+    use std::ptr;
+
+    #[link(name = "CoreServices", kind = "framework")]
+    extern "C" {
+        fn LSCopyDefaultApplicationURLForURL(
+            url: CFURLRef,
+            roles: u32,
+            error: *mut CFErrorRef,
+        ) -> CFURLRef;
+    }
+    const LS_ROLES_ALL: u32 = u32::MAX;
+
+    let link = CFString::from_static_string("ccswitch://v1/import");
+    // SAFETY: `link` outlives the call; a non-null result follows the create rule.
+    let url = unsafe {
+        CFURLCreateWithString(kCFAllocatorDefault, link.as_concrete_TypeRef(), ptr::null())
+    };
+    if url.is_null() {
+        return false;
+    }
+    let url = unsafe { CFURL::wrap_under_create_rule(url) };
+    // SAFETY: `url` outlives the call; a non-null result follows the copy rule.
+    let app = unsafe {
+        LSCopyDefaultApplicationURLForURL(url.as_concrete_TypeRef(), LS_ROLES_ALL, ptr::null_mut())
+    };
+    if app.is_null() {
+        return false;
+    }
+    let app = unsafe { CFURL::wrap_under_create_rule(app) };
+    // Launch Services can keep a record briefly after the app is deleted.
+    app.to_path().is_some_and(|path| path.exists())
+}
+
+#[cfg(windows)]
+pub fn installed() -> bool {
+    use std::ptr;
+    use windows_sys::Win32::{
+        Foundation::ERROR_SUCCESS,
+        System::Registry::{
+            RegGetValueW, HKEY_CLASSES_ROOT, RRF_NOEXPAND, RRF_RT_REG_EXPAND_SZ, RRF_RT_REG_SZ,
+        },
+    };
+
+    let key: Vec<u16> = "ccswitch\\shell\\open\\command"
+        .encode_utf16()
+        .chain([0])
+        .collect();
+    let mut size = 0u32;
+    // SAFETY: `key` is NUL-terminated and outlives the call; a null value name
+    // reads the default value and a null data pointer only queries its size.
+    let status = unsafe {
+        RegGetValueW(
+            HKEY_CLASSES_ROOT,
+            key.as_ptr(),
+            ptr::null(),
+            RRF_RT_REG_SZ | RRF_RT_REG_EXPAND_SZ | RRF_NOEXPAND,
+            ptr::null_mut(),
+            ptr::null_mut(),
+            &mut size,
+        )
+    };
+    // An empty command is a lone UTF-16 NUL.
+    status == ERROR_SUCCESS && size > 2
+}
+
+#[cfg(target_os = "linux")]
+pub fn installed() -> bool {
+    gtk::gio::AppInfo::default_for_uri_scheme("ccswitch").is_some()
+}
+
+#[cfg(not(any(target_os = "macos", windows, target_os = "linux")))]
+pub fn installed() -> bool {
+    false
+}
+
 pub async fn open_import(
     manager: &CoreManager,
     token_id: &str,

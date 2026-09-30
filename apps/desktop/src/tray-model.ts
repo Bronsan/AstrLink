@@ -3,6 +3,7 @@ import {
   parseTrayPreferences,
   type TrayPreferences,
 } from "./preferences-model";
+import type { ServiceKind } from "./service-model";
 
 /**
  * What the tray popover renders. Mirrors `TrayStateSnapshot` in
@@ -94,8 +95,20 @@ export interface TrayWindow {
 
 export interface TraySubscription {
   name: string;
+  kind: ServiceKind;
   windows: TrayWindow[];
 }
+
+/** Plan-backed kinds the host lists; mirrors `SUBSCRIPTION_KINDS` in `tray.rs`. */
+const subscriptionKinds = new Set<ServiceKind>([
+  "codex_subscription",
+  "claude_subscription",
+  "grok_subscription",
+  "kimi_coding",
+  "glm_coding",
+  "minimax_coding",
+  "opencode_go",
+]);
 
 export interface TrayUsageDigest {
   today: TrayUsageTotals | null;
@@ -434,7 +447,13 @@ function parseDigest(value: unknown, path: string): TrayUsageDigest {
     (raw, index) => {
       const subscriptionPath = `${path}.subscriptions[${index}]`;
       const object = objectAt(raw, subscriptionPath);
-      exactKeys(object, ["name", "windows"], subscriptionPath);
+      exactKeys(object, ["name", "kind", "windows"], subscriptionPath);
+      if (
+        typeof object.kind !== "string" ||
+        !subscriptionKinds.has(object.kind as ServiceKind)
+      ) {
+        invalid(`${subscriptionPath}.kind`, "unknown subscription kind");
+      }
       if (
         !Array.isArray(object.windows) ||
         object.windows.length === 0 ||
@@ -444,6 +463,7 @@ function parseDigest(value: unknown, path: string): TrayUsageDigest {
       }
       return {
         name: stringAt(object.name, `${subscriptionPath}.name`, 256),
+        kind: object.kind as ServiceKind,
         windows: (object.windows as unknown[]).map((rawWindow, windowIndex) => {
           const windowPath = `${subscriptionPath}.windows[${windowIndex}]`;
           const window = objectAt(rawWindow, windowPath);

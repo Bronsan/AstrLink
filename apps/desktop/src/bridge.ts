@@ -785,6 +785,12 @@ export interface CCSwitchModels {
   opusModel?: string;
 }
 
+/** Whether the OS has an app registered for CC Switch's import links. */
+export async function isCCSwitchInstalled(): Promise<boolean> {
+  if (!hasNativeBridge()) return false;
+  return (await invoke<unknown>("cc_switch_installed")) === true;
+}
+
 export async function openCCSwitchImport(input: {
   tokenId: string;
   client: CCSwitchClient;

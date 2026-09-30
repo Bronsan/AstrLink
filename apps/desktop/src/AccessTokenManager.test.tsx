@@ -9,6 +9,7 @@ const bridgeMocks = vi.hoisted(() => ({
   deleteAccessToken: vi.fn(),
   listAccessTokenUsage: vi.fn(),
   copyAccessToken: vi.fn(),
+  isCCSwitchInstalled: vi.fn(),
   openCCSwitchImport: vi.fn(),
   listServices: vi.fn(),
   getRoutingSettings: vi.fn(),
@@ -102,6 +103,7 @@ describe("AccessTokenManager", () => {
       value: { writeText: vi.fn().mockResolvedValue(undefined) },
     });
     bridgeMocks.listAccessTokenUsage.mockResolvedValue({ items: [] });
+    bridgeMocks.isCCSwitchInstalled.mockResolvedValue(true);
     bridgeMocks.listServices.mockResolvedValue({ items: [] });
     bridgeMocks.getRoutingSettings.mockResolvedValue({ model_redirects: [] });
     container = document.createElement("div");
@@ -176,6 +178,27 @@ describe("AccessTokenManager", () => {
     });
     expect(container.textContent).toContain("无法自动复制，请手动选择令牌。");
     expect(button("复制", row(firstToken.name)).disabled).toBe(false);
+  });
+
+  it("offers CC Switch only while the app is installed", async () => {
+    bridgeMocks.isCCSwitchInstalled.mockResolvedValue(false);
+    await renderManager(readyCatalog([firstToken]));
+    expect(row(firstToken.name).textContent).not.toContain("CC Switch");
+    expect(button("复制", row(firstToken.name))).toBeTruthy();
+
+    bridgeMocks.isCCSwitchInstalled.mockResolvedValue(true);
+    await act(async () => {
+      window.dispatchEvent(new Event("focus"));
+      await Promise.resolve();
+    });
+    expect(button("CC Switch", row(firstToken.name))).toBeTruthy();
+
+    bridgeMocks.isCCSwitchInstalled.mockRejectedValue(new Error("failed"));
+    await act(async () => {
+      window.dispatchEvent(new Event("focus"));
+      await Promise.resolve();
+    });
+    expect(row(firstToken.name).textContent).not.toContain("CC Switch");
   });
 
   it("fills CC Switch with the selected token and edited model without revealing its secret", async () => {
@@ -327,7 +350,12 @@ describe("AccessTokenManager", () => {
         .filter(([, mock]) => mock.mock.calls.length > 0)
         .map(([name]) => name)
         .sort(),
-    ).toEqual(["getRoutingSettings", "listAccessTokenUsage", "listServices"]);
+    ).toEqual([
+      "getRoutingSettings",
+      "isCCSwitchInstalled",
+      "listAccessTokenUsage",
+      "listServices",
+    ]);
     for (const [client, expected] of [
       ["Claude Code", ["model-0"]],
       ["Codex", ["model-1"]],

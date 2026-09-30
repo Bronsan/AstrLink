@@ -171,6 +171,13 @@ describe("subscription usage contract", () => {
     expect(
       formatResetCountdown({ used_percent: 34, reset_after_seconds: 45 }, now),
     ).toBe("即将重置");
+    expect(
+      formatResetCountdown(
+        { used_percent: 34, reset_at: "2026-09-03T11:00:00Z" },
+        now,
+        { short: true },
+      ),
+    ).toBe("4 天后");
   });
 
   it("extracts the control error from a sidecar failure", () => {

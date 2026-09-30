@@ -453,9 +453,11 @@ export function windowLabel(
     : i18n.t("usage.rollingLimit");
 }
 
+/** `short` drops the verb for a column already headed "resets". */
 export function formatResetCountdown(
   window: RateLimitWindow,
   now: Date,
+  { short = false }: { short?: boolean } = {},
 ): string | null {
   let target: Date | null = null;
   if (window.reset_at) {
@@ -465,14 +467,15 @@ export function formatResetCountdown(
     target = new Date(now.getTime() + window.reset_after_seconds * 1000);
   }
   if (!target) return null;
+  const key = (name: string) => `usage.${name}${short ? "Short" : ""}`;
   const deltaMs = Math.max(0, target.getTime() - now.getTime());
   const minutes = Math.floor(deltaMs / 60_000);
-  if (minutes < 1) return i18n.t("usage.resetSoon");
-  if (minutes < 60) return i18n.t("usage.resetInMinutes", { count: minutes });
+  if (minutes < 1) return i18n.t(key("resetSoon"));
+  if (minutes < 60) return i18n.t(key("resetInMinutes"), { count: minutes });
   const hours = Math.floor(minutes / 60);
-  if (hours < 24) return i18n.t("usage.resetInHours", { count: hours });
+  if (hours < 24) return i18n.t(key("resetInHours"), { count: hours });
   const days = Math.round(hours / 24);
-  return i18n.t("usage.resetInDays", { count: days });
+  return i18n.t(key("resetInDays"), { count: days });
 }
 
 export function formatQuotaExpiry(quota: UsageQuota, now: Date): string | null {

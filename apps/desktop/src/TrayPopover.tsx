@@ -1,4 +1,11 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  Fragment,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { listen } from "@tauri-apps/api/event";
 
 import {
@@ -13,8 +20,10 @@ import {
 } from "@/components/icons";
 import { IconButton } from "@/components/IconButton";
 import { SectionKicker } from "@/components/SectionKicker";
+import { ServiceKindIcon } from "@/components/ServiceKindIcon";
 import { StatusDot, type StatusTone } from "@/components/StatusDot";
 import { SubscriptionQuotaMeter } from "@/components/SubscriptionQuotaMeter";
+import { UsageMeterGrid } from "@/components/UsageMeter";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -30,6 +39,7 @@ import {
 import type { CorePhase } from "./core-model";
 import { i18n, useT } from "./i18n";
 import type { TrayPreferences } from "./preferences-model";
+import { useQuotaDisplayMode } from "./quota-display";
 import type { RawAccessGrant } from "./raw-access-model";
 import { formatResetCountdown, windowLabel } from "./subscription-usage-model";
 import {
@@ -41,6 +51,7 @@ import {
   type TrayAction,
   type TrayRawKeyEventKind,
   type TrayState,
+  type TraySubscription,
 } from "./tray-model";
 import { TRAY_POPOVER_WIDTH, TRAY_STATE_EVENT } from "./tray-popover-window";
 
@@ -104,6 +115,58 @@ function rawKeyEventKey(kind: TrayRawKeyEventKind): string {
 
 function formatLatency(ms: number): string {
   return ms >= 1000 ? `${(ms / 1000).toFixed(1)} s` : `${ms} ms`;
+}
+
+interface SubscriptionGroup {
+  key: string;
+  name: string;
+  kind: TraySubscription["kind"];
+  rows: Array<{
+    key: string;
+    label: string;
+    usedPercent: number;
+    reset: string | null;
+    resetDetail: string | null;
+  }>;
+}
+
+/** Plans with their windows, cut off after `limit` windows in total. */
+function subscriptionGroups(
+  subscriptions: TraySubscription[],
+  limit: number,
+  now: Date,
+): SubscriptionGroup[] {
+  let budget = limit;
+  const groups: SubscriptionGroup[] = [];
+  subscriptions.forEach((subscription, index) => {
+    if (budget <= 0) return;
+    const windows = subscription.windows.slice(0, budget);
+    budget -= windows.length;
+    groups.push({
+      key: `${index}`,
+      name: subscription.name,
+      kind: subscription.kind,
+      rows: windows.map((window, windowIndex) => {
+        const countdown = {
+          used_percent: window.used_percent,
+          reset_at: window.reset_at ?? undefined,
+        };
+        return {
+          key: `${windowIndex}`,
+          label:
+            window.label ??
+            windowLabel(
+              window.limit_window_seconds ?? undefined,
+              window.secondary,
+            ),
+          usedPercent: window.used_percent,
+          reset: formatResetCountdown(countdown, now, { short: true }),
+          resetDetail: formatResetCountdown(countdown, now),
+        };
+      }),
+    });
+  });
+  return groups;
 }
 
 /** 24 bars, one per local hour; the current hour is emphasised. */
@@ -236,6 +299,7 @@ export function TrayPopoverPanel({
   className?: string;
 }) {
   const t = useT();
+  const quotaMode = useQuotaDisplayMode();
   const [subscriptionsExpanded, setSubscriptionsExpanded] = useState(false);
   const view = state?.view ?? null;
   const phase: CorePhase = view?.phase ?? "unavailable";
@@ -335,22 +399,24 @@ export function TrayPopoverPanel({
   }
 
   const showToday = usage.today || usage.cost;
-  const subscriptionRows =
-    usage.subscription_windows && digest
-      ? digest.subscriptions.flatMap((subscription) =>
-          subscription.windows.map((window, index) => ({
-            key: `${subscription.name}-${index}`,
-            name: subscription.name,
-            window,
-          })),
-        )
-      : [];
+  const subscriptions =
+    usage.subscription_windows && digest ? digest.subscriptions : [];
+  const subscriptionWindowCount = subscriptions.reduce(
+    (count, subscription) => count + subscription.windows.length,
+    0,
+  );
   const subscriptionsFoldable =
-    subscriptionRows.length > SUBSCRIPTION_FOLD_LIMIT;
-  const visibleSubscriptionRows =
+    subscriptionWindowCount > SUBSCRIPTION_FOLD_LIMIT;
+  const visibleSubscriptions = subscriptionGroups(
+    subscriptions,
     subscriptionsFoldable && !subscriptionsExpanded
-      ? subscriptionRows.slice(0, SUBSCRIPTION_FOLD_LIMIT)
-      : subscriptionRows;
+      ? SUBSCRIPTION_FOLD_LIMIT
+      : subscriptionWindowCount,
+    now,
+  );
+  const showResetColumn = visibleSubscriptions.some((group) =>
+    group.rows.some((row) => row.reset),
+  );
   const digestAt =
     state?.digest_age_ms != null
       ? new Date(now.getTime() - state.digest_age_ms)
@@ -577,37 +643,65 @@ export function TrayPopoverPanel({
             </div>
           ) : null}
 
-          {subscriptionRows.length > 0 ? (
+          {subscriptions.length > 0 ? (
             <div
               className={cn(
-                "grid gap-3",
+                "grid gap-1.5",
                 (showToday || chips.length > 0) && "border-t pt-4",
               )}
             >
-              <div className="flex items-center justify-between gap-2">
-                <SectionKicker>{t("tray.subscriptions")}</SectionKicker>
-                {subscriptionsFoldable ? (
-                  <span className="text-micro text-muted-foreground tabular-nums">
-                    {visibleSubscriptionRows.length}/{subscriptionRows.length}
-                  </span>
-                ) : null}
-              </div>
-              <div className="grid gap-4" data-slot="tray-subscriptions">
-                {visibleSubscriptionRows.map(({ key, name, window }) => (
-                  <SubscriptionQuotaMeter
-                    key={key}
-                    caption={formatResetCountdown(
-                      {
-                        used_percent: window.used_percent,
-                        reset_at: window.reset_at ?? undefined,
-                      },
-                      now,
+              {/* One grid, so the bars, percents and resets line up across plans. */}
+              <UsageMeterGrid
+                captions={showResetColumn}
+                className="gap-y-0.5"
+                data-slot="tray-subscriptions"
+              >
+                <div className="col-span-full mb-1.5 grid grid-cols-subgrid items-center">
+                  <SectionKicker className="col-span-2">
+                    {t("tray.subscriptions")}
+                  </SectionKicker>
+                  <SectionKicker className="text-right">
+                    {t(
+                      quotaMode === "remaining"
+                        ? "tray.quotaRemainingColumn"
+                        : "tray.quotaUsedColumn",
                     )}
-                    label={`${name} · ${window.label ?? windowLabel(window.limit_window_seconds ?? undefined, window.secondary)}`}
-                    usedPercent={window.used_percent}
-                  />
+                  </SectionKicker>
+                  {showResetColumn ? (
+                    <SectionKicker className="text-right">
+                      {t("tray.quotaResetColumn")}
+                    </SectionKicker>
+                  ) : null}
+                </div>
+                {visibleSubscriptions.map((group, index) => (
+                  <Fragment key={group.key}>
+                    <div
+                      className={cn(
+                        "col-span-full flex min-w-0 items-center gap-1.5 text-xs font-medium",
+                        index > 0 && "mt-2",
+                      )}
+                    >
+                      <ServiceKindIcon kind={group.kind} size={14} />
+                      <span className="min-w-0 truncate" title={group.name}>
+                        {group.name}
+                      </span>
+                    </div>
+                    {group.rows.map((row) => (
+                      <SubscriptionQuotaMeter
+                        key={row.key}
+                        accessibleLabel={`${group.name} · ${row.label}`}
+                        // A dash keeps the column filled where no reset is known.
+                        caption={showResetColumn ? (row.reset ?? "—") : null}
+                        captionDetail={row.resetDetail}
+                        className="pl-5"
+                        label={row.label}
+                        layout="row"
+                        usedPercent={row.usedPercent}
+                      />
+                    ))}
+                  </Fragment>
                 ))}
-              </div>
+              </UsageMeterGrid>
               {subscriptionsFoldable ? (
                 <Button
                   aria-expanded={subscriptionsExpanded}
@@ -623,7 +717,7 @@ export function TrayPopoverPanel({
                     ? t("tray.showLessSubscriptions")
                     : t("tray.showMoreSubscriptions", {
                         count:
-                          subscriptionRows.length - SUBSCRIPTION_FOLD_LIMIT,
+                          subscriptionWindowCount - SUBSCRIPTION_FOLD_LIMIT,
                       })}
                 </Button>
               ) : null}
