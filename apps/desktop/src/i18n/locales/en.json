@@ -1525,6 +1525,13 @@
     "memoryInline": "Memory {{size}}",
     "viewStatus": "View {{status}}",
     "catalogEmpty": "No models are available in the catalog.",
+    "modelSummaries": {
+      "QuantumNous/astrlink-pii-tracer-int4": "PII-Tracer adapted by AstrLink with INT4 weights and calibrated error correction. Detects personal information and credentials locally.",
+      "lemonade-sdk/pplx-pii-masking-onnx": "Multilingual privacy span detector from Perplexity, using the Lemonade CPU export. Includes personal information and credentials.",
+      "sheltron-ai/privacy-filter-ettin-32m": "Compact English privacy token classifier for local CPU inference.",
+      "Wismut/nym-pii-multilingual-small": "Multilingual and CJK-capable local PII token classifier.",
+      "openai/privacy-filter": "Official OpenAI privacy token classifier with BIOES/Viterbi decoding."
+    },
     "progressAria": "{{name}} {{action}} progress",
     "diskAndRam": "Disk {{disk}} · estimated memory {{ram}}",
     "labelMappingCount": "Label mapping · {{count}} items",

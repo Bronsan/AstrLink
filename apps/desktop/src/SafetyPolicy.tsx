@@ -3697,7 +3697,9 @@ export function SafetyPolicy({
                               </div>
                             </div>
                             <p className="text-xs leading-relaxed text-text-secondary">
-                              {model.summary}
+                              {t(`safety.modelSummaries.${model.repo_id}`, {
+                                defaultValue: model.summary,
+                              })}
                             </p>
                             <Field
                               className="mt-auto"

@@ -1525,6 +1525,13 @@
     "memoryInline": "内存 {{size}}",
     "viewStatus": "查看{{status}}",
     "catalogEmpty": "目录中暂无可用模型。",
+    "modelSummaries": {
+      "QuantumNous/astrlink-pii-tracer-int4": "由 AstrLink 适配的 PII-Tracer，采用 INT4 量化权重与经校准的纠错机制，在本地检测个人信息和凭据。",
+      "lemonade-sdk/pplx-pii-masking-onnx": "Perplexity 的多语言隐私信息检测模型，使用 Lemonade 导出的 CPU 版本，可识别个人信息和凭据。",
+      "sheltron-ai/privacy-filter-ettin-32m": "轻量级英文隐私信息分类模型，支持本地 CPU 推理。",
+      "Wismut/nym-pii-multilingual-small": "在本地检测个人信息的多语言分类模型，支持中文、日文和韩文。",
+      "openai/privacy-filter": "OpenAI 官方隐私信息分类模型，采用 BIOES 标注与 Viterbi 解码。"
+    },
     "progressAria": "{{name}} {{action}}进度",
     "diskAndRam": "磁盘 {{disk}} · 预计内存 {{ram}}",
     "labelMappingCount": "标签映射 · {{count}} 项",
