@@ -1,10 +1,11 @@
-package providerapi
+package providerapi_test
 
 import (
 	"net/url"
 	"testing"
 
 	"github.com/QuantumNous/astrlink/core/contract"
+	"github.com/QuantumNous/astrlink/core/internal/providerapi"
 	"github.com/QuantumNous/astrlink/core/internal/transport"
 )
 
@@ -26,7 +27,7 @@ func TestProviderSurfacePreservesOriginPrefixAndInput(t *testing.T) {
 				t.Fatal(err)
 			}
 			incoming, _ := url.Parse("/v1/messages?trace=a%2Fb")
-			target := transport.JoinTargetURL(BaseURL(tt.kind, contract.ProtocolAnthropicMessages, base), RequestURL(tt.kind, contract.ProtocolAnthropicMessages, incoming))
+			target := transport.JoinTargetURL(providerapi.BaseURL(tt.kind, contract.ProtocolAnthropicMessages, base), providerapi.RequestURL(tt.kind, contract.ProtocolAnthropicMessages, incoming))
 			if target.String() != tt.want {
 				t.Fatalf("target = %s, want %s", target, tt.want)
 			}
@@ -44,12 +45,12 @@ func TestProviderAuthPreservesExplicitOverridesAndOtherProtocols(t *testing.T) {
 			{Scheme: contract.AuthSchemeCustomHeader, HeaderName: "X-Provider-Key"},
 			{Scheme: contract.AuthSchemeAnthropicAPIKey},
 		} {
-			if got := Auth(kind, contract.ProtocolAnthropicMessages, configured); got != configured {
+			if got := providerapi.Auth(kind, contract.ProtocolAnthropicMessages, configured); got != configured {
 				t.Fatalf("overrode explicit auth: %#v", got)
 			}
 		}
 		configured := contract.ServiceAuth{Scheme: contract.AuthSchemeBearer}
-		if got := Auth(kind, contract.ProtocolOpenAIChat, configured); got != configured {
+		if got := providerapi.Auth(kind, contract.ProtocolOpenAIChat, configured); got != configured {
 			t.Fatalf("overrode Chat auth: %#v", got)
 		}
 	}
@@ -97,7 +98,7 @@ func TestCodingPlanSurfacesAcceptSavedAndDocumentedBases(t *testing.T) {
 					t.Fatal(err)
 				}
 				incoming, _ := url.Parse(tt.path)
-				target := transport.JoinTargetURL(BaseURL(tt.kind, tt.protocol, base), RequestURL(tt.kind, tt.protocol, incoming))
+				target := transport.JoinTargetURL(providerapi.BaseURL(tt.kind, tt.protocol, base), providerapi.RequestURL(tt.kind, tt.protocol, incoming))
 				if target.String() != tt.want {
 					t.Fatalf("target = %s, want %s", target, tt.want)
 				}
@@ -111,17 +112,17 @@ func TestKimiCodingAuthFollowsProtocolForEitherSavedScheme(t *testing.T) {
 		{Scheme: contract.AuthSchemeBearer},
 		{Scheme: contract.AuthSchemeAnthropicAPIKey},
 	} {
-		if got := Auth(contract.ServiceKindKimiCoding, contract.ProtocolAnthropicMessages, configured); got.Scheme != contract.AuthSchemeAnthropicAPIKey {
+		if got := providerapi.Auth(contract.ServiceKindKimiCoding, contract.ProtocolAnthropicMessages, configured); got.Scheme != contract.AuthSchemeAnthropicAPIKey {
 			t.Fatalf("Messages auth = %#v", got)
 		}
 		for _, protocol := range []contract.ProtocolID{contract.ProtocolOpenAIChat, contract.ProtocolOpenAIModels} {
-			if got := Auth(contract.ServiceKindKimiCoding, protocol, configured); got.Scheme != contract.AuthSchemeBearer {
+			if got := providerapi.Auth(contract.ServiceKindKimiCoding, protocol, configured); got.Scheme != contract.AuthSchemeBearer {
 				t.Fatalf("%s auth = %#v", protocol, got)
 			}
 		}
 	}
 	custom := contract.ServiceAuth{Scheme: contract.AuthSchemeCustomHeader, HeaderName: "X-Provider-Key"}
-	if got := Auth(contract.ServiceKindKimiCoding, contract.ProtocolOpenAIChat, custom); got != custom {
+	if got := providerapi.Auth(contract.ServiceKindKimiCoding, contract.ProtocolOpenAIChat, custom); got != custom {
 		t.Fatalf("overrode custom auth: %#v", got)
 	}
 }
