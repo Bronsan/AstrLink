@@ -814,7 +814,7 @@ describe("Overview", () => {
     expect(container.textContent).not.toContain("连接 AstrLink");
   });
 
-  it("supports single-condition token sorting with icon controls", async () => {
+  it("ranks access tokens by total tokens without sort controls", async () => {
     const tokenCatalog: AccessTokenCatalog = {
       ...readyTokens,
       items: [
@@ -848,10 +848,6 @@ describe("Overview", () => {
     const panel = container.querySelector<HTMLElement>(
       "[data-testid='token-usage-panel']",
     )!;
-    const control = (key: string) =>
-      panel.querySelector<HTMLButtonElement>(
-        `[data-testid='token-sort-${key}']`,
-      )!;
     const rowNames = () =>
       [
         ...panel.querySelectorAll<HTMLElement>(
@@ -859,25 +855,10 @@ describe("Overview", () => {
         ),
       ].map((node) => node.getAttribute("title"));
 
-    expect(control("tokens").dataset.active).toBe("true");
-    expect(control("tokens").getAttribute("aria-pressed")).toBe("true");
-    expect(control("fee").dataset.active).toBe("false");
-    expect(control("requests").dataset.active).toBe("false");
+    expect(panel.querySelector("[aria-pressed]")).toBeNull();
+    expect(panel.textContent).toContain("按 Token 排序");
+    // Equal token totals fall back to request count.
     expect(rowNames()).toEqual(["Terminal", "VS Code", "CI"]);
-
-    await act(async () => control("requests").click());
-    expect(control("tokens").dataset.active).toBe("false");
-    expect(control("requests").dataset.active).toBe("true");
-    expect(rowNames()).toEqual(["CI", "Terminal", "VS Code"]);
-
-    await act(async () => control("fee").click());
-    expect(control("requests").dataset.active).toBe("false");
-    expect(control("fee").dataset.active).toBe("true");
-    expect(rowNames()).toEqual(["Terminal", "VS Code", "CI"]);
-
-    await act(async () => control("tokens").click());
-    expect(control("tokens").dataset.active).toBe("true");
-    expect(control("fee").dataset.active).toBe("false");
   });
 
   it("reports an unread token catalog as unknown instead of empty", async () => {
@@ -1091,8 +1072,7 @@ describe("Overview", () => {
     expect(cells[0].getAttribute("data-level")).toBe("4");
     expect(cells[1].getAttribute("data-level")).toBe("0");
     expect(cells[0].getAttribute("aria-label")).toContain("100 Token");
-    await act(async () => button("请求数").click());
-    expect(cells[1].getAttribute("data-level")).toBe("4");
+    expect(() => button("请求数")).toThrow();
     expect(container.textContent).toContain("2 / 30 天有活动");
     const footer = container.querySelector("[data-slot='activity-detail']")!;
     const caption = footer.textContent;
