@@ -41,24 +41,29 @@ func BaseURL(kind contract.ServiceKind, protocol contract.ProtocolID, base *url.
 			return base
 		}
 	case contract.ServiceKindGLM:
-		roots = []string{"/api/paas/v4", "/api/anthropic/v1", "/api/anthropic"}
+		roots = []string{"/api/paas/v4", "/api/anthropic/v1", "/api/anthropic", "/api/v1"}
 		switch protocol {
 		case contract.ProtocolAnthropicMessages:
 			target = "/api/anthropic"
 		case contract.ProtocolOpenAIChat:
 			target = "/api/paas/v4"
+		case contract.ProtocolOpenAIResponses:
+			target = "/api/v1"
 		default:
 			return base
 		}
 	case contract.ServiceKindGLMCoding:
 		// Plan quota applies only to the coding Chat root; /api/paas/v4 bills
 		// the pay-as-you-go balance, so it is replaced rather than kept.
-		roots = []string{"/api/coding/paas/v4", "/api/paas/v4", "/api/anthropic/v1", "/api/anthropic"}
+		// Responses has one /api/v1 root that the plan documents for Codex.
+		roots = []string{"/api/coding/paas/v4", "/api/paas/v4", "/api/anthropic/v1", "/api/anthropic", "/api/v1"}
 		switch protocol {
 		case contract.ProtocolAnthropicMessages:
 			target = "/api/anthropic"
 		case contract.ProtocolOpenAIChat:
 			target = "/api/coding/paas/v4"
+		case contract.ProtocolOpenAIResponses:
+			target = "/api/v1"
 		default:
 			return base
 		}
@@ -66,7 +71,7 @@ func BaseURL(kind contract.ServiceKind, protocol contract.ProtocolID, base *url.
 		// Messages and the OpenAI surface share /coding; accept either documented base.
 		roots = []string{"/coding/v1", "/coding"}
 		switch protocol {
-		case contract.ProtocolAnthropicMessages, contract.ProtocolOpenAIChat, contract.ProtocolOpenAIModels:
+		case contract.ProtocolAnthropicMessages, contract.ProtocolOpenAIChat, contract.ProtocolOpenAIResponses, contract.ProtocolOpenAIModels:
 			target = "/coding"
 		default:
 			return base

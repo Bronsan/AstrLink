@@ -168,11 +168,11 @@ describe("HTTP service product presets", () => {
         mode: "native",
         streaming: true,
       });
-      expect(
-        preset.capabilities.some(
-          ({ protocol }) => protocol === "openai.responses",
-        ),
-      ).toBe(kind !== "glm");
+      expect(preset.capabilities).toContainEqual({
+        protocol: "openai.responses",
+        mode: "native",
+        streaming: true,
+      });
       expect(
         preset.capabilities.some(
           ({ protocol }) => protocol === "openai.responses.compact",
@@ -197,12 +197,17 @@ describe("HTTP service product presets", () => {
       [
         "kimi_coding",
         "https://api.kimi.ai/coding",
-        ["anthropic.messages", "openai.chat", "openai.models"],
+        [
+          "openai.responses",
+          "anthropic.messages",
+          "openai.chat",
+          "openai.models",
+        ],
       ],
       [
         "glm_coding",
         "https://open.bigmodel.cn/api/coding/paas/v4",
-        ["anthropic.messages", "openai.chat"],
+        ["openai.responses", "anthropic.messages", "openai.chat"],
       ],
       [
         "minimax_coding",

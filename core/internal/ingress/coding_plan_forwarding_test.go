@@ -45,7 +45,9 @@ func TestCodingPlanForwardingPathsHeadersAndStreams(t *testing.T) {
 		{contract.ServiceKindMiniMaxCoding, "MiniMax-M3", "/anthropic", "/v1/messages", contract.ProtocolAnthropicMessages, contract.AuthSchemeBearer, "", ""},
 		// Bases saved for Messages still reach each plan's OpenAI surface.
 		{contract.ServiceKindKimiCoding, "kimi-for-coding", "/coding", "/v1/chat/completions", contract.ProtocolOpenAIChat, contract.AuthSchemeAnthropicAPIKey, "", contract.AuthSchemeBearer},
+		{contract.ServiceKindKimiCoding, "kimi-for-coding", "/coding", "/v1/responses", contract.ProtocolOpenAIResponses, contract.AuthSchemeAnthropicAPIKey, "", contract.AuthSchemeBearer},
 		{contract.ServiceKindGLMCoding, "glm-5.3", "/api/anthropic", "/v1/chat/completions", contract.ProtocolOpenAIChat, contract.AuthSchemeBearer, "/api/coding/paas/v4/chat/completions", ""},
+		{contract.ServiceKindGLMCoding, "glm-5.3", "/api/coding/paas/v4", "/v1/responses", contract.ProtocolOpenAIResponses, contract.AuthSchemeBearer, "/api/v1/responses", ""},
 		{contract.ServiceKindMiniMaxCoding, "MiniMax-M3", "/anthropic", "/v1/chat/completions", contract.ProtocolOpenAIChat, contract.AuthSchemeBearer, "/v1/chat/completions", ""},
 		{contract.ServiceKindMiniMaxCoding, "MiniMax-M3", "/v1", "/v1/responses", contract.ProtocolOpenAIResponses, contract.AuthSchemeBearer, "/v1/responses", ""},
 		{contract.ServiceKindOpenCodeGo, "minimax-m3", "/zen/go/v1", "/v1/messages", contract.ProtocolAnthropicMessages, contract.AuthSchemeBearer, "", ""},
