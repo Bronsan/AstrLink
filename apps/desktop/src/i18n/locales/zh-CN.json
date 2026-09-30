@@ -51,7 +51,14 @@
     "copy": "复制回复"
   },
   "markdownContent": {
-    "fallback": "内容解析失败，已显示原始文本。"
+    "fallback": "内容解析失败，已显示原始文本。",
+    "alert": {
+      "note": "注意",
+      "tip": "提示",
+      "important": "重要",
+      "warning": "警告",
+      "caution": "当心"
+    }
   },
   "serviceTest": {
     "subtitle": "应用隐私策略并记录请求，不重试",

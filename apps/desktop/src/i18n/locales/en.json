@@ -51,7 +51,14 @@
     "copy": "Copy response"
   },
   "markdownContent": {
-    "fallback": "Content could not be rendered. Showing the original text."
+    "fallback": "Content could not be rendered. Showing the original text.",
+    "alert": {
+      "note": "Note",
+      "tip": "Tip",
+      "important": "Important",
+      "warning": "Warning",
+      "caution": "Caution"
+    }
   },
   "serviceTest": {
     "subtitle": "Privacy filtering and request logging; no retries",
