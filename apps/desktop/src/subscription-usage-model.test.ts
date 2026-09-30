@@ -61,8 +61,8 @@ describe("subscription usage contract", () => {
 
   it.each([
     ["openai_codex", "plus", "Plus"],
-    ["openai_codex", "prolite", "Pro 5x"],
-    ["openai_codex", "PRO", "Pro 20x"],
+    ["openai_codex", "prolite", "Pro 5×"],
+    ["openai_codex", "PRO", "Pro 20×"],
     ["openai_codex", "team", "Team"],
     ["claude_code", "pro", "Pro"],
     ["claude_code", "max", "Max"],

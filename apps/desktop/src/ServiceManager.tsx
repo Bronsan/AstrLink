@@ -58,7 +58,10 @@ import {
 } from "@/components/ServiceListRow";
 import { Panel, PanelHeader } from "@/components/Panel";
 import { DataRow } from "@/components/DataRow";
-import { ServiceKindIcon } from "@/components/ServiceKindIcon";
+import {
+  kindMarkIsShared,
+  ServiceKindIcon,
+} from "@/components/ServiceKindIcon";
 import { ServiceKindLabel } from "@/components/ServiceKindLabel";
 import { StatusBadge } from "@/components/StatusBadge";
 import { StatusDot } from "@/components/StatusDot";
@@ -147,6 +150,7 @@ import {
   responsesWebSocketEnabled,
   supportsResponsesWebSocket,
   serviceKindLabel,
+  subscriptionKinds,
   hasPlanUsage,
   isSubscriptionKind,
   serviceStatusLabel,
@@ -272,16 +276,24 @@ function serviceKindPickerOption(
   };
 }
 
+const subscriptionPlanKinds: ServiceKind[] = [
+  ...subscriptionKinds,
+  ...codingPlanPresetIDs,
+];
+
+/**
+ * Subscriptions whose logo is shared with a pay-as-you-go kind (GLM Coding
+ * Plan and GLM API, for example) need a tag to tell them apart.
+ */
+function needsSubscriptionTag(kind: ServiceKind): boolean {
+  return subscriptionPlanKinds.includes(kind) && kindMarkIsShared(kind);
+}
+
 function serviceKindPickerGroups(): DialogPickerGroup<ServiceKind>[] {
   return [
     {
       label: i18n.t("services.groupSubscription"),
-      options: [
-        "codex_subscription" as const,
-        "claude_subscription" as const,
-        "grok_subscription" as const,
-        ...codingPlanPresetIDs,
-      ].map(serviceKindPickerOption),
+      options: subscriptionPlanKinds.map(serviceKindPickerOption),
     },
     {
       label: i18n.t("services.groupGateway"),
@@ -1987,8 +1999,21 @@ export function ServiceManager({
                         }
                         identity={
                           <div className="flex min-w-0 items-center gap-3">
-                            <span className="flex size-9 shrink-0 items-center justify-center rounded-md border bg-background">
+                            <span
+                              className="relative flex size-9 shrink-0 items-center justify-center rounded-md border bg-background"
+                              title={serviceKindLabel(service.kind)}
+                            >
                               <ServiceKindIcon kind={service.kind} size={24} />
+                              {needsSubscriptionTag(service.kind) ? (
+                                <Badge
+                                  aria-hidden="true"
+                                  className="absolute -bottom-2.5 left-1/2 h-4 -translate-x-1/2 bg-background px-1 py-0 leading-none text-text-secondary"
+                                  data-testid="subscription-kind-tag"
+                                  variant="outline"
+                                >
+                                  {t("subscription.tag")}
+                                </Badge>
+                              ) : null}
                             </span>
                             <div className="grid min-w-0 gap-0.5">
                               <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
@@ -2009,8 +2034,10 @@ export function ServiceManager({
                                 </Button>
                                 {plan ? (
                                   <Badge
+                                    className="font-semibold tabular-nums"
                                     data-testid="subscription-plan"
-                                    variant="secondary"
+                                    title={t("subscription.plan", { plan })}
+                                    variant="accent"
                                   >
                                     {plan}
                                   </Badge>
@@ -2031,26 +2058,21 @@ export function ServiceManager({
                                   />
                                 ) : null}
                               </div>
-                              <div className="flex min-w-0 items-baseline gap-2 @[640px]/service-list:grid @[640px]/service-list:gap-0.5">
-                                <span className="shrink-0 text-micro text-muted-foreground">
-                                  {serviceKindLabel(service.kind)}
-                                </span>
-                                <span
-                                  className="block truncate text-xs text-text-secondary"
-                                  title={
-                                    service.http?.base_url ??
-                                    subscription?.account_hint
-                                  }
-                                >
-                                  {service.http?.base_url ??
-                                    (subscription?.account_hint
-                                      ? subscriptionAccountLabel(
-                                          service.kind,
-                                          subscription.account_hint,
-                                        )
-                                      : subscriptionOauthLabel(service.kind))}
-                                </span>
-                              </div>
+                              <span
+                                className="block truncate text-xs text-text-secondary"
+                                title={
+                                  service.http?.base_url ??
+                                  subscription?.account_hint
+                                }
+                              >
+                                {service.http?.base_url ??
+                                  (subscription?.account_hint
+                                    ? subscriptionAccountLabel(
+                                        service.kind,
+                                        subscription.account_hint,
+                                      )
+                                    : subscriptionOauthLabel(service.kind))}
+                              </span>
                             </div>
                           </div>
                         }

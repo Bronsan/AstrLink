@@ -58,7 +58,10 @@ export interface SubscriptionUsage {
 }
 
 export type UsageResetOutcome =
-  "reset" | "nothing_to_reset" | "no_credit" | "already_redeemed";
+  | "reset"
+  | "nothing_to_reset"
+  | "no_credit"
+  | "already_redeemed";
 
 export interface SubscriptionUsageReset {
   service_id: string;
@@ -392,8 +395,8 @@ export function parseSubscriptionUsageReset(
 const planTypeLabels: Record<SubscriptionProvider, Record<string, string>> = {
   openai_codex: {
     plus: "Plus",
-    pro: "Pro 20x",
-    prolite: "Pro 5x",
+    pro: "Pro 20×",
+    prolite: "Pro 5×",
     go: "Go",
     free: "Free",
     team: "Team",

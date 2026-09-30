@@ -1955,12 +1955,18 @@ describe("ServiceManager", () => {
   });
 
   it.each([
-    ["codex_subscription", "openai_codex", "pro", "Pro 20x"],
-    ["claude_subscription", "claude_code", "pro", "Pro"],
-    ["grok_subscription", "xai_grok", "supergrok_heavy", "SuperGrok Heavy"],
+    ["codex_subscription", "openai_codex", "pro", "Pro 20×", false],
+    ["claude_subscription", "claude_code", "pro", "Pro", false],
+    [
+      "grok_subscription",
+      "xai_grok",
+      "supergrok_heavy",
+      "SuperGrok Heavy",
+      true,
+    ],
   ] as const)(
     "shows the %s plan badge",
-    async (kind, provider, planType, label) => {
+    async (kind, provider, planType, label, tagged) => {
       const connected: Service = {
         ...codexService,
         kind,
@@ -1996,6 +2002,11 @@ describe("ServiceManager", () => {
         container.querySelector('[data-testid="subscription-plan"]')
           ?.textContent,
       ).toBe(label);
+      // Only a logo shared with a pay-as-you-go kind needs the tag.
+      expect(
+        container.querySelector('[data-testid="subscription-kind-tag"]') !==
+          null,
+      ).toBe(tagged);
       expect(
         container.querySelector('[data-testid="subscription-usage-reset"]'),
       ).toBeNull();

@@ -1058,6 +1058,8 @@
     "xai": "xAI（Grok） API"
   },
   "subscription": {
+    "tag": "订阅",
+    "plan": "订阅套餐：{{plan}}",
     "disconnected": "待登录",
     "authorizing": "正在登录",
     "connected": "已连接",

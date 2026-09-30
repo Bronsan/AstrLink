@@ -21,8 +21,49 @@ import { cn } from "@/lib/utils";
 import newapiLogo from "../assets/newapi-logo.svg";
 import { serviceKindLabel, type ServiceKind } from "../service-model";
 
-function kindMark(kind: ServiceKind, size: number): ReactNode {
-  switch (kind) {
+type Mark =
+  | "newapi"
+  | "codex"
+  | "claude"
+  | "grok"
+  | "opencode"
+  | "kimi"
+  | "zhipu"
+  | "minimax"
+  | "openai"
+  | "anthropic"
+  | "gemini"
+  | "deepseek"
+  | "qwen"
+  | "doubao"
+  | "custom";
+
+const kindMarks: Record<ServiceKind, Mark> = {
+  newapi: "newapi",
+  codex_subscription: "codex",
+  claude_subscription: "claude",
+  grok_subscription: "grok",
+  opencode_go: "opencode",
+  opencode_zen: "opencode",
+  moonshot: "kimi",
+  kimi_coding: "kimi",
+  glm: "zhipu",
+  glm_coding: "zhipu",
+  minimax: "minimax",
+  minimax_coding: "minimax",
+  openai: "openai",
+  openai_compatible: "openai",
+  anthropic: "anthropic",
+  gemini: "gemini",
+  deepseek: "deepseek",
+  qwen: "qwen",
+  doubao: "doubao",
+  xai: "grok",
+  custom: "custom",
+};
+
+function renderMark(mark: Mark, size: number): ReactNode {
+  switch (mark) {
     case "newapi":
       return (
         <img
@@ -33,26 +74,21 @@ function kindMark(kind: ServiceKind, size: number): ReactNode {
           height={size}
         />
       );
-    case "codex_subscription":
+    case "codex":
       return <CodexColor size={size} />;
-    case "claude_subscription":
+    case "claude":
       return <ClaudeColor size={size} />;
-    case "grok_subscription":
+    case "grok":
       return <GrokMono size={size} />;
-    case "opencode_go":
-    case "opencode_zen":
+    case "opencode":
       return <OpenCodeMono size={size} />;
-    case "moonshot":
-    case "kimi_coding":
+    case "kimi":
       return <KimiMono size={size} />;
-    case "glm":
-    case "glm_coding":
+    case "zhipu":
       return <ZhipuColor size={size} />;
     case "minimax":
-    case "minimax_coding":
       return <MinimaxColor size={size} />;
     case "openai":
-    case "openai_compatible":
       return <OpenAIMono size={size} />;
     case "anthropic":
       return <AnthropicMono size={size} />;
@@ -64,8 +100,6 @@ function kindMark(kind: ServiceKind, size: number): ReactNode {
       return <QwenColor size={size} />;
     case "doubao":
       return <DoubaoColor size={size} />;
-    case "xai":
-      return <GrokMono size={size} />;
     case "custom":
       return (
         <Cable
@@ -75,6 +109,15 @@ function kindMark(kind: ServiceKind, size: number): ReactNode {
         />
       );
   }
+}
+
+/** Whether another kind draws the same logo, so the logo alone is ambiguous. */
+export function kindMarkIsShared(kind: ServiceKind): boolean {
+  const mark = kindMarks[kind];
+  return (
+    Object.values(kindMarks).filter((candidate) => candidate === mark).length >
+    1
+  );
 }
 
 export function ServiceKindIcon({
@@ -96,7 +139,7 @@ export function ServiceKindIcon({
       role="img"
       style={{ height: size, width: size }}
     >
-      {kindMark(kind, size)}
+      {renderMark(kindMarks[kind], size)}
     </span>
   );
 }

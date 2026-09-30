@@ -1058,6 +1058,8 @@
     "xai": "xAI (Grok) API"
   },
   "subscription": {
+    "tag": "Sub",
+    "plan": "Subscription plan: {{plan}}",
     "disconnected": "Needs sign-in",
     "authorizing": "Signing in",
     "connected": "Connected",

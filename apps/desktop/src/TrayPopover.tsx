@@ -381,9 +381,9 @@ export function TrayPopoverPanel({
             ) : null}
             {view?.observer_active ? (
               <Badge
-                className="shrink-0 gap-1 border-accent-foreground/30 bg-accent text-accent-foreground"
+                className="shrink-0 gap-1"
                 data-slot="tray-observed"
-                variant="outline"
+                variant="accent"
               >
                 <Eye aria-hidden="true" className="size-3" />
                 {t(
