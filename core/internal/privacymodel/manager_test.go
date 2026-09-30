@@ -445,16 +445,19 @@ func manifestSize(manifest Manifest) int64 {
 
 func waitForStatus(t *testing.T, manager *Manager, want Status) Snapshot {
 	t.Helper()
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		status := manager.Status()
-		if status.Status == want {
-			return status
-		}
-		time.Sleep(time.Millisecond)
+	// Wait for the download goroutine itself rather than a wall-clock
+	// deadline, which slow CI disks can exceed.
+	manager.mu.Lock()
+	done := manager.done
+	manager.mu.Unlock()
+	if done != nil {
+		<-done
 	}
-	t.Fatalf("status=%#v, want %s", manager.Status(), want)
-	return Snapshot{}
+	status := manager.Status()
+	if status.Status != want {
+		t.Fatalf("status=%#v, want %s", status, want)
+	}
+	return status
 }
 
 func (status Status) String() string {
