@@ -679,6 +679,24 @@ function localizeHttpPreset(preset: HTTPServicePreset): HTTPServicePreset {
   }
 }
 
+export const serviceAuthLabels: Record<ServiceAuthScheme, string> = {
+  get none() {
+    return i18n.t("services.authNone");
+  },
+  get bearer() {
+    return i18n.t("services.authBearer");
+  },
+  get anthropic_api_key() {
+    return i18n.t("services.authAnthropic");
+  },
+  get google_api_key() {
+    return i18n.t("services.authGoogle");
+  },
+  get custom_header() {
+    return i18n.t("services.authCustomHeader");
+  },
+};
+
 export function httpServicePresetLabel(profileID: HTTPServicePresetID): string {
   return httpServicePreset(profileID).label;
 }

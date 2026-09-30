@@ -33,6 +33,7 @@ const bridgeMocks = vi.hoisted(() => ({
     .mockResolvedValue({ service_ids: [], etag: '"order"' }),
   updateServiceOrder: vi.fn(),
   installAgentDebug: vi.fn(),
+  isCCSwitchInstalled: vi.fn().mockResolvedValue(false),
   uninstallAgentDebug: vi.fn(),
   getService: vi.fn(),
   getServiceAuthorization: vi.fn(),

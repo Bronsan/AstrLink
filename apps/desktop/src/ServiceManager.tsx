@@ -133,6 +133,7 @@ import {
   protocolDescriptors,
   protocolEntryPath,
   protocolLabel,
+  serviceAuthLabels,
   serviceSiteForBaseURL,
   supportsLocalConversion,
   type HTTPServicePresetID,
@@ -415,24 +416,6 @@ function modelDiscoveryKey(draft: Draft): string {
     modelDiscoveryProtocols(draft),
   ]);
 }
-
-const authLabels: Record<ServiceAuthScheme, string> = {
-  get none() {
-    return i18n.t("services.authNone");
-  },
-  get bearer() {
-    return i18n.t("services.authBearer");
-  },
-  get anthropic_api_key() {
-    return i18n.t("services.authAnthropic");
-  },
-  get google_api_key() {
-    return i18n.t("services.authGoogle");
-  },
-  get custom_header() {
-    return i18n.t("services.authCustomHeader");
-  },
-};
 
 function draftForKind(
   kind: ServiceKind,
@@ -3164,11 +3147,13 @@ export function ServiceManager({
                         <SelectValue />
                       </SelectTrigger>
                       <SelectContent>
-                        {Object.entries(authLabels).map(([scheme, label]) => (
-                          <SelectItem key={scheme} value={scheme}>
-                            {label}
-                          </SelectItem>
-                        ))}
+                        {Object.entries(serviceAuthLabels).map(
+                          ([scheme, label]) => (
+                            <SelectItem key={scheme} value={scheme}>
+                              {label}
+                            </SelectItem>
+                          ),
+                        )}
                       </SelectContent>
                     </Select>
                   </Field>

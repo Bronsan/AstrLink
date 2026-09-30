@@ -2522,6 +2522,42 @@
     "opusModel": "Opus（可选）",
     "claudeModelHint": "按需填写；留空的模型项不会导入。"
   },
+  "providerImport": {
+    "title": "添加 API 提供商",
+    "description": "一个链接请求把以下 API 提供商添加到 AstrLink。请确认你信任链接的来源。",
+    "keyIncluded": "链接已附带 API Key",
+    "keyNeeded": "链接没有附带 API Key，请手动填写。",
+    "models": "模型",
+    "modelCount_one": "{{count}} 个模型",
+    "modelCount_other": "{{count}} 个模型",
+    "noModels": "链接没有指定模型，添加后可在模型页获取。",
+    "insecure": "这个地址使用未加密的 http 连接，API Key 和对话内容可能在网络上被他人看到。请只在信任该网络时添加。",
+    "add": "添加 API 提供商",
+    "adding": "正在添加…",
+    "added": "已添加 API 提供商“{{name}}”。",
+    "failed": "添加失败：{{message}}",
+    "rejected": "无法通过链接添加 API 提供商：{{reason}}",
+    "reasons": {
+      "malformed": "无法识别这个链接。",
+      "unsupported": "AstrLink 不支持这种链接。",
+      "unsupportedField": "AstrLink 不支持链接中的“{{field}}”。",
+      "unknownParameter": "链接包含无法识别的参数“{{field}}”。",
+      "unknownParameterUnnamed": "链接包含无法识别的参数。",
+      "duplicateParameter": "链接中的“{{field}}”重复出现。",
+      "missingParameter": "链接缺少“{{field}}”。",
+      "invalidParameter": "链接中的“{{field}}”无效。"
+    },
+    "fields": {
+      "kind": "API 提供商类型",
+      "name": "名称",
+      "base_url": "API 地址",
+      "api_key": "API Key",
+      "auth": "认证方式",
+      "auth_header": "认证 Header",
+      "protocols": "入口协议",
+      "models": "模型"
+    }
+  },
   "builtinTools": {
     "modelHelp": "模型选择",
     "executionHelp": "执行方式",

@@ -11,6 +11,7 @@ mod kek_store;
 #[cfg(target_os = "macos")]
 mod macos_app;
 mod preferences;
+mod provider_import;
 mod raw_access;
 mod raw_approval;
 mod raw_key_pin;
@@ -36,6 +37,7 @@ use sidecar::{CoreManager, CoreSnapshot, PolicyRecordResponse, ServiceRecordResp
 use tauri::{Emitter, Manager, RunEvent, State, WebviewUrl, WebviewWindowBuilder, WindowEvent};
 use tauri_plugin_autostart::ManagerExt;
 use tauri_plugin_clipboard_manager::ClipboardExt;
+use tauri_plugin_deep_link::DeepLinkExt;
 use tauri_plugin_dialog::DialogExt;
 #[cfg(not(target_os = "macos"))]
 use tauri_plugin_notification::NotificationExt;
@@ -410,6 +412,17 @@ fn tray_popover_resize(app: tauri::AppHandle, height: f64) -> Result<(), String>
 #[tauri::command]
 fn tray_popover_hide(app: tauri::AppHandle) {
     tray::hide_popover(&app);
+}
+
+fn receive_deep_links(app: &tauri::AppHandle, urls: Vec<tauri::Url>) {
+    // One confirmation at a time: only the last AstrLink link is kept.
+    if let Some(url) = urls
+        .iter()
+        .rev()
+        .find(|url| url.scheme() == provider_import::SCHEME)
+    {
+        provider_import::receive(app, url.as_str());
+    }
 }
 
 pub(crate) fn show_main_window(app: &tauri::AppHandle) {
@@ -1678,6 +1691,8 @@ pub fn run() {
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             show_main_window(app);
         }))
+        // After single-instance, which forwards a second launch's link here.
+        .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_autostart::init(
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
             None,
@@ -1696,8 +1711,12 @@ pub fn run() {
         .manage(Mutex::new(InspectorRegistry::default()))
         .manage(tray::TrayState::default())
         .manage(Arc::new(client_updates::ClientUpdateManager::default()))
+        .manage(provider_import::ProviderImports::default())
         .invoke_handler(tauri::generate_handler![
             client_updates::local_client_status,
+            provider_import::pending_provider_import,
+            provider_import::dismiss_provider_import,
+            provider_import::confirm_provider_import,
             client_updates::refresh_local_clients,
             client_updates::update_local_clients,
             updates::app_update_status,
@@ -1846,6 +1865,21 @@ pub fn run() {
 
             tray::build(app.handle())?;
             tray::start(app.handle());
+
+            let deep_link = app.deep_link();
+            // Installers register the scheme; this repairs portable copies.
+            #[cfg(any(windows, target_os = "linux"))]
+            if let Err(error) = deep_link.register_all() {
+                eprintln!("unable to register astrlink:// links: {error}");
+            }
+            let handle = app.handle().clone();
+            deep_link.on_open_url(move |event| {
+                receive_deep_links(&handle, event.urls());
+            });
+            match deep_link.get_current() {
+                Ok(urls) => receive_deep_links(app.handle(), urls.unwrap_or_default()),
+                Err(error) => eprintln!("unable to read the launch link: {error}"),
+            }
 
             #[cfg(debug_assertions)]
             dev_reload::start(app.handle());

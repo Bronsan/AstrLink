@@ -63,6 +63,11 @@
     "targets": "all"
   },
   "plugins": {
+    "deep-link": {
+      "desktop": {
+        "schemes": ["astrlink"]
+      }
+    },
     "updater": {
       "pubkey": "",
       "windows": {

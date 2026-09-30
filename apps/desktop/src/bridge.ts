@@ -17,6 +17,10 @@ import {
 } from "./service-proxy-model";
 
 import { i18n } from "./i18n";
+import {
+  parseProviderImportNotice,
+  type ProviderImportNotice,
+} from "./provider-import-model";
 import { parseUsageSummary } from "./usage-summary-model";
 import type { UsageSummary, UsageWindow } from "./usage-range";
 
@@ -30,6 +34,7 @@ import {
   parseServiceModelProbe,
   parseServiceRecord,
   parseSubscriptionRiskEvents,
+  type HTTPServiceCreateInput,
   type ServiceCreateInput,
   type ServicePage,
   type ServicePatchInput,
@@ -800,6 +805,38 @@ export async function openCCSwitchImport(input: {
 }): Promise<void> {
   requireNativeBridge();
   await invoke("open_cc_switch_import", input);
+}
+
+/** The provider link waiting for confirmation, e.g. the one that launched the app. */
+export async function getPendingProviderImport(): Promise<ProviderImportNotice | null> {
+  if (!hasNativeBridge()) return null;
+  const value = await invoke<unknown>("pending_provider_import");
+  return value === null ? null : parseProviderImportNotice(value);
+}
+
+export async function listenProviderImport(
+  onNotice: (notice: ProviderImportNotice) => void,
+): Promise<() => void> {
+  if (!hasNativeBridge()) return () => {};
+  return listen<unknown>("provider-import", ({ payload }) => {
+    onNotice(parseProviderImportNotice(payload));
+  });
+}
+
+/** Creates the linked provider; the host attaches the link's API key. */
+export async function confirmProviderImport(
+  id: string,
+  input: HTTPServiceCreateInput,
+): Promise<ServiceRecord> {
+  requireNativeBridge();
+  return parseServiceRecord(
+    await invoke<unknown>("confirm_provider_import", { id, input }),
+  );
+}
+
+export async function dismissProviderImport(id: string): Promise<void> {
+  if (!hasNativeBridge()) return;
+  await invoke("dismiss_provider_import", { id });
 }
 
 export async function listPrivacyPolicies(): Promise<PrivacyPolicyPage> {

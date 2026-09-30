@@ -69,6 +69,9 @@ import {
   openAuthorizationURL,
   isCCSwitchInstalled,
   openCCSwitchImport,
+  confirmProviderImport,
+  dismissProviderImport,
+  getPendingProviderImport,
   saveTextFile,
   getAgentDebugStatus,
   installAgentDebug,
@@ -1149,6 +1152,49 @@ describe("desktop bridge contract", () => {
     await expect(
       updateService(service.id, etag, { name: "Codex personal" }),
     ).resolves.toEqual({ service, etag });
+
+    const importID = "0123456789abcdef0123456789abcdef";
+    const importInput = {
+      name: "Relay",
+      kind: "openai_compatible" as const,
+      enabled: true,
+      models: [],
+      http: {
+        base_url: "https://relay.example/v1",
+        auth: { scheme: "bearer" as const },
+      },
+      capabilities: [
+        { protocol: "openai.chat", mode: "native" as const, streaming: true },
+      ],
+    };
+    invokeMock.mockResolvedValueOnce({ service, etag });
+    await expect(confirmProviderImport(importID, importInput)).resolves.toEqual(
+      { service, etag },
+    );
+    expect(invokeMock).toHaveBeenLastCalledWith("confirm_provider_import", {
+      id: importID,
+      input: importInput,
+    });
+    invokeMock.mockResolvedValueOnce(null);
+    await expect(getPendingProviderImport()).resolves.toBeNull();
+    invokeMock.mockResolvedValueOnce({
+      status: "invalid",
+      id: importID,
+      reason: "missing_parameter",
+      field: "base_url",
+    });
+    await expect(getPendingProviderImport()).resolves.toEqual({
+      status: "invalid",
+      id: importID,
+      reason: "missing_parameter",
+      field: "base_url",
+    });
+    expect(invokeMock).toHaveBeenLastCalledWith("pending_provider_import");
+    invokeMock.mockResolvedValueOnce(undefined);
+    await dismissProviderImport(importID);
+    expect(invokeMock).toHaveBeenLastCalledWith("dismiss_provider_import", {
+      id: importID,
+    });
 
     const session = {
       id: "authorization_01",

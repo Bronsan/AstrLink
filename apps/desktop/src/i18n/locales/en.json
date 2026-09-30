@@ -2522,6 +2522,42 @@
     "opusModel": "Opus (optional)",
     "claudeModelHint": "All model fields are optional. Empty fields are omitted."
   },
+  "providerImport": {
+    "title": "Add API provider",
+    "description": "A link asked to add this API provider to AstrLink. Make sure you trust where the link came from.",
+    "keyIncluded": "API key included in the link",
+    "keyNeeded": "The link has no API key. Enter it here.",
+    "models": "Models",
+    "modelCount_one": "{{count}} model",
+    "modelCount_other": "{{count}} models",
+    "noModels": "The link lists no models. Fetch them on the Models tab after adding.",
+    "insecure": "This address uses an unencrypted http connection. Others on the network may see the API key and conversations. Add it only if you trust the network.",
+    "add": "Add API provider",
+    "adding": "Adding…",
+    "added": "Added API provider “{{name}}”.",
+    "failed": "Couldn't add it: {{message}}",
+    "rejected": "Couldn't add an API provider from the link: {{reason}}",
+    "reasons": {
+      "malformed": "the link can't be read.",
+      "unsupported": "AstrLink doesn't support this kind of link.",
+      "unsupportedField": "AstrLink doesn't support the link's {{field}}.",
+      "unknownParameter": "the link has an unrecognized parameter “{{field}}”.",
+      "unknownParameterUnnamed": "the link has an unrecognized parameter.",
+      "duplicateParameter": "the link's {{field}} appears more than once.",
+      "missingParameter": "the link is missing the {{field}}.",
+      "invalidParameter": "the link's {{field}} isn't valid."
+    },
+    "fields": {
+      "kind": "API provider type",
+      "name": "name",
+      "base_url": "API address",
+      "api_key": "API key",
+      "auth": "auth method",
+      "auth_header": "auth header",
+      "protocols": "entry protocols",
+      "models": "models"
+    }
+  },
   "builtinTools": {
     "modelHelp": "Model selection",
     "executionHelp": "Execution",

@@ -60,6 +60,9 @@ import { About } from "./About";
 import { useAppUpdates } from "./use-app-updates";
 import { toast } from "sonner";
 import { ServiceManager, type ServiceManagerView } from "./ServiceManager";
+import { ProviderImportDialog } from "./ProviderImportDialog";
+import { useProviderImport } from "./use-provider-import";
+import { notify } from "./notify";
 import type { Service } from "./service-model";
 import { TRAY_NAVIGATE_EVENT } from "./tray-popover-window";
 import {
@@ -565,7 +568,7 @@ export default function App() {
     handleEditorDirtyChange(false);
   };
 
-  const handleServiceSaved = (service: Service) => {
+  const rememberService = (service: Service) => {
     setCatalog((current) => {
       const existingIndex = current.items.findIndex(
         (item) => item.id === service.id,
@@ -578,6 +581,10 @@ export default function App() {
             );
       return { status: "ready", items, error: null, stale: false };
     });
+  };
+
+  const handleServiceSaved = (service: Service) => {
+    rememberService(service);
     handleEditorDirtyChange(false);
     setPage({ kind: "list" });
   };
@@ -620,6 +627,22 @@ export default function App() {
     () => snapshot?.capabilities?.protocols ?? [],
     [snapshot?.capabilities?.protocols],
   );
+  const providerImport = useProviderImport({
+    enabled: isReady && rawSealing.status !== null && !rawSetupNeeded,
+    protocols,
+  });
+
+  const handleProviderImported = (service: Service) => {
+    providerImport.close();
+    rememberService(service);
+    notify.success(t("providerImport.added", { name: service.name }));
+    // Without models the provider cannot route yet; land where they are fetched.
+    navigate(
+      service.models.length > 0
+        ? { kind: "list" }
+        : { kind: "edit", serviceId: service.id, tab: "models" },
+    );
+  };
 
   return (
     <AppShell
@@ -933,6 +956,15 @@ export default function App() {
           !onboarding.settled || (onboarding.active && page.kind === "overview")
         }
       />
+      {providerImport.active && (
+        <ProviderImportDialog
+          key={providerImport.active.id}
+          id={providerImport.active.id}
+          plan={providerImport.active.plan}
+          onAdded={handleProviderImported}
+          onClose={providerImport.close}
+        />
+      )}
     </AppShell>
   );
 }

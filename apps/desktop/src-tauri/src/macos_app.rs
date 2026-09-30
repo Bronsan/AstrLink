@@ -122,6 +122,10 @@ fn stage_dev_bundle(executable: &Path, frameworks: &Path) -> std::io::Result<std
 <key>CFBundleIconFile</key><string>icon.icns</string>
 <key>CFBundlePackageType</key><string>APPL</string>
 <key>CFBundleVersion</key><string>1</string>
+<key>CFBundleURLTypes</key><array><dict>
+<key>CFBundleURLName</key><string>AstrLink</string>
+<key>CFBundleURLSchemes</key><array><string>astrlink</string></array>
+</dict></array>
 <key>LSMinimumSystemVersion</key><string>13.4</string>
 <key>NSHighResolutionCapable</key><true/>
 </dict></plist>
