@@ -259,6 +259,7 @@ func (handler *Handler) fetchModelDiscovery(
 	}
 	var headers http.Header
 	if authorizeErr == nil {
+		authorizationEndpoint.Auth = providerapi.Auth(candidate.Service.Kind, classified.Protocol, authorizationEndpoint.Auth)
 		headers, authorizeErr = handler.authorizer.Headers(proxyContext, authorizationEndpoint, fetchRequest.Header)
 	}
 	if authorizeErr != nil {

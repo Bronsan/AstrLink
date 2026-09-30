@@ -54,3 +54,67 @@ func TestProviderAuthPreservesExplicitOverridesAndOtherProtocols(t *testing.T) {
 		}
 	}
 }
+
+// Saved Coding Plan bases predate the OpenAI surface and point at the Messages
+// root; they must reach every native protocol exactly like the current presets.
+func TestCodingPlanSurfacesAcceptSavedAndDocumentedBases(t *testing.T) {
+	for _, tt := range []struct {
+		kind     contract.ServiceKind
+		protocol contract.ProtocolID
+		path     string
+		bases    []string
+		want     string
+	}{
+		{contract.ServiceKindMiniMaxCoding, contract.ProtocolAnthropicMessages, "/v1/messages",
+			[]string{"https://api.minimax.cn/anthropic", "https://api.minimax.cn/v1"}, "https://api.minimax.cn/anthropic/v1/messages"},
+		{contract.ServiceKindMiniMaxCoding, contract.ProtocolOpenAIChat, "/v1/chat/completions",
+			[]string{"https://api.minimax.cn/anthropic", "https://api.minimax.cn/v1"}, "https://api.minimax.cn/v1/chat/completions"},
+		{contract.ServiceKindMiniMaxCoding, contract.ProtocolOpenAIResponses, "/v1/responses",
+			[]string{"https://api.minimax.io/anthropic/", "https://api.minimax.io/v1"}, "https://api.minimax.io/v1/responses"},
+		{contract.ServiceKindGLMCoding, contract.ProtocolAnthropicMessages, "/v1/messages",
+			[]string{"https://open.bigmodel.cn/api/anthropic", "https://open.bigmodel.cn/api/coding/paas/v4"}, "https://open.bigmodel.cn/api/anthropic/v1/messages"},
+		{contract.ServiceKindGLMCoding, contract.ProtocolOpenAIChat, "/v1/chat/completions",
+			[]string{"https://open.bigmodel.cn/api/anthropic", "https://open.bigmodel.cn/api/coding/paas/v4", "https://open.bigmodel.cn/api/paas/v4"},
+			"https://open.bigmodel.cn/api/coding/paas/v4/chat/completions"},
+		{contract.ServiceKindKimiCoding, contract.ProtocolAnthropicMessages, "/v1/messages",
+			[]string{"https://api.kimi.ai/coding", "https://api.kimi.ai/coding/", "https://api.kimi.ai/coding/v1"}, "https://api.kimi.ai/coding/v1/messages"},
+		{contract.ServiceKindKimiCoding, contract.ProtocolOpenAIChat, "/v1/chat/completions",
+			[]string{"https://api.kimi.ai/coding", "https://api.kimi.ai/coding/v1"}, "https://api.kimi.ai/coding/v1/chat/completions"},
+		{contract.ServiceKindKimiCoding, contract.ProtocolOpenAIModels, "/v1/models",
+			[]string{"https://api.kimi.ai/coding", "https://api.kimi.ai/coding/v1"}, "https://api.kimi.ai/coding/v1/models"},
+	} {
+		for _, raw := range tt.bases {
+			t.Run(string(tt.kind)+"/"+string(tt.protocol)+"/"+raw, func(t *testing.T) {
+				base, err := url.Parse(raw)
+				if err != nil {
+					t.Fatal(err)
+				}
+				incoming, _ := url.Parse(tt.path)
+				target := transport.JoinTargetURL(BaseURL(tt.kind, tt.protocol, base), RequestURL(tt.kind, tt.protocol, incoming))
+				if target.String() != tt.want {
+					t.Fatalf("target = %s, want %s", target, tt.want)
+				}
+			})
+		}
+	}
+}
+
+func TestKimiCodingAuthFollowsProtocolForEitherSavedScheme(t *testing.T) {
+	for _, configured := range []contract.ServiceAuth{
+		{Scheme: contract.AuthSchemeBearer},
+		{Scheme: contract.AuthSchemeAnthropicAPIKey},
+	} {
+		if got := Auth(contract.ServiceKindKimiCoding, contract.ProtocolAnthropicMessages, configured); got.Scheme != contract.AuthSchemeAnthropicAPIKey {
+			t.Fatalf("Messages auth = %#v", got)
+		}
+		for _, protocol := range []contract.ProtocolID{contract.ProtocolOpenAIChat, contract.ProtocolOpenAIModels} {
+			if got := Auth(contract.ServiceKindKimiCoding, protocol, configured); got.Scheme != contract.AuthSchemeBearer {
+				t.Fatalf("%s auth = %#v", protocol, got)
+			}
+		}
+	}
+	custom := contract.ServiceAuth{Scheme: contract.AuthSchemeCustomHeader, HeaderName: "X-Provider-Key"}
+	if got := Auth(contract.ServiceKindKimiCoding, contract.ProtocolOpenAIChat, custom); got != custom {
+		t.Fatalf("overrode custom auth: %#v", got)
+	}
+}

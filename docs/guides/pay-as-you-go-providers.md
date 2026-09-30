@@ -59,12 +59,16 @@ Key 仅供 AstrLink 连接 API 提供商使用。
 
 ## Coding Plan
 
-| API 提供商          | 默认地址                                 |
-| ------------------- | ---------------------------------------- |
-| OpenCode Go         | `https://opencode.ai/zen/go/v1`          |
-| Kimi Coding         | `https://api.kimi.ai/coding`             |
-| GLM Coding Plan     | `https://open.bigmodel.cn/api/anthropic` |
-| MiniMax Coding Plan | `https://api.minimax.cn/anthropic`       |
+| API 提供商          | 默认地址                                      | 原生入口协议                                     |
+| ------------------- | --------------------------------------------- | ------------------------------------------------ |
+| OpenCode Go         | `https://opencode.ai/zen/go/v1`               | 按模型选择 Responses、Anthropic Messages 或 Chat |
+| Kimi Coding         | `https://api.kimi.ai/coding`                  | Anthropic Messages、Chat、Models                 |
+| GLM Coding Plan     | `https://open.bigmodel.cn/api/coding/paas/v4` | Anthropic Messages、Chat                         |
+| MiniMax Coding Plan | `https://api.minimax.cn/v1`                   | Responses、Anthropic Messages、Chat、Models      |
+
+同一个地址即可使用该订阅的全部原生协议，AstrLink 会按请求协议切换到厂商对应的路径。填写厂商文档中的 Claude
+Code 地址（如 `…/anthropic`）同样有效。GLM Coding Plan 的 Chat 请求固定发往
+`/api/coding/paas/v4`，以免消耗开放平台余额。
 
 使用订阅控制台提供的凭据，并核对当前套餐支持的模型。API 提供商预设不会改变你的订阅权益或额度。
 
@@ -73,7 +77,9 @@ Key 仅供 AstrLink 连接 API 提供商使用。
 选择 **New API** 或对应兼容类型，填写网关地址和该网关颁发的 API
 Key。支持模型和协议取决于网关实际配置，不能仅凭预设判断所有接口都可用。
 
-选择 **New API** 类型时，列表的「订阅额度」列会显示该密钥的已用和剩余额度，按网关公布的额度单位折算为美元。New API 限制了额度查询频率，因此数据最多缓存 5 分钟。
+选择 **New API**
+类型时，列表的「订阅额度」列会显示该密钥的已用和剩余额度，按网关公布的额度单位折算为美元。New
+API 限制了额度查询频率，因此数据最多缓存 5 分钟。
 
 ## 选择客户端协议
 

@@ -114,7 +114,7 @@ func (prober *Prober) ProbeHTTP(
 			return nil, fmt.Errorf("%w: %v", ErrCredentialUnavailable, err)
 		}
 	}
-	headers, err := authorizationHeaders(connection.Auth, secret)
+	headers, err := authorizationHeaders(providerapi.Auth(kind, protocol, connection.Auth), secret)
 	if err != nil {
 		return nil, err
 	}

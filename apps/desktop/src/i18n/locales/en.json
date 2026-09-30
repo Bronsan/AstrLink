@@ -1088,7 +1088,7 @@
     "opencode_zenDescription": "Pay-as-you-go API key for OpenCode Zen.",
     "kimi_codingDescription": "Kimi Coding membership API key, separate from Moonshot platform keys.",
     "glm_codingDescription": "API key for a Zhipu GLM Coding Plan.",
-    "minimax_codingDescription": "MiniMax Coding Plan API key; international accounts use api.minimax.io/anthropic.",
+    "minimax_codingDescription": "MiniMax Coding Plan API key; international accounts use api.minimax.io/v1.",
     "qualityGood": "Good conversion quality",
     "qualityFair": "Fair conversion quality",
     "qualityDiscouraged": "Conversion not recommended",

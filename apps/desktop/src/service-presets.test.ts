@@ -191,6 +191,44 @@ describe("HTTP service product presets", () => {
     }
   });
 
+  it("gives coding plans every native surface behind one bearer key", () => {
+    for (const [kind, baseURL, protocols] of [
+      [
+        "kimi_coding",
+        "https://api.kimi.ai/coding",
+        ["anthropic.messages", "openai.chat", "openai.models"],
+      ],
+      [
+        "glm_coding",
+        "https://open.bigmodel.cn/api/coding/paas/v4",
+        ["anthropic.messages", "openai.chat"],
+      ],
+      [
+        "minimax_coding",
+        "https://api.minimax.cn/v1",
+        [
+          "openai.responses",
+          "anthropic.messages",
+          "openai.chat",
+          "openai.models",
+        ],
+      ],
+    ] as const) {
+      const preset = httpServicePreset(kind);
+      expect(codingPlanPresetIDs).toContain(kind);
+      expect(preset).toMatchObject({ baseURL, authScheme: "bearer" });
+      expect(preset.capabilities.map(({ protocol }) => protocol)).toEqual(
+        protocols,
+      );
+      expect(
+        preset.capabilities.every(
+          ({ mode, convert_to }) =>
+            mode === "native" && convert_to === undefined,
+        ),
+      ).toBe(true);
+    }
+  });
+
   it("lists local conversion targets and enables only advertised edges", () => {
     expect(supportsLocalConversion("openai.chat")).toBe(true);
     expect(supportsLocalConversion("openai.models")).toBe(false);
