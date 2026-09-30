@@ -1836,7 +1836,13 @@ mod tests {
 
     #[test]
     fn the_skill_names_the_cli_by_its_absolute_path() {
-        let home = unique_temp("agent-cli-command");
+        // Nothing is written, and the temporary directory can't stand in for a
+        // plain home: Windows runners use a short name such as `RUNNER~1`.
+        let home = PathBuf::from(if cfg!(windows) {
+            r"C:\Users\agent"
+        } else {
+            "/home/agent"
+        });
         let cli = cli_command(&home);
         assert_eq!(cli, display_path(&cli_binary_dest(&home)).unwrap());
         assert!(bundle_file(DEBUG, "SKILL.md").contains(CLI_PLACEHOLDER));
@@ -1861,7 +1867,6 @@ mod tests {
                 format!("'{}'", cli_binary_dest(&spaced).display())
             );
         }
-        let _ = fs::remove_dir_all(&home);
     }
 
     #[test]
