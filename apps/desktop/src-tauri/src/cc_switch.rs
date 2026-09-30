@@ -1,65 +1,9 @@
 use reqwest::Url;
-use serde::Deserialize;
 
-use crate::sidecar::{CoreManager, CorePhase};
-
-#[derive(Clone, Copy, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum Client {
-    Claude,
-    Codex,
-    Gemini,
-    Opencode,
-    Openclaw,
-}
-
-impl Client {
-    fn name(self) -> &'static str {
-        match self {
-            Self::Claude => "claude",
-            Self::Codex => "codex",
-            Self::Gemini => "gemini",
-            Self::Opencode => "opencode",
-            Self::Openclaw => "openclaw",
-        }
-    }
-}
-
-#[derive(Default, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct Models {
-    pub model: Option<String>,
-    pub haiku_model: Option<String>,
-    pub sonnet_model: Option<String>,
-    pub opus_model: Option<String>,
-}
-
-impl Models {
-    fn parameters(&self, client: Client) -> Result<Vec<(&'static str, &str)>, String> {
-        let mut fields = vec![("model", self.model.as_deref())];
-        if matches!(client, Client::Claude) {
-            fields.extend([
-                ("haikuModel", self.haiku_model.as_deref()),
-                ("sonnetModel", self.sonnet_model.as_deref()),
-                ("opusModel", self.opus_model.as_deref()),
-            ]);
-        }
-        let mut parameters = Vec::new();
-        for (key, value) in fields {
-            let Some(value) = value.map(str::trim).filter(|value| !value.is_empty()) else {
-                continue;
-            };
-            if value.chars().count() > 256 || value.chars().any(char::is_control) {
-                return Err(format!("invalid {key}"));
-            }
-            parameters.push((key, value));
-        }
-        if !matches!(client, Client::Claude) && parameters.is_empty() {
-            return Err("model is required for this client".into());
-        }
-        Ok(parameters)
-    }
-}
+use crate::{
+    client_config::{self, Client, Models},
+    sidecar::CoreManager,
+};
 
 fn import_url(
     client: Client,
@@ -68,29 +12,23 @@ fn import_url(
     models: &Models,
     access_token: &str,
 ) -> Result<Url, String> {
-    let mut endpoint = Url::parse(inference_url).map_err(|_| "invalid inference URL")?;
-    if endpoint.scheme() != "http"
-        || endpoint.host_str() != Some("127.0.0.1")
-        || !endpoint.username().is_empty()
-        || endpoint.password().is_some()
-        || endpoint.path() != "/"
-        || endpoint.query().is_some()
-        || endpoint.fragment().is_some()
-    {
-        return Err("invalid local inference URL".into());
-    }
+    let origin = client_config::local_origin(inference_url)?;
     let name = name.trim();
     if name.is_empty() || name.chars().count() > 128 || name.chars().any(char::is_control) {
         return Err("invalid provider name".into());
     }
-    let model_parameters = models.parameters(client)?;
+    // CC Switch's import link has no Fable tier.
+    let mut model_parameters = models.fields(client)?;
+    model_parameters.retain(|(key, _)| *key != "fableModel");
     if access_token.is_empty() {
         return Err("access token is unavailable".into());
     }
     // Claude and Gemini append their own API version; OpenAI clients need /v1.
-    if matches!(client, Client::Codex | Client::Opencode | Client::Openclaw) {
-        endpoint.set_path("/v1");
-    }
+    let endpoint = if matches!(client, Client::Codex | Client::Opencode | Client::Openclaw) {
+        format!("{origin}/v1")
+    } else {
+        origin
+    };
     let mut url = Url::parse("ccswitch://v1/import").expect("static CC Switch URL");
     {
         let mut params = url.query_pairs_mut();
@@ -98,10 +36,10 @@ fn import_url(
             .append_pair("resource", "provider")
             .append_pair("app", client.name())
             .append_pair("name", name)
-            .append_pair("endpoint", endpoint.as_str().trim_end_matches('/'))
+            .append_pair("endpoint", &endpoint)
             .append_pair("apiKey", access_token)
             .append_pair("enabled", "false");
-        for (key, value) in model_parameters {
+        for (key, value) in &model_parameters {
             params.append_pair(key, value);
         }
     }
@@ -196,31 +134,17 @@ pub async fn open_import(
     manager: &CoreManager,
     token_id: &str,
     client: Client,
-    name: &str,
     models: &Models,
     inference_url: &str,
 ) -> Result<(), String> {
-    let before = manager.snapshot();
-    if before.phase != CorePhase::Ready
-        || before
-            .ready
-            .as_ref()
-            .map(|ready| ready.inference_url.as_str())
-            != Some(inference_url)
-    {
-        return Err("gateway session changed; reopen the import dialog".into());
-    }
-    let secret = manager.reveal_access_token(token_id).await?;
-    let after = manager.snapshot();
-    if after.phase != CorePhase::Ready || before.pid != after.pid || before.ready != after.ready {
-        return Err("gateway session changed; reopen the import dialog".into());
-    }
+    let (token_name, _) = client_config::token_summary(manager, token_id).await?;
+    let token = client_config::reveal_access_token(manager, token_id, inference_url).await?;
     let url = import_url(
         client,
         inference_url,
-        name,
+        &format!("AstrLink · {token_name}"),
         models,
-        secret["access_token"].as_str().unwrap_or_default(),
+        &token,
     )?;
     // The URL contains a credential: keep it out of frontend state and errors.
     tauri_plugin_opener::open_url(url.as_str(), None::<&str>)
@@ -266,7 +190,7 @@ mod tests {
             assert_eq!(params["apiKey"], "test+token&=?#");
             assert_eq!(params["model"], "custom/model");
             assert_eq!(params["enabled"], "false");
-            for key in ["haikuModel", "sonnetModel", "opusModel"] {
+            for key in ["haikuModel", "sonnetModel", "opusModel", "fableModel"] {
                 assert!(!params.contains_key(key));
             }
         }
@@ -310,6 +234,21 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn the_fable_tier_is_not_sent_to_cc_switch() {
+        let models: Models =
+            serde_json::from_value(serde_json::json!({"fableModel": "fable-route"})).unwrap();
+        let url = import_url(
+            Client::Claude,
+            "http://127.0.0.1:8317",
+            "AstrLink",
+            &models,
+            "test-token",
+        )
+        .unwrap();
+        assert!(!url.query_pairs().any(|(_, value)| value == "fable-route"));
     }
 
     #[test]

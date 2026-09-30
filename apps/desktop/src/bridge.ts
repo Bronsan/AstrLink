@@ -143,6 +143,17 @@ import {
 import { parseTrayState, type TrayAction, type TrayState } from "./tray-model";
 import { downloadTextFile } from "./download-text-file";
 import {
+  parseClientConfigApplyOutcome,
+  parseClientConfigCopied,
+  parseClientConfigSnippet,
+  parseClientConfigStatuses,
+  type ClientConfigApplyOutcome,
+  type ClientConfigClient,
+  type ClientConfigModels,
+  type ClientConfigStatus,
+  type DirectClient,
+} from "./client-config-model";
+import {
   parseAgentInstallReceipt,
   parseAgentInstallStatus,
   type AgentInstallReceipt,
@@ -776,18 +787,62 @@ export async function deleteAccessToken(tokenId: string): Promise<void> {
   await invoke("delete_access_token", { tokenId });
 }
 
-export type CCSwitchClient =
-  | "claude"
-  | "codex"
-  | "gemini"
-  | "opencode"
-  | "openclaw";
+export interface ClientConfigTarget {
+  tokenId: string;
+  client: DirectClient;
+  models: ClientConfigModels;
+  inferenceUrl: string;
+}
 
-export interface CCSwitchModels {
-  model?: string;
-  haikuModel?: string;
-  sonnetModel?: string;
-  opusModel?: string;
+/**
+ * What AstrLink wrote to Claude Code and Codex. Outside the desktop there are
+ * no local clients to configure.
+ */
+export async function getClientConfigStatus(
+  inferenceUrl: string | null,
+): Promise<ClientConfigStatus[]> {
+  if (!hasNativeBridge()) return [];
+  return parseClientConfigStatuses(
+    await invoke<unknown>("client_config_status", { inferenceUrl }),
+  );
+}
+
+/** Writes the connection, or names the keys that need `replace` first. */
+export async function applyClientConfig(
+  input: ClientConfigTarget & { replace: boolean },
+): Promise<ClientConfigApplyOutcome> {
+  requireNativeBridge();
+  return parseClientConfigApplyOutcome(
+    await invoke<unknown>("apply_client_config", { ...input }),
+  );
+}
+
+export async function removeClientConfig(client: DirectClient): Promise<void> {
+  requireNativeBridge();
+  await invoke("remove_client_config", { client });
+}
+
+/** The config for a fresh setup, with the token shown as its hint. */
+export async function previewClientConfigSnippet(
+  input: ClientConfigTarget,
+): Promise<string> {
+  requireNativeBridge();
+  return parseClientConfigSnippet(
+    await invoke<unknown>("preview_client_config_snippet", { ...input }),
+  );
+}
+
+/**
+ * Has the host copy the config with the real token to the clipboard. False
+ * when the clipboard refused it.
+ */
+export async function copyClientConfigSnippet(
+  input: ClientConfigTarget,
+): Promise<boolean> {
+  requireNativeBridge();
+  return parseClientConfigCopied(
+    await invoke<unknown>("copy_client_config_snippet", { ...input }),
+  );
 }
 
 /** Whether the OS has an app registered for CC Switch's import links. */
@@ -796,11 +851,11 @@ export async function isCCSwitchInstalled(): Promise<boolean> {
   return (await invoke<unknown>("cc_switch_installed")) === true;
 }
 
+/** CC Switch names the provider after the token. */
 export async function openCCSwitchImport(input: {
   tokenId: string;
-  client: CCSwitchClient;
-  name: string;
-  models: CCSwitchModels;
+  client: ClientConfigClient;
+  models: ClientConfigModels;
   inferenceUrl: string;
 }): Promise<void> {
   requireNativeBridge();

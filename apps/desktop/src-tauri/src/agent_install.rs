@@ -1,9 +1,7 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
-    fs::{self, OpenOptions},
-    io::{self, Write},
+    fs, io,
     path::{Path, PathBuf},
-    sync::atomic::{AtomicU64, Ordering},
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -12,6 +10,7 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
 use crate::control_session::astrlink_home;
+use crate::host_files::{self, read_optional, remove_path};
 
 const RECEIPT_VERSION: u32 = 2;
 const HOST_GUARDS_VERSION: u32 = 2;
@@ -271,6 +270,7 @@ pub fn install(
     skill_ids: &[AgentSkillId],
     tool_ids: &[AgentToolId],
 ) -> Result<InstallReceipt, String> {
+    let _lock = host_files::lock();
     if skill_ids.is_empty() {
         return Err("select at least one skill to install".to_string());
     }
@@ -340,6 +340,7 @@ pub fn install(
 }
 
 pub fn uninstall(context: &InstallContext) -> Result<(), String> {
+    let _lock = host_files::lock();
     for skill in AgentSkillId::all() {
         for id in AgentToolId::all() {
             uninstall_tool(&context.home, skill.bundle(), id)?;
@@ -360,6 +361,7 @@ pub fn uninstall(context: &InstallContext) -> Result<(), String> {
 }
 
 pub fn sync_installed_skills(home: &Path) -> Result<(), String> {
+    let _lock = host_files::lock();
     if !receipt_path(home).is_file() {
         return Ok(());
     }
@@ -388,6 +390,7 @@ pub fn sync_installed_skills(home: &Path) -> Result<(), String> {
 /// the copy, and defers upgrading an MCP-era receipt until a CLI exists. A
 /// skill-only install never gains a CLI here.
 pub fn sync_installed_cli(context: &InstallContext) -> Result<(), String> {
+    let _lock = host_files::lock();
     let Some(receipt) = read_optional(&receipt_path(&context.home))? else {
         return Ok(());
     };
@@ -987,12 +990,7 @@ fn copy_cli_binary(source: &Path, dest: &Path) -> Result<(), String> {
     };
     fs::create_dir_all(parent)
         .map_err(|error| format!("unable to create {}: {error}", parent.display()))?;
-    let temporary = parent.join(format!(
-        ".{}.tmp-{}-{}",
-        name.to_string_lossy(),
-        std::process::id(),
-        TEMPORARY_SEQUENCE.fetch_add(1, Ordering::Relaxed)
-    ));
+    let temporary = host_files::temporary_sibling(parent, name);
     let result = (|| {
         fs::copy(source, &temporary)?;
         #[cfg(unix)]
@@ -1441,62 +1439,9 @@ pub fn remove_codex_agents_guard(existing: &str) -> String {
     }
 }
 
-fn read_optional(path: &Path) -> Result<Option<String>, String> {
-    match fs::read_to_string(path) {
-        Ok(raw) => Ok(Some(raw)),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
-        Err(error) => Err(format!("unable to read {}: {error}", path.display())),
-    }
-}
-
-static TEMPORARY_SEQUENCE: AtomicU64 = AtomicU64::new(0);
-
-/// Replaces a user's agent file through a temporary sibling, so a crash or a
-/// full disk leaves either the old contents or the new ones. A symlinked file
-/// is replaced at its target, and an existing file keeps its permissions.
+/// Agent files keep their permissions; none of them holds a secret.
 fn write_text(path: &Path, contents: &str) -> Result<(), String> {
-    let is_symlink = fs::symlink_metadata(path).is_ok_and(|metadata| metadata.is_symlink());
-    let target = if is_symlink {
-        fs::canonicalize(path)
-            .map_err(|error| format!("unable to resolve {}: {error}", path.display()))?
-    } else {
-        path.to_path_buf()
-    };
-    let (Some(parent), Some(name)) = (target.parent(), target.file_name()) else {
-        return Err(format!(
-            "unable to write {}: no parent directory",
-            path.display()
-        ));
-    };
-    fs::create_dir_all(parent)
-        .map_err(|error| format!("unable to create {}: {error}", parent.display()))?;
-    let permissions = fs::metadata(&target)
-        .ok()
-        .map(|metadata| metadata.permissions());
-    let temporary = parent.join(format!(
-        ".{}.tmp-{}-{}",
-        name.to_string_lossy(),
-        std::process::id(),
-        TEMPORARY_SEQUENCE.fetch_add(1, Ordering::Relaxed)
-    ));
-    let result = (|| {
-        let mut file = OpenOptions::new()
-            .create_new(true)
-            .write(true)
-            .open(&temporary)?;
-        file.write_all(contents.as_bytes())?;
-        if let Some(permissions) = permissions {
-            file.set_permissions(permissions)?;
-        }
-        file.sync_all()?;
-        drop(file);
-        crate::preferences::atomic_replace(&temporary, &target)
-    })();
-    if let Err(error) = result {
-        let _ = fs::remove_file(&temporary);
-        return Err(format!("unable to write {}: {error}", path.display()));
-    }
-    Ok(())
+    host_files::write_text(path, contents, Default::default())
 }
 
 fn read_host_guards(home: &Path) -> Result<HostGuardRecord, String> {
@@ -1649,6 +1594,7 @@ pub fn sync_installed_host_guards(
     data_directory: Option<&Path>,
     raw_key_pins: Option<&Path>,
 ) -> Result<(), String> {
+    let _lock = host_files::lock();
     if !receipt_path(home).is_file() || !host_guards_path(home).is_file() {
         return Ok(());
     }
@@ -1724,20 +1670,6 @@ fn write_json_file(path: &Path, value: &impl Serialize) -> Result<(), String> {
         .map_err(|error| format!("unable to encode {}: {error}", path.display()))?;
     encoded.push('\n');
     fs::write(path, encoded).map_err(|error| format!("unable to write {}: {error}", path.display()))
-}
-
-fn remove_path(path: &Path) -> Result<(), String> {
-    match fs::symlink_metadata(path) {
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(format!("unable to inspect {}: {error}", path.display())),
-        Ok(metadata) if metadata.file_type().is_dir() && !metadata.file_type().is_symlink() => {
-            fs::remove_dir_all(path)
-                .map_err(|error| format!("unable to remove {}: {error}", path.display()))
-        }
-        Ok(_) => fs::remove_file(path)
-            .or_else(|_| fs::remove_dir_all(path))
-            .map_err(|error| format!("unable to remove {}: {error}", path.display())),
-    }
 }
 
 fn display_path(path: &Path) -> Result<String, String> {

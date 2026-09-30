@@ -69,6 +69,11 @@ import {
   openAuthorizationURL,
   isCCSwitchInstalled,
   openCCSwitchImport,
+  getClientConfigStatus,
+  applyClientConfig,
+  removeClientConfig,
+  previewClientConfigSnippet,
+  copyClientConfigSnippet,
   confirmProviderImport,
   dismissProviderImport,
   getPendingProviderImport,
@@ -774,9 +779,8 @@ describe("desktop bridge contract", () => {
 
     const ccSwitchInput = {
       tokenId: "token_01",
-      client: "codex" as const,
-      name: "AstrLink",
-      models: { model: "gpt-5" },
+      client: "gemini" as const,
+      models: { model: "gemini-2.5-pro" },
       inferenceUrl: "http://127.0.0.1:8317",
     };
     invokeMock.mockResolvedValueOnce(undefined);
@@ -784,6 +788,90 @@ describe("desktop bridge contract", () => {
     expect(invokeMock).toHaveBeenLastCalledWith(
       "open_cc_switch_import",
       ccSwitchInput,
+    );
+
+    const statuses = [
+      {
+        client: "claude",
+        detected: true,
+        paths: ["/Users/me/.claude/settings.json"],
+        state: "configured",
+        token_id: "token_01",
+      },
+      {
+        client: "codex",
+        detected: false,
+        paths: ["/Users/me/.codex/config.toml"],
+        state: "not_configured",
+        token_id: null,
+      },
+    ];
+    invokeMock.mockResolvedValueOnce(statuses);
+    await expect(
+      getClientConfigStatus("http://127.0.0.1:8317"),
+    ).resolves.toEqual(statuses);
+    expect(invokeMock).toHaveBeenLastCalledWith("client_config_status", {
+      inferenceUrl: "http://127.0.0.1:8317",
+    });
+    invokeMock.mockResolvedValueOnce([statuses[1], statuses[0]]);
+    await expect(getClientConfigStatus(null)).rejects.toThrow(
+      "Invalid client-config IPC response",
+    );
+
+    const target = {
+      tokenId: "token_01",
+      client: "codex" as const,
+      models: { model: "gpt-5" },
+      inferenceUrl: "http://127.0.0.1:8317",
+    };
+    invokeMock.mockResolvedValueOnce({
+      status: "needs_confirmation",
+      keys: ["model_provider"],
+    });
+    await expect(
+      applyClientConfig({ ...target, replace: false }),
+    ).resolves.toEqual({
+      status: "needs_confirmation",
+      keys: ["model_provider"],
+    });
+    expect(invokeMock).toHaveBeenLastCalledWith("apply_client_config", {
+      ...target,
+      replace: false,
+    });
+    invokeMock.mockResolvedValueOnce({ status: "applied" });
+    await expect(
+      applyClientConfig({ ...target, replace: true }),
+    ).resolves.toEqual({ status: "applied" });
+    invokeMock.mockResolvedValueOnce({ status: "applied", keys: [] });
+    await expect(
+      applyClientConfig({ ...target, replace: true }),
+    ).rejects.toThrow("unexpected field");
+
+    invokeMock.mockResolvedValueOnce(undefined);
+    await removeClientConfig("claude");
+    expect(invokeMock).toHaveBeenLastCalledWith("remove_client_config", {
+      client: "claude",
+    });
+
+    invokeMock.mockResolvedValueOnce(
+      'experimental_bearer_token = "astr_…abcd"',
+    );
+    await expect(previewClientConfigSnippet(target)).resolves.toContain(
+      "astr_…abcd",
+    );
+    expect(invokeMock).toHaveBeenLastCalledWith(
+      "preview_client_config_snippet",
+      target,
+    );
+    invokeMock.mockResolvedValueOnce(`token = "${secret}"`);
+    await expect(previewClientConfigSnippet(target)).rejects.toThrow(
+      "must show the token hint",
+    );
+    invokeMock.mockResolvedValueOnce(false);
+    await expect(copyClientConfigSnippet(target)).resolves.toBe(false);
+    expect(invokeMock).toHaveBeenLastCalledWith(
+      "copy_client_config_snippet",
+      target,
     );
 
     invokeMock.mockResolvedValueOnce(undefined);

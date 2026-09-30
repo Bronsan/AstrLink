@@ -1,11 +1,13 @@
 mod agent_install;
 mod cc_switch;
+mod client_config;
 mod client_updates;
 mod control_session;
 mod data_hygiene;
 #[cfg(debug_assertions)]
 mod dev_reload;
 mod failure_policy;
+mod host_files;
 mod i18n;
 mod kek_store;
 #[cfg(target_os = "macos")]
@@ -232,6 +234,37 @@ fn agent_install_context(app: &tauri::AppHandle) -> Result<agent_install::Instal
         data_directory: app.path().app_data_dir().ok(),
         raw_key_pins: raw_key_pin_file(app),
     })
+}
+
+/// Keeps client configs AstrLink wrote pointed at the gateway's current
+/// address, including a fallback port picked at startup.
+fn start_client_config_sync(manager: &CoreManager, preferences: Arc<PreferencesStore>) {
+    let mut changes = manager.subscribe();
+    tauri::async_runtime::spawn(async move {
+        let mut synced: Option<String> = None;
+        while changes.changed().await.is_ok() {
+            let inference_url = changes.borrow_and_update().inference_url.clone();
+            let Some(inference_url) = inference_url.filter(|url| synced.as_ref() != Some(url))
+            else {
+                continue;
+            };
+            synced = Some(inference_url.clone());
+            let result = tauri::async_runtime::spawn_blocking(move || {
+                client_config::sync(&control_session::user_home()?, &inference_url)
+            })
+            .await
+            .map_err(|error| error.to_string())
+            .and_then(|result| result);
+            if let Err(error) = result {
+                eprintln!("failed to update client configs for the gateway address: {error}");
+                preferences.report_warning(i18n::t(
+                    preferences.snapshot().values.locale,
+                    "host.clientConfig.syncFailed",
+                    &[("error", &error)],
+                ));
+            }
+        }
+    });
 }
 
 /// The raw key pin file agent guards deny, where the pins live in one.
@@ -1528,13 +1561,110 @@ async fn cc_switch_installed() -> Result<bool, String> {
 #[tauri::command]
 async fn open_cc_switch_import(
     token_id: String,
-    client: cc_switch::Client,
-    name: String,
-    models: cc_switch::Models,
+    client: client_config::Client,
+    models: client_config::Models,
     inference_url: String,
     manager: State<'_, Arc<CoreManager>>,
 ) -> Result<(), String> {
-    cc_switch::open_import(&manager, &token_id, client, &name, &models, &inference_url).await
+    cc_switch::open_import(&manager, &token_id, client, &models, &inference_url).await
+}
+
+#[tauri::command]
+async fn client_config_status(
+    inference_url: Option<String>,
+) -> Result<Vec<client_config::ClientStatus>, String> {
+    let home = control_session::user_home()?;
+    tauri::async_runtime::spawn_blocking(move || {
+        client_config::status(&home, inference_url.as_deref())
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+async fn apply_client_config(
+    token_id: String,
+    client: client_config::Client,
+    models: client_config::Models,
+    inference_url: String,
+    replace: bool,
+    manager: State<'_, Arc<CoreManager>>,
+) -> Result<client_config::ApplyOutcome, String> {
+    let home = control_session::user_home()?;
+    client_config::apply(
+        &manager,
+        home,
+        token_id,
+        client,
+        &models,
+        inference_url,
+        replace,
+    )
+    .await
+}
+
+#[tauri::command]
+async fn remove_client_config(client: client_config::Client) -> Result<(), String> {
+    let home = control_session::user_home()?;
+    tauri::async_runtime::spawn_blocking(move || client_config::remove(&home, client))
+        .await
+        .map_err(|error| error.to_string())?
+}
+
+/// The config `apply_client_config` would write to a fresh file, with the
+/// token shown as its hint.
+#[tauri::command]
+async fn preview_client_config_snippet(
+    token_id: String,
+    client: client_config::Client,
+    models: client_config::Models,
+    inference_url: String,
+    manager: State<'_, Arc<CoreManager>>,
+) -> Result<String, String> {
+    let origin = client_config::local_origin(&inference_url)?;
+    let models = models.fields(client)?;
+    let (_, hint) = client_config::token_summary(&manager, &token_id).await?;
+    client_config::snippet(
+        client,
+        &client_config::Connection {
+            token_id: &token_id,
+            token: &hint,
+            origin: &origin,
+            models: &models,
+        },
+    )
+}
+
+/// Copies the real snippet straight to the clipboard, like
+/// `copy_access_token`. `false` means the clipboard refused it.
+#[tauri::command]
+async fn copy_client_config_snippet(
+    app: tauri::AppHandle,
+    token_id: String,
+    client: client_config::Client,
+    models: client_config::Models,
+    inference_url: String,
+    manager: State<'_, Arc<CoreManager>>,
+) -> Result<bool, String> {
+    let origin = client_config::local_origin(&inference_url)?;
+    let models = models.fields(client)?;
+    let token = client_config::reveal_access_token(&manager, &token_id, &inference_url).await?;
+    let snippet = client_config::snippet(
+        client,
+        &client_config::Connection {
+            token_id: &token_id,
+            token: &token,
+            origin: &origin,
+            models: &models,
+        },
+    )?;
+    match app.clipboard().write_text(snippet) {
+        Ok(()) => Ok(true),
+        Err(error) => {
+            eprintln!("unable to copy the client config: {error}");
+            Ok(false)
+        }
+    }
 }
 
 #[tauri::command]
@@ -1790,6 +1920,11 @@ pub fn run() {
             copy_access_token,
             cc_switch_installed,
             open_cc_switch_import,
+            client_config_status,
+            apply_client_config,
+            remove_client_config,
+            preview_client_config_snippet,
+            copy_client_config_snippet,
             delete_access_token,
             list_privacy_policies,
             get_privacy_policy,
@@ -1857,6 +1992,7 @@ pub fn run() {
                     &[("error", &error)],
                 ));
             }
+            start_client_config_sync(&setup_manager, Arc::clone(&preferences));
             app.manage(preferences);
             let updates =
                 Arc::new(updates::UpdateManager::new(app.handle()).map_err(std::io::Error::other)?);

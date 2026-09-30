@@ -34,6 +34,9 @@ const bridgeMocks = vi.hoisted(() => ({
   updateServiceOrder: vi.fn(),
   installAgentDebug: vi.fn(),
   isCCSwitchInstalled: vi.fn().mockResolvedValue(false),
+  getClientConfigStatus: vi.fn().mockResolvedValue([]),
+  previewClientConfigSnippet: vi.fn().mockResolvedValue("{}"),
+  copyClientConfigSnippet: vi.fn(),
   uninstallAgentDebug: vi.fn(),
   getService: vi.fn(),
   getServiceAuthorization: vi.fn(),
@@ -742,13 +745,17 @@ describe("App workspace navigation", () => {
     expect(
       container.querySelector('[aria-current="step"]')?.textContent,
     ).toContain("连接客户端");
-    expect(container.textContent).toContain("http://127.0.0.1:8317/v1");
+    expect(button("配置客户端")).toBeTruthy();
+    expect(bridgeMocks.previewClientConfigSnippet).toHaveBeenLastCalledWith(
+      expect.objectContaining({ tokenId: "token_setup", client: "claude" }),
+    );
     expect(container.textContent).not.toContain("test-secret");
   });
 
   it("uses protocol-specific client URLs and only completes after success", async () => {
     localStorage.setItem(ONBOARDING_STORAGE_KEY, "active");
     await renderApp();
+    await act(async () => button("其他工具").click());
     expect(container.textContent).toContain("http://127.0.0.1:8317/v1");
     await act(async () => button("Anthropic 兼容").click());
     expect(container.textContent).toContain("http://127.0.0.1:8317");
@@ -837,6 +844,7 @@ describe("App workspace navigation", () => {
     bridgeMocks.getRawSealingStatus.mockResolvedValue(rawSealing());
     await renderApp();
     expect(bridgeMocks.copyAccessToken).not.toHaveBeenCalled();
+    await act(async () => button("其他工具").click());
     await act(async () => button("复制访问令牌").click());
     expect(
       document.querySelector('[data-slot="proof-confirm-dialog"]'),
@@ -846,6 +854,38 @@ describe("App workspace navigation", () => {
     );
     expect(writeText).not.toHaveBeenCalled();
     expect(localStorage.getItem(ONBOARDING_STORAGE_KEY)).toBe("active");
+  });
+
+  it("has the host fill the token into a client's config snippet", async () => {
+    localStorage.setItem(ONBOARDING_STORAGE_KEY, "active");
+    bridgeMocks.getRawSealingStatus.mockResolvedValue(rawSealing());
+    bridgeMocks.previewClientConfigSnippet.mockImplementation(
+      async ({ client }: { client: string }) =>
+        client === "codex"
+          ? 'model_provider = "astrlink"\n'
+          : '{ "env": { "ANTHROPIC_AUTH_TOKEN": "astr_…abcd" } }',
+    );
+    bridgeMocks.copyClientConfigSnippet.mockResolvedValue(true);
+    await renderApp();
+    expect(container.textContent).toContain("ANTHROPIC_AUTH_TOKEN");
+    expect(container.textContent).toContain("~/.claude/settings.json");
+    await act(async () => button("Codex").click());
+    expect(container.textContent).toContain('model_provider = "astrlink"');
+    expect(bridgeMocks.previewClientConfigSnippet).toHaveBeenLastCalledWith({
+      tokenId: "token_01",
+      client: "codex",
+      models: { model: "gpt-5" },
+      inferenceUrl: "http://127.0.0.1:8317",
+    });
+    await act(async () => button("复制配置").click());
+    expect(bridgeMocks.copyClientConfigSnippet).toHaveBeenCalledExactlyOnceWith(
+      {
+        tokenId: "token_01",
+        client: "codex",
+        models: { model: "gpt-5" },
+        inferenceUrl: "http://127.0.0.1:8317",
+      },
+    );
   });
 
   it("keeps loaded page content visible while revisits revalidate slowly", async () => {

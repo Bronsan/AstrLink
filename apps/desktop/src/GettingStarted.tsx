@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from "react";
 import {
   ArrowRight,
   Check,
+  Connect as Cable,
   Copy,
   Key,
   LockKeyhole,
@@ -25,9 +26,14 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { copyAccessToken } from "./bridge";
-import { CCSwitchImportDialog } from "./CCSwitchImportDialog";
-import { CCSwitchIcon } from "@/components/CCSwitchIcon";
+import {
+  copyAccessToken,
+  copyClientConfigSnippet,
+  previewClientConfigSnippet,
+  type ClientConfigTarget,
+} from "./bridge";
+import { ClientSetupDialog, clientLabel } from "./ClientSetupDialog";
+import type { DirectClient } from "./client-config-model";
 import type { AppSnapshot } from "./core-model";
 import type { AccessTokenCatalog } from "./AccessTokenManager";
 import type { ServiceCatalog } from "./Overview";
@@ -81,11 +87,20 @@ export function GettingStarted({
   const [rawDialog, setRawDialog] = useState<RawDialog | null>(null);
   const passwordMissing = useRawSetupNeeded(rawSealing.status);
   const [protocol, setProtocol] = useState<"openai" | "anthropic">("openai");
+  const [manualClient, setManualClient] = useState<DirectClient | "other">(
+    "claude",
+  );
+  const [snippet, setSnippet] = useState<{
+    key: string;
+    text: string | null;
+  } | null>(null);
+  const [copyingSnippet, setCopyingSnippet] = useState(false);
   const [tokenId, setTokenId] = useState("");
   const [copying, setCopying] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
   const mounted = useRef(true);
   const copyPending = useRef(false);
+  const snippetCopyPending = useRef(false);
   const token =
     tokenCatalog.items.find((item) => item.id === tokenId) ??
     tokenCatalog.items[0];
@@ -127,7 +142,7 @@ export function GettingStarted({
     },
   ];
   const completedCount = steps.filter((step) => step.complete).length;
-  const models = [
+  const modelsFor = (accepts: (protocol: string) => boolean) => [
     ...new Set(
       catalog.items
         .filter(
@@ -136,14 +151,40 @@ export function GettingStarted({
             (!service.subscription ||
               service.subscription.status === "connected") &&
             service.capabilities.some((capability) =>
-              protocol === "openai"
-                ? capability.protocol.startsWith("openai.")
-                : capability.protocol === "anthropic.messages",
+              accepts(capability.protocol),
             ),
         )
         .flatMap((service) => service.models),
     ),
   ];
+  const models = modelsFor((candidate) =>
+    protocol === "openai"
+      ? candidate.startsWith("openai.")
+      : candidate === "anthropic.messages",
+  );
+  // The snippet shows the first model a client can reach, as the other
+  // tools view does; Codex cannot start without one.
+  const snippetModel =
+    manualClient === "other"
+      ? undefined
+      : modelsFor((candidate) =>
+          manualClient === "codex"
+            ? candidate === "openai.responses"
+            : candidate === "anthropic.messages",
+        )[0];
+  const snippetTarget: ClientConfigTarget | null =
+    manualClient !== "other" &&
+    token &&
+    canConnect &&
+    (manualClient === "claude" || snippetModel)
+      ? {
+          tokenId: token.id,
+          client: manualClient,
+          models: snippetModel ? { model: snippetModel } : {},
+          inferenceUrl: inferenceURL,
+        }
+      : null;
+  const snippetKey = snippetTarget ? JSON.stringify(snippetTarget) : "";
   const error = catalog.error ?? tokenCatalog.error ?? usage.error;
 
   useEffect(() => setSelectedStep(onboarding.step), [onboarding.step]);
@@ -156,6 +197,19 @@ export function GettingStarted({
   useEffect(() => {
     if (!canConnect) setImportOpen(false);
   }, [canConnect]);
+  useEffect(() => {
+    if (!snippetKey) return;
+    let cancelled = false;
+    const target = JSON.parse(snippetKey) as ClientConfigTarget;
+    previewClientConfigSnippet(target).then(
+      (text) => !cancelled && setSnippet({ key: snippetKey, text }),
+      () => !cancelled && setSnippet({ key: snippetKey, text: null }),
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [snippetKey]);
+  const shownSnippet = snippet?.key === snippetKey ? snippet : null;
 
   const copyToken = async () => {
     if (!token || !canConnect || copyPending.current) return;
@@ -175,6 +229,27 @@ export function GettingStarted({
     } finally {
       copyPending.current = false;
       if (mounted.current) setCopying(false);
+    }
+  };
+
+  const copySnippet = async () => {
+    if (!snippetTarget || snippetCopyPending.current) return;
+    snippetCopyPending.current = true;
+    setCopyingSnippet(true);
+    try {
+      // The host fills in the real token and copies the config itself.
+      const copied = await copyClientConfigSnippet(snippetTarget);
+      if (!mounted.current) return;
+      if (copied) notify.success(t("onboarding.configCopied"));
+      else notify.error(t("common.copyFailed"));
+    } catch (error) {
+      if (mounted.current)
+        notify.error(
+          error instanceof Error ? error.message : t("common.copyFailed"),
+        );
+    } finally {
+      snippetCopyPending.current = false;
+      if (mounted.current) setCopyingSnippet(false);
     }
   };
 
@@ -431,7 +506,7 @@ export function GettingStarted({
                       className="w-fit"
                       onClick={() => setImportOpen(true)}
                     >
-                      <CCSwitchIcon />
+                      <Cable aria-hidden="true" />
                       {t("onboarding.importClient")}
                     </Button>
                     <HelpDisclosure
@@ -439,49 +514,107 @@ export function GettingStarted({
                       open={!complete}
                     >
                       <SegmentedControl
-                        label={t("onboarding.protocol")}
-                        value={protocol}
-                        onValueChange={setProtocol}
+                        label={t("onboarding.manualClient")}
+                        value={manualClient}
+                        onValueChange={setManualClient}
                         options={[
-                          { value: "openai", label: t("onboarding.openai") },
-                          {
-                            value: "anthropic",
-                            label: t("onboarding.anthropic"),
-                          },
+                          { value: "claude", label: clientLabel("claude") },
+                          { value: "codex", label: clientLabel("codex") },
+                          { value: "other", label: t("onboarding.otherTools") },
                         ]}
                       />
-                      <CopyableValue
-                        label="Base URL"
-                        value={baseURL}
-                        placeholder={t("overview.waitingReady")}
-                        copyLabel={t("overview.copyApiAddress")}
-                      />
-                      <div className="flex flex-wrap items-center gap-2">
-                        <span>
-                          {t("onboarding.apiKey", { name: token?.name })}
-                        </span>
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          disabled={copying}
-                          onClick={() => void copyToken()}
-                        >
-                          <Copy aria-hidden="true" />
-                          {t(
-                            copying ? "common.copying" : "onboarding.copyToken",
+                      {manualClient === "other" ? (
+                        <>
+                          <SegmentedControl
+                            label={t("onboarding.protocol")}
+                            value={protocol}
+                            onValueChange={setProtocol}
+                            options={[
+                              {
+                                value: "openai",
+                                label: t("onboarding.openai"),
+                              },
+                              {
+                                value: "anthropic",
+                                label: t("onboarding.anthropic"),
+                              },
+                            ]}
+                          />
+                          <CopyableValue
+                            label="Base URL"
+                            value={baseURL}
+                            placeholder={t("overview.waitingReady")}
+                            copyLabel={t("overview.copyApiAddress")}
+                          />
+                          <div className="flex flex-wrap items-center gap-2">
+                            <span>
+                              {t("onboarding.apiKey", { name: token?.name })}
+                            </span>
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              disabled={copying}
+                              onClick={() => void copyToken()}
+                            >
+                              <Copy aria-hidden="true" />
+                              {t(
+                                copying
+                                  ? "common.copying"
+                                  : "onboarding.copyToken",
+                              )}
+                            </Button>
+                          </div>
+                          <p>{t("onboarding.modelHelp")}</p>
+                          {models[0] ? (
+                            <CopyableValue
+                              label={t("onboarding.model")}
+                              value={models[0]}
+                              placeholder=""
+                              copyLabel={t("onboarding.copyModel")}
+                            />
+                          ) : (
+                            <p>{t("onboarding.noModels")}</p>
                           )}
-                        </Button>
-                      </div>
-                      <p>{t("onboarding.modelHelp")}</p>
-                      {models[0] ? (
-                        <CopyableValue
-                          label={t("onboarding.model")}
-                          value={models[0]}
-                          placeholder=""
-                          copyLabel={t("onboarding.copyModel")}
-                        />
+                        </>
+                      ) : !snippetTarget ? (
+                        <p>{t("onboarding.snippetNeedsModel")}</p>
                       ) : (
-                        <p>{t("onboarding.noModels")}</p>
+                        <>
+                          <p>
+                            {t("onboarding.snippetHint", {
+                              path:
+                                manualClient === "codex"
+                                  ? "~/.codex/config.toml"
+                                  : "~/.claude/settings.json",
+                            })}
+                          </p>
+                          {shownSnippet && shownSnippet.text === null ? (
+                            <FormMessage tone="error">
+                              {t("onboarding.snippetFailed")}
+                            </FormMessage>
+                          ) : (
+                            <pre
+                              aria-busy={!shownSnippet}
+                              className="max-h-64 overflow-auto rounded-md border bg-muted/40 p-3 font-mono text-xs leading-relaxed whitespace-pre"
+                            >
+                              {shownSnippet?.text ?? t("common.loading")}
+                            </pre>
+                          )}
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            className="w-fit"
+                            disabled={copyingSnippet || !shownSnippet?.text}
+                            onClick={() => void copySnippet()}
+                          >
+                            <Copy aria-hidden="true" />
+                            {t(
+                              copyingSnippet
+                                ? "common.copying"
+                                : "onboarding.copyConfig",
+                            )}
+                          </Button>
+                        </>
                       )}
                     </HelpDisclosure>
                   </div>
@@ -527,8 +660,9 @@ export function GettingStarted({
         </PanelBody>
       </Panel>
       {importOpen && token && canConnect ? (
-        <CCSwitchImportDialog
+        <ClientSetupDialog
           token={token}
+          tokens={tokenCatalog.items}
           inferenceURL={inferenceURL}
           onClose={() => setImportOpen(false)}
         />
