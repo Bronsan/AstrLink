@@ -1305,6 +1305,20 @@ export function RequestRecords({
                     description={t("records.description")}
                     title={t("records.title")}
                     titleId="request-records-heading"
+                    titleSuffix={
+                      <span className="inline-flex shrink-0 items-center gap-1.5 text-micro whitespace-nowrap text-muted-foreground">
+                        <StatusDot
+                          tone={
+                            !isReady
+                              ? "neutral"
+                              : syncWarning || listStatus === "error"
+                                ? "pending"
+                                : "positive"
+                          }
+                        />
+                        {t("records.syncEverySecond")}
+                      </span>
+                    }
                   />
                 ) : null}
                 <TabsList
@@ -1339,18 +1353,6 @@ export function RequestRecords({
                   </FormMessage>
                 ) : null}
                 <ActionGroup className="w-full border-b bg-background py-2">
-                  <span className="inline-flex items-center gap-1.5 text-micro text-muted-foreground">
-                    <StatusDot
-                      tone={
-                        !isReady
-                          ? "neutral"
-                          : syncWarning || listStatus === "error"
-                            ? "pending"
-                            : "positive"
-                      }
-                    />
-                    {t("records.syncEverySecond")}
-                  </span>
                   <div className="grid min-w-0 flex-1 basis-72 grid-cols-2 gap-2 @[760px]:max-w-2xl @[760px]:grid-cols-4">
                     <FilterSelect
                       ariaLabel={t("records.filter", {
