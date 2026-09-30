@@ -16,7 +16,6 @@ import { ConfirmDialog as AppConfirmDialog } from "@/components/ConfirmDialog";
 import { ClientTypeIcon } from "@/components/ClientTypeIcon";
 import { DataRow } from "@/components/DataRow";
 import { EmptyState } from "@/components/EmptyState";
-import { ActionGroup } from "@/components/ActionGroup";
 import { ScrollWorkspace } from "@/components/ScrollWorkspace";
 import { FilterSelect } from "@/components/FilterSelect";
 import { ServiceSelect } from "@/components/ServiceSelect";
@@ -1352,7 +1351,7 @@ export function RequestRecords({
                     {syncWarning}
                   </FormMessage>
                 ) : null}
-                <ActionGroup className="w-full border-b bg-background py-2">
+                <div className="flex w-full min-w-0 flex-wrap items-center gap-2 border-b bg-background py-2">
                   <div className="grid min-w-0 flex-1 basis-72 grid-cols-2 gap-2 @[760px]:max-w-2xl @[760px]:grid-cols-4">
                     <FilterSelect
                       ariaLabel={t("records.filter", {
@@ -1432,6 +1431,7 @@ export function RequestRecords({
                     />
                   </div>
                   <Button
+                    className="ml-auto"
                     variant="outline"
                     disabled={!isReady || listStatus === "loading"}
                     onClick={() => manualPollRef.current?.()}
@@ -1441,7 +1441,7 @@ export function RequestRecords({
                     <RefreshCw aria-hidden="true" />
                     {t("common.refresh")}
                   </Button>
-                </ActionGroup>
+                </div>
               </>
             }
           >
