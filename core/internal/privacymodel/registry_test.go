@@ -209,6 +209,8 @@ func TestRegistryRetriesTransientAssetFailuresAndLogsSanitizedReason(t *testing.
 	repository.transientFailures["model_int8.onnx"] = 2
 	var logMu sync.Mutex
 	var logs []string
+	// The ready line is logged after the status is published.
+	readyLogged := make(chan struct{})
 	registry, err := NewRegistry(context.Background(), RegistryConfig{
 		RootDirectory:        filepath.Join(t.TempDir(), "models"),
 		MetadataBaseURL:      repository.server.URL,
@@ -218,6 +220,9 @@ func TestRegistryRetriesTransientAssetFailuresAndLogsSanitizedReason(t *testing.
 			logMu.Lock()
 			defer logMu.Unlock()
 			logs = append(logs, fmt.Sprintf(format, arguments...))
+			if strings.HasPrefix(format, "privacy model download ready:") {
+				close(readyLogged)
+			}
 		},
 	})
 	if err != nil {
@@ -242,6 +247,11 @@ func TestRegistryRetriesTransientAssetFailuresAndLogsSanitizedReason(t *testing.
 	}
 	if attempts := repository.assetAttemptCount("model_int8.onnx"); attempts != 3 {
 		t.Fatalf("model attempts=%d, want 3", attempts)
+	}
+	select {
+	case <-readyLogged:
+	case <-time.After(3 * time.Second):
+		t.Fatal("ready was not logged")
 	}
 	logMu.Lock()
 	joined := strings.Join(logs, "\n")

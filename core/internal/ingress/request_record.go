@@ -10,7 +10,9 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/QuantumNous/astrlink/convo"
@@ -107,6 +109,47 @@ func (buffer *captureBuffer) reset(enabled bool, maxBytes int) {
 	*buffer = captureBuffer{enabled: enabled, maxBytes: maxBytes}
 }
 
+// captureTee copies a request body into its own buffer. net/http reads
+// outbound bodies on its write goroutine, and the upstream may answer before
+// the final EOF read, even after the request has finished. The tee therefore
+// never touches the session; the request goroutine adopts its buffer through
+// syncCaptureTees.
+type captureTee struct {
+	io.ReadCloser
+	mu     sync.Mutex
+	buffer captureBuffer
+}
+
+func (tee *captureTee) Read(p []byte) (int, error) {
+	n, err := tee.ReadCloser.Read(p)
+	tee.mu.Lock()
+	if n > 0 {
+		tee.buffer.observe(p[:n])
+	}
+	if errors.Is(err, io.EOF) {
+		tee.buffer.markComplete()
+	}
+	tee.mu.Unlock()
+	return n, err
+}
+
+// snapshot returns what the tee has read so far. The tee may keep appending,
+// so the copy is clipped and never shares spare capacity with it.
+func (tee *captureTee) snapshot() captureBuffer {
+	tee.mu.Lock()
+	defer tee.mu.Unlock()
+	snapshot := tee.buffer
+	snapshot.bytes = slices.Clip(snapshot.bytes)
+	return snapshot
+}
+
+// adopt copies the tee into buffer and reports whether it is complete, after
+// which it no longer changes and can be released.
+func (tee *captureTee) adopt(buffer *captureBuffer) bool {
+	*buffer = tee.snapshot()
+	return buffer.complete
+}
+
 type pendingAttemptRecord struct {
 	record     contract.RequestRecord
 	blobs      []storage.AuditBlob
@@ -158,6 +201,8 @@ type recordSession struct {
 	responseCapture          captureBuffer
 	upstreamRequestCapture   captureBuffer
 	upstreamResponseCapture  captureBuffer
+	requestTee               *captureTee
+	upstreamRequestTee       *captureTee
 	httpMetaEnabled          bool
 	httpMetaCaptured         bool
 	httpMetaResponseDone     bool
@@ -299,6 +344,21 @@ func (session *recordSession) clearPersistedAudit(direction storage.AuditDirecti
 	delete(session.persistedAudit, direction)
 }
 
+// syncCaptureTees adopts body tees on the request goroutine and reports
+// whether any of them completed.
+func (session *recordSession) syncCaptureTees() bool {
+	completed := false
+	if session.requestTee != nil && session.requestTee.adopt(&session.requestCapture) {
+		session.requestTee = nil
+		completed = true
+	}
+	if session.upstreamRequestTee != nil && session.upstreamRequestTee.adopt(&session.upstreamRequestCapture) {
+		session.upstreamRequestTee = nil
+		completed = true
+	}
+	return completed
+}
+
 // persistAvailableAudit writes request-side blobs that are already complete
 // and refreshes the pending metadata row. The request row is upserted before
 // any blob: audit_blobs.request_id references request_records(id), so a live
@@ -310,6 +370,7 @@ func (session *recordSession) persistAvailableAudit(ctx context.Context) {
 	if session == nil {
 		return
 	}
+	session.syncCaptureTees()
 	persistCtx, cancel := context.WithTimeout(ctx, 500*time.Millisecond)
 	defer cancel()
 	if session.persistStore != nil {
@@ -389,12 +450,19 @@ func (session *recordSession) persistOneAuditBlob(
 	session.noteStoredExposure(blob)
 }
 
-func (session *recordSession) noteInboundBodyReady() {
+// noteInboundBodyReady persists the client body once the ingress holds all of
+// it: either the body is replayable or the capture already saw its end.
+func (session *recordSession) noteInboundBodyReady(replayable bool) {
 	if session == nil {
+		return
+	}
+	session.syncCaptureTees()
+	if !replayable && !session.requestCapture.complete {
 		return
 	}
 	if len(session.requestCapture.bytes) > 0 || session.requestCapture.complete {
 		session.requestCapture.markComplete()
+		session.requestTee = nil
 	}
 	session.persistAvailableAudit(context.Background())
 }
@@ -555,39 +623,28 @@ func (session *recordSession) attachRequestCapture(request *http.Request) {
 		session.requestCapture.markComplete()
 		return
 	}
-	request.Body = &requestCaptureBody{ReadCloser: request.Body, session: session}
+	session.requestTee = &captureTee{ReadCloser: request.Body, buffer: session.requestCapture}
+	request.Body = session.requestTee
 }
 
 // captureUnreadRequestBody feeds the client body to the audit capture when the
 // request fails before any attempt reads it, e.g. every provider's circuit is
 // open. Reading stops one byte past the capture limit so truncation is marked.
 func (session *recordSession) captureUnreadRequestBody(request *http.Request) {
-	if session == nil || request == nil || session.requestCapture.complete {
+	if session == nil || request == nil {
 		return
 	}
-	body, ok := request.Body.(*requestCaptureBody)
-	if !ok {
+	session.syncCaptureTees()
+	if session.requestCapture.complete {
+		return
+	}
+	body, ok := request.Body.(*captureTee)
+	if !ok || body != session.requestTee {
 		return
 	}
 	limit := int64(session.requestCapture.maxBytes) + 1
 	_, _ = io.Copy(io.Discard, io.LimitReader(body, limit))
-}
-
-type requestCaptureBody struct {
-	io.ReadCloser
-	session *recordSession
-}
-
-func (body *requestCaptureBody) Read(p []byte) (int, error) {
-	n, err := body.ReadCloser.Read(p)
-	if n > 0 && body.session != nil {
-		body.session.requestCapture.observe(p[:n])
-	}
-	if errors.Is(err, io.EOF) && body.session != nil {
-		body.session.requestCapture.markComplete()
-		body.session.persistAvailableAudit(context.Background())
-	}
-	return n, err
+	session.syncCaptureTees()
 }
 
 func (session *recordSession) wrap(writer http.ResponseWriter) http.ResponseWriter {
@@ -712,24 +769,8 @@ func (session *recordSession) observeOutboundCapture(outbound *http.Request) {
 		session.persistAvailableAudit(context.Background())
 		return
 	}
-	outbound.Body = &upstreamRequestCaptureBody{ReadCloser: outbound.Body, session: session}
-}
-
-type upstreamRequestCaptureBody struct {
-	io.ReadCloser
-	session *recordSession
-}
-
-func (body *upstreamRequestCaptureBody) Read(p []byte) (int, error) {
-	n, err := body.ReadCloser.Read(p)
-	if n > 0 && body.session != nil {
-		body.session.upstreamRequestCapture.observe(p[:n])
-	}
-	if errors.Is(err, io.EOF) && body.session != nil {
-		body.session.upstreamRequestCapture.markComplete()
-		body.session.persistAvailableAudit(context.Background())
-	}
-	return n, err
+	session.upstreamRequestTee = &captureTee{ReadCloser: outbound.Body, buffer: session.upstreamRequestCapture}
+	outbound.Body = session.upstreamRequestTee
 }
 
 // wrapUpstreamResponseBody tees raw upstream response bytes before RelayKit /
@@ -755,6 +796,11 @@ func (session *recordSession) wrapUpstreamResponseBody(
 		session.upstreamHTTPMeta.ResponseStatus = &statusCopy
 		session.upstreamHTTPMeta.ResponseHeaders = RedactResponseHeaders(headers)
 		session.upstreamHTTPMetaCaptured = true
+	}
+	// Request bodies sent by net/http become visible here, the first point
+	// back on the request goroutine after the round trip started.
+	if session.syncCaptureTees() {
+		session.persistAvailableAudit(context.Background())
 	}
 	if session.upstreamScanner != nil {
 		// A non-streaming request can be answered with SSE when streaming was
@@ -959,6 +1005,7 @@ func (session *recordSession) demoteCurrentAttemptToChild(
 	if session == nil || !session.networkAttemptOpen || session.attemptIndex < 1 {
 		return
 	}
+	session.syncCaptureTees()
 	session.noteFailed(summary)
 	session.closeEventKind(contract.RequestEventUpstream, contract.RequestStatusFailed, summary.Code)
 	session.captureOutputID()
@@ -1073,6 +1120,9 @@ func (session *recordSession) resetAttemptLocal() {
 	session.errorSummary = nil
 	session.privacyRestore = nil
 	session.networkAttemptOpen = false
+	// A previous attempt's tee may still be read by net/http; it keeps its own
+	// buffer and must not leak into the next attempt.
+	session.upstreamRequestTee = nil
 	session.upstreamRequestCapture.reset(session.settings.RequestBodyEnabled, session.settings.RequestBodyMaxBytes)
 	session.upstreamResponseCapture.reset(session.settings.ResponseContentEnabled, session.settings.ResponseContentMaxBytes)
 	session.upstreamHTTPMeta = contract.AuditHTTPMeta{}
@@ -1102,6 +1152,7 @@ func (session *recordSession) finish(
 	if session == nil {
 		return
 	}
+	session.syncCaptureTees()
 	if store == nil {
 		logIngressAccess(logf, session)
 		return

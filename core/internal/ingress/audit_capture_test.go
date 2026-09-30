@@ -194,6 +194,65 @@ func TestIngressAuditPersistsClientRequestWhilePending(t *testing.T) {
 	}
 }
 
+// net/http writes request bodies on its own goroutine and may deliver the
+// response before the final EOF read, even after the handler has finished.
+func TestIngressAuditToleratesRequestBodyReadAfterResponse(t *testing.T) {
+	for _, tc := range []struct {
+		name, path, body string
+		protocol         contract.ProtocolID
+	}{
+		{name: "buffered", path: "/v1/responses", body: `{"model":"m","input":"hello"}`, protocol: contract.ProtocolOpenAIResponses},
+		{name: "streamed", path: "/v1beta/models/m:generateContent", body: `{"contents":[{"parts":[{"text":"hello"}]}]}`, protocol: contract.ProtocolGoogleGenerateContent},
+	} {
+		for _, afterFinish := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/after_finish=%t", tc.name, afterFinish), func(t *testing.T) {
+				records := &memoryRequestRecordStore{}
+				blobs := &memoryAuditBlobs{records: records}
+				settings := &memoryAuditSettings{settings: contract.AuditSettings{
+					RequestBodyEnabled: true, ResponseContentEnabled: true, HTTPMetaEnabled: true,
+					RequestBodyMaxBytes: 1024, ResponseContentMaxBytes: 1024,
+					MetadataRetentionDays: 30, ContentRetentionDays: 7,
+				}}
+				finished := make(chan struct{})
+				sent := make(chan []byte, 1)
+				handler := NewWithDependencies(Dependencies{
+					Resolver:       candidateResolver{candidates: []endpoint.Resolved{{Endpoint: validEndpoint(tc.protocol, false)}}},
+					RequestRecords: records,
+					AuditSettings:  settings,
+					AuditBlobs:     blobs,
+					Forwarder: transport.New(roundTripFunc(func(request *http.Request) (*http.Response, error) {
+						go func() {
+							if afterFinish {
+								<-finished
+							}
+							body, _ := io.ReadAll(request.Body)
+							sent <- body
+						}()
+						return &http.Response{
+							StatusCode: http.StatusOK,
+							Header:     http.Header{"Content-Type": {"application/json"}},
+							Body:       io.NopCloser(strings.NewReader(`{}`)),
+						}, nil
+					})),
+				})
+				request := httptest.NewRequest(http.MethodPost, tc.path, strings.NewReader(tc.body))
+				request.Header.Set("Content-Type", "application/json")
+				handler.ServeHTTP(httptest.NewRecorder(), request)
+				close(finished)
+				// A streamed client body is closed once the handler returns.
+				if body := <-sent; !afterFinish && !json.Valid(body) {
+					t.Fatalf("upstream body=%q", body)
+				}
+				if len(records.records) != 1 ||
+					records.records[0].Status != contract.RequestStatusSucceeded ||
+					records.records[0].CompletedAt == nil {
+					t.Fatalf("records=%#v", records.records)
+				}
+			})
+		}
+	}
+}
+
 func TestIngressAuditCaptureNonStreamingRoundTrip(t *testing.T) {
 	const requestBody = `{"model":"m","input":"hello"}`
 	const responseBody = `{"id":"r","usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}`

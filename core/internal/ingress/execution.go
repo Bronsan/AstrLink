@@ -141,9 +141,7 @@ func (handler *Handler) executeCandidatesWithTest(
 	}
 	defer body.Close()
 	if session := recordSessionFromContext(request.Context()); session != nil {
-		if body.Replayable() || session.requestCapture.complete {
-			session.noteInboundBodyReady()
-		}
+		session.noteInboundBodyReady(body.Replayable())
 	}
 
 	downstream := newCommitTrackingWriter(writer)
