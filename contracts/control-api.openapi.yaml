@@ -96,6 +96,7 @@ x-astrlink-implementation:
     - POST /control/v1/policies/{policy_id}/dry-run
     - GET /control/v1/privacy/regex-builtin-rules
     - GET /control/v1/privacy-model-catalog
+    - GET /control/v1/privacy-model-catalog/releases
     - POST /control/v1/privacy-models/probe
     - POST /control/v1/privacy-models/local/probe
     - GET /control/v1/privacy-models
@@ -1657,6 +1658,28 @@ paths:
                 $ref: "#/components/schemas/PrivacyModelCatalog"
         "401":
           $ref: "#/components/responses/Unauthorized"
+  /control/v1/privacy-model-catalog/releases:
+    get:
+      x-astrlink-role: observer
+      x-astrlink-implementation-status: implemented
+      tags: [Privacy Model]
+      operationId: listPrivacyModelReleases
+      summary: Check Hugging Face for newer compatible releases of catalog models.
+      description: Returns the newest release this build can run for each catalog model published through versioned tags. Releases whose labels or decoding contracts are unknown to this build are skipped. Results are cached for an hour.
+      responses:
+        "200":
+          description: Latest compatible releases, shaped like catalog entries pinned to the release commit.
+          headers:
+            Cache-Control:
+              $ref: "#/components/headers/NoStore"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PrivacyModelCatalog"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "502":
+          $ref: "#/components/responses/BadGateway"
   /control/v1/privacy-models/probe:
     post:
       x-astrlink-role: operator
@@ -5221,6 +5244,8 @@ components:
         - languages
         - adapter
         - variants
+        - version
+        - recommended
       properties:
         id:
           $ref: "#/components/schemas/PrivacyModelCatalogId"
@@ -5263,6 +5288,13 @@ components:
           maxItems: 32
           items:
             $ref: "#/components/schemas/PrivacyModelVariant"
+        version:
+          type: [string, "null"]
+          pattern: "^(0|[1-9][0-9]{0,5})\\.(0|[1-9][0-9]{0,5})\\.(0|[1-9][0-9]{0,5})$"
+          description: Published release tag without its leading `v`; null for models that are not released through versioned tags.
+        recommended:
+          type: boolean
+          description: Whether AstrLink recommends this model for new installations.
       additionalProperties: false
     PrivacyModelCatalog:
       type: object

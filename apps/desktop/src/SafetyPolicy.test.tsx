@@ -10,6 +10,7 @@ const bridgeMocks = vi.hoisted(() => ({
   dryRunPrivacyPolicy: vi.fn(),
   getPrivacyModelCatalog: vi.fn(),
   getPrivacyModelInstallation: vi.fn(),
+  getPrivacyModelReleases: vi.fn(),
   getPrivacyPolicy: vi.fn(),
   getPrivacyRegexBuiltinRules: vi.fn(),
   getRawSealingStatus: vi.fn(),
@@ -73,9 +74,11 @@ const catalogModel: PrivacyCatalogModel = {
   source: "community",
   repo_id: "sheltron-ai/privacy-filter-ettin-32m",
   revision,
+  version: null,
   license: "apache-2.0",
   languages: ["en"],
   adapter: "hf_token_classification",
+  recommended: false,
   variants: [
     {
       id: "cpu_int8",
@@ -300,6 +303,7 @@ describe("SafetyPolicy", () => {
     bridgeMocks.getPrivacyModelCatalog.mockResolvedValue({
       items: [catalogModel],
     });
+    bridgeMocks.getPrivacyModelReleases.mockResolvedValue({ items: [] });
     bridgeMocks.listPrivacyModelInstallations.mockResolvedValue({ items: [] });
     bridgeMocks.getRawSealingStatus.mockResolvedValue(rawSealing());
     container = document.createElement("div");
@@ -670,6 +674,119 @@ describe("SafetyPolicy", () => {
       });
     },
   );
+
+  describe("AstrLink Guard releases", () => {
+    const guard: PrivacyCatalogModel = {
+      ...catalogModel,
+      id: "catalog_astrlink_guard",
+      name: "AstrLink Guard",
+      source: "official",
+      repo_id: "QuantumNous/astrlink-guard",
+      version: "0.1.0",
+      languages: ["zh", "en"],
+      recommended: true,
+    };
+    const releaseRevision = "1".repeat(40);
+    const release: PrivacyCatalogModel = {
+      ...guard,
+      revision: releaseRevision,
+      version: "0.2.0",
+      variants: [{ ...guard.variants[0], bytes_total: 40_000_000 }],
+    };
+    const installedGuard = () =>
+      installation({
+        catalog_id: guard.id,
+        catalog_source: "official",
+        name: guard.name,
+        repo_id: guard.repo_id,
+        status: "ready",
+        bytes_downloaded: guard.variants[0].bytes_total,
+        installed_at: "2026-09-30T10:30:00Z",
+      });
+
+    beforeEach(() => {
+      bridgeMocks.getPrivacyModelCatalog.mockResolvedValue({ items: [guard] });
+    });
+
+    it("recommends Guard and installs the pinned release while offline", async () => {
+      bridgeMocks.getPrivacyModelReleases.mockRejectedValueOnce(
+        new Error("offline"),
+      );
+      bridgeMocks.listPrivacyModelInstallations.mockResolvedValueOnce({
+        items: [installedGuard()],
+      });
+      await renderPolicy();
+      await openModels();
+
+      expect(container.textContent).toContain("AstrLink Guard推荐");
+      expect(container.textContent).toContain("官方 · apache-2.0 · v0.1.0");
+      expect(container.textContent).not.toContain("有新版本");
+      expect(button("查看已就绪")).toBeTruthy();
+      await act(async () => button("已安装 1").click());
+      expect(container.textContent).toContain("CPU INT8 · int8 · v0.1.0");
+      expect(container.textContent).not.toContain("更新到");
+    });
+
+    it("offers a newer tag and installs it by commit", async () => {
+      bridgeMocks.getPrivacyModelReleases.mockResolvedValueOnce({
+        items: [release],
+      });
+      bridgeMocks.listPrivacyModelInstallations.mockResolvedValueOnce({
+        items: [installedGuard()],
+      });
+      await renderPolicy();
+      await openModels();
+
+      expect(container.textContent).toContain("官方 · apache-2.0 · v0.2.0");
+      expect(container.textContent).toContain("有新版本 v0.2.0");
+      expect(container.textContent).toContain("下载 38 MB");
+      await act(async () => button("已安装 1").click());
+      expect(container.textContent).toContain("CPU INT8 · int8 · v0.1.0");
+      expect(container.textContent).toContain("有新版本 v0.2.0");
+
+      bridgeMocks.probePrivacyModel.mockResolvedValueOnce(
+        probe({
+          repo_id: guard.repo_id,
+          requested_revision: releaseRevision,
+          revision: releaseRevision,
+          name: guard.name,
+          variants: release.variants,
+          labels: [{ label: "email", suggested_kind: "email" }],
+          requires_label_mapping: false,
+        }),
+      );
+      bridgeMocks.installPrivacyModel.mockResolvedValueOnce(
+        installation({
+          id: "model_cccccccccccccccccccccccccccccccc",
+          catalog_id: guard.id,
+          name: guard.name,
+          repo_id: guard.repo_id,
+          revision: releaseRevision,
+        }),
+      );
+      await act(async () => {
+        actionButton("更新到 v0.2.0").click();
+        await Promise.resolve();
+      });
+      expect(bridgeMocks.probePrivacyModel).toHaveBeenCalledWith({
+        repo_id: guard.repo_id,
+        revision: releaseRevision,
+      });
+      expect(bridgeMocks.installPrivacyModel).toHaveBeenCalledWith({
+        repo_id: guard.repo_id,
+        revision: releaseRevision,
+        variant_id: "cpu_int8",
+        label_mapping: { email: "email" },
+      });
+      expect(notifyMocks.success).toHaveBeenCalledWith(
+        "新版本已开始下载，完成后请在“已安装”中改用新版本。",
+      );
+      // The policy keeps the installed version until the user switches.
+      expect(container.textContent).toContain("CPU INT8 · int8 · v0.2.0");
+      expect(container.textContent).not.toContain("有新版本");
+      expect(bridgeMocks.updatePrivacyPolicy).not.toHaveBeenCalled();
+    });
+  });
 
   it("installs a catalog variant and polls its per-installation progress", async () => {
     vi.useFakeTimers();

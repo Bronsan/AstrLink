@@ -1736,6 +1736,13 @@ async fn get_privacy_model_catalog(
 }
 
 #[tauri::command]
+async fn get_privacy_model_releases(
+    manager: State<'_, Arc<CoreManager>>,
+) -> Result<serde_json::Value, String> {
+    manager.get_privacy_model_releases().await
+}
+
+#[tauri::command]
 async fn probe_privacy_model(
     input: serde_json::Value,
     manager: State<'_, Arc<CoreManager>>,
@@ -1949,6 +1956,7 @@ pub fn run() {
             dry_run_privacy_policy,
             get_privacy_regex_builtin_rules,
             get_privacy_model_catalog,
+            get_privacy_model_releases,
             probe_privacy_model,
             probe_local_privacy_model,
             list_privacy_model_installations,

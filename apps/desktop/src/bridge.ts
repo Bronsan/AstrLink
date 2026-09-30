@@ -951,6 +951,14 @@ export async function getPrivacyModelCatalog(): Promise<PrivacyModelCatalog> {
   );
 }
 
+/** Newest compatible releases of catalog models, pinned to their commits. */
+export async function getPrivacyModelReleases(): Promise<PrivacyModelCatalog> {
+  requireNativeBridge();
+  return parsePrivacyModelCatalog(
+    await invoke<unknown>("get_privacy_model_releases"),
+  );
+}
+
 export async function probePrivacyModel(
   input: PrivacyModelProbeInput,
 ): Promise<PrivacyModelProbe> {

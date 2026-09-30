@@ -246,6 +246,9 @@ export interface PrivacyCatalogModel {
   languages: string[];
   adapter: PrivacyModelAdapter;
   variants: PrivacyModelVariant[];
+  /** Release tag without its leading "v"; null for unversioned models. */
+  version: string | null;
+  recommended: boolean;
 }
 
 export interface PrivacyModelCatalog {
@@ -1317,6 +1320,28 @@ function validatePrivacyPolicyPatch(
   return validated;
 }
 
+const releaseVersionPattern =
+  /^(0|[1-9][0-9]{0,5})\.(0|[1-9][0-9]{0,5})\.(0|[1-9][0-9]{0,5})$/;
+
+function releaseVersionAt(value: unknown, path: string): string | null {
+  if (value === null) return null;
+  if (typeof value !== "string" || !releaseVersionPattern.test(value)) {
+    invalid(path, "expected a release version");
+  }
+  return value;
+}
+
+/** Orders release versions such as "0.10.0" after "0.2.0". */
+export function compareReleaseVersions(left: string, right: string): number {
+  const leftParts = left.split(".").map(Number);
+  const rightParts = right.split(".").map(Number);
+  for (let index = 0; index < 3; index += 1) {
+    const difference = (leftParts[index] ?? 0) - (rightParts[index] ?? 0);
+    if (difference !== 0) return Math.sign(difference);
+  }
+  return 0;
+}
+
 export function parsePrivacyModelCatalog(value: unknown): PrivacyModelCatalog {
   const catalog = objectAt(value, "$");
   keysAt(catalog, ["items"], [], "$");
@@ -1339,6 +1364,8 @@ export function parsePrivacyModelCatalog(value: unknown): PrivacyModelCatalog {
         "languages",
         "adapter",
         "variants",
+        "version",
+        "recommended",
       ],
       [],
       path,
@@ -1357,6 +1384,8 @@ export function parsePrivacyModelCatalog(value: unknown): PrivacyModelCatalog {
       languages: stringArrayAt(model.languages, `${path}.languages`, 32),
       adapter: adapterAt(model.adapter, `${path}.adapter`),
       variants: parseVariants(model.variants, `${path}.variants`),
+      version: releaseVersionAt(model.version, `${path}.version`),
+      recommended: booleanAt(model.recommended, `${path}.recommended`),
     } satisfies PrivacyCatalogModel;
   });
   if (new Set(items.map((item) => item.id)).size !== items.length) {

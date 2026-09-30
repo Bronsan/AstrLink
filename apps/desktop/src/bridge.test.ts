@@ -35,6 +35,7 @@ import {
   getCoreStatus,
   getPreferences,
   getPrivacyModelCatalog,
+  getPrivacyModelReleases,
   getPrivacyModelInstallation,
   getPrivacyPolicy,
   getService,
@@ -927,6 +928,8 @@ describe("desktop bridge contract", () => {
       languages: ["en"],
       adapter: "hf_token_classification",
       variants: [variant],
+      version: null,
+      recommended: false,
     };
     const installation = {
       id: installationId,
@@ -1023,6 +1026,17 @@ describe("desktop bridge contract", () => {
       items: [catalogModel],
     });
     expect(invokeMock).toHaveBeenLastCalledWith("get_privacy_model_catalog");
+
+    const release = { ...catalogModel, version: "0.2.0", recommended: true };
+    invokeMock.mockResolvedValueOnce({ items: [release] });
+    await expect(getPrivacyModelReleases()).resolves.toEqual({
+      items: [release],
+    });
+    expect(invokeMock).toHaveBeenLastCalledWith("get_privacy_model_releases");
+    invokeMock.mockResolvedValueOnce({
+      items: [{ ...release, version: "v0.2.0" }],
+    });
+    await expect(getPrivacyModelReleases()).rejects.toThrow("version");
 
     const probe = {
       repo_id: catalogModel.repo_id,

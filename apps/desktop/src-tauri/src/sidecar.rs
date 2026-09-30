@@ -52,6 +52,7 @@ const AUDIT_CONTENT_TIMEOUT: Duration = Duration::from_secs(60);
 const SUPPORTED_CONTROL_API_VERSION: &str = "v1";
 const SUPPORTED_PROTOCOL_CONTRACT_VERSION: &str = "v1";
 const PRIVACY_MODEL_CATALOG_PATH: &str = "/control/v1/privacy-model-catalog";
+const PRIVACY_MODEL_RELEASES_PATH: &str = "/control/v1/privacy-model-catalog/releases";
 const PRIVACY_MODELS_PATH: &str = "/control/v1/privacy-models";
 const PRIVACY_MODEL_PROBE_PATH: &str = "/control/v1/privacy-models/probe";
 const LOCAL_PRIVACY_MODEL_PROBE_PATH: &str = "/control/v1/privacy-models/local/probe";
@@ -1812,6 +1813,13 @@ impl CoreManager {
         parse_privacy_model_catalog(&body)
     }
 
+    pub async fn get_privacy_model_releases(&self) -> Result<serde_json::Value, String> {
+        let (_, body) = self
+            .authenticated_control(Method::GET, PRIVACY_MODEL_RELEASES_PATH, None, None)
+            .await?;
+        parse_privacy_model_catalog(&body)
+    }
+
     pub async fn probe_privacy_model(
         &self,
         input: serde_json::Value,
@@ -2960,11 +2968,12 @@ fn control_request_timeout(method: &Method, path: &str) -> Duration {
     {
         return SERVICE_MODEL_PROBE_TIMEOUT;
     }
-    if method == Method::POST
+    if (method == Method::POST
         && (path == PRIVACY_MODEL_PROBE_PATH
             || path == LOCAL_PRIVACY_MODEL_PROBE_PATH
             || path == PRIVACY_MODELS_PATH
-            || (path.starts_with(&format!("{PRIVACY_MODELS_PATH}/")) && path.ends_with("/resume")))
+            || (path.starts_with(&format!("{PRIVACY_MODELS_PATH}/")) && path.ends_with("/resume"))))
+        || (method == Method::GET && path == PRIVACY_MODEL_RELEASES_PATH)
     {
         return PRIVACY_MODEL_METADATA_TIMEOUT;
     }
@@ -3899,6 +3908,8 @@ fn validate_privacy_catalog_model(model: &serde_json::Value) -> Result<(), Strin
             "languages",
             "adapter",
             "variants",
+            "version",
+            "recommended",
         ],
         "privacy catalog model",
     )?;
@@ -3920,7 +3931,26 @@ fn validate_privacy_catalog_model(model: &serde_json::Value) -> Result<(), Strin
     validate_metadata_string(&object["license"], 1, 64, "privacy catalog model license")?;
     validate_string_array(&object["languages"], 32, "privacy catalog model languages")?;
     validate_privacy_model_adapter(&object["adapter"])?;
+    if !object["version"].is_null() && !is_release_version(&object["version"]) {
+        return Err("privacy catalog model version is invalid".to_string());
+    }
+    if !object["recommended"].is_boolean() {
+        return Err("privacy catalog model recommended must be boolean".to_string());
+    }
     validate_privacy_model_variants(&object["variants"])
+}
+
+fn is_release_version(value: &serde_json::Value) -> bool {
+    let Some(version) = value.as_str() else {
+        return false;
+    };
+    let parts: Vec<&str> = version.split('.').collect();
+    parts.len() == 3
+        && parts.iter().all(|part| {
+            (1..=6).contains(&part.len())
+                && part.bytes().all(|byte| byte.is_ascii_digit())
+                && (*part == "0" || !part.starts_with('0'))
+        })
 }
 
 fn validate_privacy_model_variants(value: &serde_json::Value) -> Result<(), String> {
@@ -5816,6 +5846,10 @@ mod tests {
             REQUEST_TIMEOUT
         );
         assert_eq!(
+            control_request_timeout(&Method::GET, PRIVACY_MODEL_RELEASES_PATH),
+            PRIVACY_MODEL_METADATA_TIMEOUT
+        );
+        assert_eq!(
             control_request_timeout(&Method::POST, SERVICE_MODEL_PROBES_PATH),
             SERVICE_MODEL_PROBE_TIMEOUT
         );
@@ -6678,11 +6712,41 @@ mod tests {
                 "license": "apache-2.0",
                 "languages": ["en"],
                 "adapter": "hf_token_classification",
-                "variants": [privacy_variant_value()]
+                "variants": [privacy_variant_value()],
+                "version": "0.2.0",
+                "recommended": true
             }]
         }))
         .unwrap();
         assert!(parse_privacy_model_catalog(&catalog).is_ok());
+        let mut catalog_model: serde_json::Value = serde_json::from_slice(&catalog).unwrap();
+        catalog_model = catalog_model["items"][0].take();
+        for (field, value, valid) in [
+            ("version", serde_json::Value::Null, true),
+            ("version", serde_json::json!("10.0.123456"), true),
+            ("version", serde_json::json!("v0.2.0"), false),
+            ("version", serde_json::json!("0.02.0"), false),
+            ("version", serde_json::json!("0.2"), false),
+            ("version", serde_json::json!("1234567.0.0"), false),
+            ("version", serde_json::json!(2), false),
+            ("recommended", serde_json::json!("yes"), false),
+            ("recommended", serde_json::Value::Null, false),
+        ] {
+            let mut model = catalog_model.clone();
+            model[field] = value;
+            assert_eq!(
+                validate_privacy_catalog_model(&model).is_ok(),
+                valid,
+                "{field}={}",
+                model[field]
+            );
+        }
+        let mut missing_recommended = catalog_model.clone();
+        missing_recommended
+            .as_object_mut()
+            .unwrap()
+            .remove("recommended");
+        assert!(validate_privacy_catalog_model(&missing_recommended).is_err());
 
         let probe = serde_json::to_vec(&serde_json::json!({
             "repo_id": "example/privacy-filter",
@@ -6874,7 +6938,9 @@ mod tests {
                 "license": "apache-2.0",
                 "languages": ["en"],
                 "adapter": "hf_token_classification",
-                "variants": [padded_catalog_variant]
+                "variants": [padded_catalog_variant],
+                "version": null,
+                "recommended": false
             }]
         }))
         .unwrap();
@@ -6893,7 +6959,9 @@ mod tests {
                 "license": "apache-2.0",
                 "languages": ["en"],
                 "adapter": "hf_token_classification",
-                "variants": [controlled_catalog_variant]
+                "variants": [controlled_catalog_variant],
+                "version": null,
+                "recommended": false
             }]
         }))
         .unwrap();
@@ -6951,6 +7019,10 @@ mod tests {
         );
         assert_eq!(PRIVACY_MODELS_PATH, "/control/v1/privacy-models");
         assert_ne!(PRIVACY_MODEL_CATALOG_PATH, PRIVACY_MODELS_PATH);
+        assert_eq!(
+            PRIVACY_MODEL_RELEASES_PATH,
+            "/control/v1/privacy-model-catalog/releases"
+        );
     }
 
     #[test]

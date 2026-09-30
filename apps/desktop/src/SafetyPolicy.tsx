@@ -60,6 +60,7 @@ import {
   dryRunPrivacyPolicy,
   getPrivacyModelCatalog,
   getPrivacyModelInstallation,
+  getPrivacyModelReleases,
   getPrivacyPolicy,
   getPrivacyRegexBuiltinRules,
   installPrivacyModel,
@@ -73,6 +74,7 @@ import {
 import { i18n, useT } from "./i18n";
 import { notify } from "./notify";
 import {
+  compareReleaseVersions,
   isResourceHeavyVariant,
   localModelActive,
   MAX_PRIVACY_ALLOWLIST_RULES,
@@ -488,6 +490,21 @@ function initialLabelMapping(probe: PrivacyModelProbe): PrivacyLabelMapping {
   return Object.fromEntries(
     probe.labels.map((label) => [label.label, label.suggested_kind]),
   );
+}
+
+// A newer tagged release replaces the pinned catalog entry for new installs.
+function latestCatalogModel(
+  model: PrivacyCatalogModel,
+  release: PrivacyCatalogModel | undefined,
+): PrivacyCatalogModel {
+  return release !== undefined &&
+    release.repo_id === model.repo_id &&
+    release.revision !== model.revision &&
+    release.version !== null &&
+    model.version !== null &&
+    compareReleaseVersions(release.version, model.version) > 0
+    ? release
+    : model;
 }
 
 function variantForCatalog(
@@ -1091,6 +1108,10 @@ export function SafetyPolicy({
     `privacy-catalog:${coreSessionKey}`,
     [],
   );
+  // Newest release per catalog ID; present only once an update check succeeded.
+  const [releases, setReleases] = useWorkspaceSnapshot<
+    Record<string, PrivacyCatalogModel>
+  >(`privacy-releases:${coreSessionKey}`, {});
   const [installations, setInstallations] = useWorkspaceSnapshot<
     PrivacyModelInstallation[]
   >(`privacy-installations:${coreSessionKey}`, []);
@@ -1221,8 +1242,21 @@ export function SafetyPolicy({
     }
   }, [dryRunResult]);
 
+  const loadReleases = async (generation: number) => {
+    try {
+      const next = await getPrivacyModelReleases();
+      if (generationRef.current !== generation) return;
+      setReleases(
+        Object.fromEntries(next.items.map((model) => [model.id, model])),
+      );
+    } catch {
+      // Update checks are best effort; the pinned catalog stays installable.
+    }
+  };
+
   const load = async (generation: number) => {
     const version = policyMutationVersion.current;
+    void loadReleases(generation);
     try {
       const [nextRecord, nextCatalog, nextInstallations] = await Promise.all([
         getPrivacyPolicy(),
@@ -1295,6 +1329,7 @@ export function SafetyPolicy({
       setStatus("blocked");
       setRecord(null);
       setCatalog([]);
+      setReleases({});
       setInstallations([]);
       return () => {
         if (generationRef.current === generation) {
@@ -1884,6 +1919,14 @@ export function SafetyPolicy({
     const generation = generationRef.current;
     const request = operationRequestRef.current + 1;
     operationRequestRef.current = request;
+    // The policy keeps its model, so an update must be switched to manually.
+    const updating = installations.some(
+      (installation) =>
+        installation.source === "catalog" &&
+        installation.repo_id === input.repo_id &&
+        installation.variant_id === input.variant_id &&
+        installation.revision !== input.revision,
+    );
     setOperationBusy(key);
     setError(null);
     try {
@@ -1901,7 +1944,9 @@ export function SafetyPolicy({
       notify.success(
         key === "local"
           ? t("safety.importStarted")
-          : t("safety.installStarted"),
+          : updating
+            ? t("safety.updateStarted")
+            : t("safety.installStarted"),
       );
     } catch (installError) {
       if (
@@ -2342,6 +2387,52 @@ export function SafetyPolicy({
         !label.suggested_ignore &&
         !labelMappingTouched.includes(label.label),
     ) ?? [];
+  const catalogVersions = new Map<string, string>();
+  for (const model of [...catalog, ...Object.values(releases)]) {
+    if (model.version !== null) {
+      catalogVersions.set(`${model.repo_id}\n${model.revision}`, model.version);
+    }
+  }
+  const installationVersion = (installation: PrivacyModelInstallation) =>
+    installation.source === "catalog"
+      ? (catalogVersions.get(
+          `${installation.repo_id}\n${installation.revision}`,
+        ) ?? null)
+      : null;
+  // The update check reports the newest compatible release, so every other
+  // catalog revision of that model is older.
+  const installationUpdate = (installation: PrivacyModelInstallation) => {
+    const model = catalog.find(
+      (candidate) => candidate.id === installation.catalog_id,
+    );
+    if (
+      installation.source !== "catalog" ||
+      model === undefined ||
+      releases[model.id] === undefined
+    ) {
+      return null;
+    }
+    const latest = latestCatalogModel(model, releases[model.id]);
+    const variant = latest.variants.find(
+      (candidate) =>
+        candidate.id === installation.variant_id && candidate.supported,
+    );
+    if (
+      latest.version === null ||
+      latest.repo_id !== installation.repo_id ||
+      latest.revision === installation.revision ||
+      variant === undefined ||
+      installations.some(
+        (candidate) =>
+          candidate.repo_id === latest.repo_id &&
+          candidate.revision === latest.revision &&
+          candidate.variant_id === variant.id,
+      )
+    ) {
+      return null;
+    }
+    return { model: latest, variant, version: latest.version };
+  };
   const catalogPreparationModel =
     catalogPreparation === null
       ? null
@@ -3662,7 +3753,11 @@ export function SafetyPolicy({
                 value="catalog"
               >
                 <div className="grid items-stretch gap-3 pb-3 pr-1 @[760px]/models:grid-cols-2">
-                  {catalog.map((model) => {
+                  {catalog.map((pinned) => {
+                    const model = latestCatalogModel(
+                      pinned,
+                      releases[pinned.id],
+                    );
                     const variant = variantForCatalog(model, selectedVariants);
                     const existing =
                       variant === null
@@ -3673,21 +3768,41 @@ export function SafetyPolicy({
                               installation.revision === model.revision &&
                               installation.variant_id === variant.id,
                           ) ?? null);
+                    const update =
+                      existing === null && variant !== null
+                        ? (installations
+                            .map(installationUpdate)
+                            .find(
+                              (candidate) =>
+                                candidate?.model.id === model.id &&
+                                candidate.variant.id === variant.id,
+                            ) ?? null)
+                        : null;
                     const variantSelectID = `privacy-catalog-variant-${model.id.replace(/[^A-Za-z0-9_-]/g, "-")}`;
                     return (
                       <Panel asChild className="flex flex-col" key={model.id}>
                         <article>
                           <div className="flex flex-1 flex-col gap-3 p-4">
                             <div className="min-w-0">
-                              <h4 className="text-sm font-semibold leading-snug break-words">
-                                {model.name}
-                              </h4>
+                              <div className="flex min-w-0 flex-wrap items-center gap-2">
+                                <h4 className="min-w-0 text-sm font-semibold leading-snug break-words">
+                                  {model.name}
+                                </h4>
+                                {model.recommended ? (
+                                  <Badge variant="accent">
+                                    {t("safety.recommendedModel")}
+                                  </Badge>
+                                ) : null}
+                              </div>
                               <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
                                 <span>
                                   {model.source === "official"
                                     ? t("safety.official")
                                     : t("safety.community")}{" "}
                                   · {model.license}
+                                  {model.version === null
+                                    ? null
+                                    : ` · v${model.version}`}
                                 </span>
                                 {model.languages.map((language) => (
                                   <Badge key={language} variant="secondary">
@@ -3701,6 +3816,13 @@ export function SafetyPolicy({
                                 defaultValue: model.summary,
                               })}
                             </p>
+                            {update === null ? null : (
+                              <StatusBadge tone="pending">
+                                {t("safety.updateAvailableHint", {
+                                  version: update.version,
+                                })}
+                              </StatusBadge>
+                            )}
                             <Field
                               className="mt-auto"
                               htmlFor={variantSelectID}
@@ -3797,7 +3919,11 @@ export function SafetyPolicy({
                                   >
                                     {catalogProbeBusy === model.id
                                       ? t("common.checking")
-                                      : t("safety.checkAndInstall")}
+                                      : update === null
+                                        ? t("safety.checkAndInstall")
+                                        : t("safety.updateTo", {
+                                            version: update.version,
+                                          })}
                                   </Button>
                                 </>
                               ) : (
@@ -3876,6 +4002,8 @@ export function SafetyPolicy({
                       installation.languages.length > 0
                         ? installation.languages.join(" / ")
                         : t("safety.languageUnknown");
+                    const version = installationVersion(installation);
+                    const update = installationUpdate(installation);
                     return (
                       <Panel
                         asChild
@@ -3896,6 +4024,7 @@ export function SafetyPolicy({
                                 <span className="mt-1 block text-xs leading-snug text-muted-foreground">
                                   {installation.variant_name} ·{" "}
                                   {installation.quantization}
+                                  {version === null ? null : ` · v${version}`}
                                 </span>
                               </div>
                               <StatusBadge
@@ -3925,6 +4054,13 @@ export function SafetyPolicy({
                                 {installation.repo_id}
                               </p>
                             </div>
+                            {update === null ? null : (
+                              <StatusBadge tone="pending">
+                                {t("safety.updateAvailableHint", {
+                                  version: update.version,
+                                })}
+                              </StatusBadge>
+                            )}
                             {installation.status === "downloading" ||
                             installation.status === "paused" ? (
                               <div className="grid gap-1.5">
@@ -4016,6 +4152,30 @@ export function SafetyPolicy({
                                       : t("safety.usedByPolicy")}
                                   </Button>
                                 ) : null}
+                                {update === null ? null : (
+                                  <Button
+                                    disabled={
+                                      operationBusy !== null ||
+                                      catalogProbeBusy !== null ||
+                                      probing
+                                    }
+                                    onClick={() =>
+                                      void prepareCatalogInstallation(
+                                        update.model,
+                                        update.variant,
+                                      )
+                                    }
+                                    size="sm"
+                                    type="button"
+                                    variant="outline"
+                                  >
+                                    {catalogProbeBusy === update.model.id
+                                      ? t("common.checking")
+                                      : t("safety.updateTo", {
+                                          version: update.version,
+                                        })}
+                                  </Button>
+                                )}
                                 {installation.source !== "local" &&
                                 installation.status !== "ready" ? (
                                   <Button

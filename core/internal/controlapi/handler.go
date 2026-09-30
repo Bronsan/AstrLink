@@ -36,6 +36,7 @@ const (
 	PolicyDryRunPath             = PoliciesPath + "/" + string(contract.DefaultPrivacyPolicyID) + "/dry-run"
 	PrivacyRegexBuiltinRulesPath = "/control/v1/privacy/regex-builtin-rules"
 	PrivacyModelCatalogPath      = "/control/v1/privacy-model-catalog"
+	PrivacyModelReleasesPath     = PrivacyModelCatalogPath + "/releases"
 	PrivacyModelsPath            = "/control/v1/privacy-models"
 	PrivacyModelProbePath        = PrivacyModelsPath + "/probe"
 	PrivacyModelLocalProbePath   = PrivacyModelsPath + "/local/probe"
@@ -92,6 +93,7 @@ type AccessTokenManager interface {
 
 type PrivacyModelRegistry interface {
 	Catalog() contract.PrivacyModelCatalogResponse
+	CatalogReleases(context.Context) (contract.PrivacyModelCatalogResponse, error)
 	Probe(context.Context, contract.PrivacyModelProbeRequest) (contract.PrivacyModelProbeResponse, error)
 	ProbeLocal(context.Context, contract.PrivacyModelLocalProbeRequest) (contract.PrivacyModelProbeResponse, error)
 	ListInstallations() []contract.PrivacyModelInstallation

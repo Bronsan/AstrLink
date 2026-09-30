@@ -403,6 +403,7 @@ raise "policy matches must use service_ids" unless policy_match.fetch("propertie
   GET\ /control/v1/policies/{policy_id}
   PATCH\ /control/v1/policies/{policy_id}
   GET\ /control/v1/privacy-model-catalog
+  GET\ /control/v1/privacy-model-catalog/releases
   POST\ /control/v1/privacy-models/probe
   POST\ /control/v1/privacy-models/local/probe
   GET\ /control/v1/privacy-models
@@ -414,6 +415,8 @@ raise "policy matches must use service_ids" unless policy_match.fetch("propertie
 end
 privacy_catalog_methods = openapi.dig("paths", "/control/v1/privacy-model-catalog").keys
 raise "privacy-model catalog methods drifted: #{privacy_catalog_methods}" unless privacy_catalog_methods == %w[get]
+privacy_release_methods = openapi.dig("paths", "/control/v1/privacy-model-catalog/releases").keys
+raise "privacy-model release methods drifted: #{privacy_release_methods}" unless privacy_release_methods == %w[get]
 privacy_probe_methods = openapi.dig("paths", "/control/v1/privacy-models/probe").keys
 raise "privacy-model probe methods drifted: #{privacy_probe_methods}" unless privacy_probe_methods == %w[post]
 local_privacy_probe_methods = openapi.dig("paths", "/control/v1/privacy-models/local/probe").keys
