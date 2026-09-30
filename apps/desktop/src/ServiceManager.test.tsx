@@ -2378,6 +2378,134 @@ describe("ServiceManager", () => {
     },
   );
 
+  it("lets a preset pick its vendor site instead of typing an address", async () => {
+    const preset = httpServicePreset("glm_coding");
+    const global = "https://api.z.ai/api/coding/paas/v4";
+    const service = parseService({
+      ...gatewayService,
+      name: preset.defaultName,
+      kind: "glm_coding",
+      models: preset.models,
+      http: {
+        base_url: global,
+        auth: { scheme: "bearer" },
+        credential_ref: "local://service/service_gateway",
+      },
+      capabilities: preset.capabilities,
+    });
+    bridgeMocks.createService.mockResolvedValue({ service, etag });
+    await act(async () =>
+      root.render(
+        <ServiceManager
+          catalogError={null}
+          catalogStatus="ready"
+          isReady
+          onDirtyChange={() => {}}
+          onRefresh={() => {}}
+          onServiceRemoved={() => {}}
+          onServiceSaved={() => {}}
+          onViewChange={() => {}}
+          protocols={[]}
+          services={[]}
+          view={{ kind: "create" }}
+        />,
+      ),
+    );
+    await chooseServiceKind("GLM Coding Plan");
+    expect(container.querySelector('[aria-label="认证方式"]')).toBeNull();
+    const addressInput = () =>
+      container.querySelector<HTMLInputElement>('input[type="url"]');
+    expect(addressInput()).toBeNull();
+    expect(container.textContent).toContain(`请求发往 ${preset.baseURL}`);
+
+    await clickButton("国际站");
+    expect(container.textContent).toContain(`请求发往 ${global}`);
+    await clickButton("自定义地址");
+    expect(addressInput()?.value).toBe(global);
+    await clickButton("国际站");
+    expect(addressInput()).toBeNull();
+
+    const secret = container.querySelector<HTMLInputElement>(
+      'input[type="password"]',
+    );
+    if (!secret) throw new Error("missing API key input");
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(
+        HTMLInputElement.prototype,
+        "value",
+      )!.set!.call(secret, "test-api-key");
+      secret.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await act(async () => {
+      container
+        .querySelector("form")!
+        .dispatchEvent(
+          new Event("submit", { bubbles: true, cancelable: true }),
+        );
+    });
+    expect(bridgeMocks.createService).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: "glm_coding",
+        http: {
+          base_url: global,
+          auth: { scheme: "bearer" },
+          credential: { secret: "test-api-key" },
+        },
+      }),
+    );
+  });
+
+  it.each([
+    ["https://api.minimax.cn/anthropic", "国内站"],
+    ["https://proxy.example/minimax", "自定义地址"],
+  ])("keeps the saved address %s and marks it as %s", async (baseURL, site) => {
+    const saved: Service = {
+      ...gatewayService,
+      id: "service_minimax_plan",
+      name: "MiniMax Coding Plan",
+      kind: "minimax_coding",
+      http: {
+        base_url: baseURL,
+        auth: { scheme: "bearer" },
+        credential_ref: "local://service/service_minimax_plan",
+      },
+    };
+    bridgeMocks.getService.mockResolvedValue({ service: saved, etag });
+    await act(async () => {
+      root.render(
+        <ServiceManager
+          catalogError={null}
+          catalogStatus="ready"
+          isReady
+          onDirtyChange={() => {}}
+          onRefresh={() => {}}
+          onServiceRemoved={() => {}}
+          onServiceSaved={() => {}}
+          onViewChange={() => {}}
+          protocols={[]}
+          services={[saved]}
+          view={{ kind: "edit", serviceId: saved.id }}
+        />,
+      );
+      await Promise.resolve();
+    });
+
+    const selected = [
+      ...container.querySelectorAll<HTMLButtonElement>(
+        '[data-slot="segmented-control-item"]',
+      ),
+    ].find((item) => item.dataset.state === "on");
+    expect(selected?.textContent).toBe(site);
+    const input =
+      container.querySelector<HTMLInputElement>('input[type="url"]');
+    if (site === "自定义地址") {
+      expect(input?.value).toBe(baseURL);
+    } else {
+      expect(input).toBeNull();
+      expect(container.textContent).toContain(`请求发往 ${baseURL}`);
+    }
+  });
+
   it("creates a Codex service through the unified add form and targets its OAuth", async () => {
     bridgeMocks.createService.mockResolvedValue({
       service: codexService,
@@ -3260,14 +3388,16 @@ describe("ServiceManager", () => {
   });
 
   it("keeps a saved API key when connection settings change without explicit removal", async () => {
+    // Only a custom provider exposes its auth scheme.
+    const customService: Service = { ...gatewayService, kind: "custom" };
     const updatedService: Service = {
-      ...gatewayService,
+      ...customService,
       http: {
-        ...gatewayService.http!,
+        ...customService.http!,
         auth: { scheme: "none" },
       },
     };
-    bridgeMocks.getService.mockResolvedValue({ service: gatewayService, etag });
+    bridgeMocks.getService.mockResolvedValue({ service: customService, etag });
     bridgeMocks.updateService.mockResolvedValue({
       service: updatedService,
       etag: `"sha256:${"b".repeat(64)}"`,
@@ -3285,8 +3415,8 @@ describe("ServiceManager", () => {
           onServiceSaved={() => {}}
           onViewChange={() => {}}
           protocols={[]}
-          services={[gatewayService]}
-          view={{ kind: "edit", serviceId: gatewayService.id }}
+          services={[customService]}
+          view={{ kind: "edit", serviceId: customService.id }}
         />,
       );
       await Promise.resolve();
@@ -3302,19 +3432,19 @@ describe("ServiceManager", () => {
     });
 
     expect(bridgeMocks.updateService).toHaveBeenCalledWith(
-      gatewayService.id,
+      customService.id,
       etag,
       {
-        name: gatewayService.name,
+        name: customService.name,
         enabled: true,
         responses_websocket_enabled: false,
         failure_policy: null,
         models: ["gpt-5"],
         http: {
-          base_url: gatewayService.http?.base_url,
+          base_url: customService.http?.base_url,
           auth: { scheme: "none" },
         },
-        capabilities: gatewayService.capabilities.map((capability) => ({
+        capabilities: customService.capabilities.map((capability) => ({
           ...capability,
           mode: "native" as const,
         })),

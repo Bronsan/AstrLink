@@ -8,6 +8,7 @@ import {
   httpServicePresetLabel,
   localConversionTargets,
   protocolEntryPath,
+  serviceSiteForBaseURL,
   supportsLocalConversion,
 } from "./service-presets";
 
@@ -227,6 +228,52 @@ describe("HTTP service product presets", () => {
         ),
       ).toBe(true);
     }
+  });
+
+  it("offers vendor sites so users pick a region instead of typing an address", () => {
+    for (const [kind, global] of [
+      ["glm_coding", "https://api.z.ai/api/coding/paas/v4"],
+      ["minimax_coding", "https://api.minimax.io/v1"],
+      ["qwen", "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"],
+      ["moonshot", "https://api.moonshot.ai/v1"],
+      ["glm", "https://api.z.ai/api/paas/v4"],
+      ["minimax", "https://api.minimax.io/v1"],
+    ] as const) {
+      const preset = httpServicePreset(kind);
+      expect(preset.sites.map(({ id }) => id)).toEqual(["cn", "global"]);
+      expect(preset.sites[0]?.baseURL).toBe(preset.baseURL);
+      expect(preset.sites[1]?.baseURL).toBe(global);
+    }
+    for (const kind of httpServicePresetIDs) {
+      const preset = httpServicePreset(kind);
+      expect(preset.sites.length > 0).toBe(preset.baseURL !== "");
+      if (preset.sites.length > 0) {
+        expect(preset.sites[0]?.baseURL).toBe(preset.baseURL);
+      }
+    }
+
+    const minimax = httpServicePreset("minimax_coding");
+    // Saved vendor paths and legacy hosts still belong to their site.
+    expect(
+      serviceSiteForBaseURL(minimax, "https://api.minimax.cn/anthropic"),
+    ).toBe("cn");
+    expect(
+      serviceSiteForBaseURL(minimax, "https://api.minimaxi.com/anthropic"),
+    ).toBe("cn");
+    expect(serviceSiteForBaseURL(minimax, "https://api.minimax.io/v1")).toBe(
+      "global",
+    );
+    expect(
+      serviceSiteForBaseURL(minimax, "https://proxy.example/minimax"),
+    ).toBeNull();
+    expect(serviceSiteForBaseURL(minimax, "not a url")).toBeNull();
+    expect(
+      serviceSiteForBaseURL(
+        httpServicePreset("kimi_coding"),
+        "https://api.kimi.com/coding",
+      ),
+    ).toBe("official");
+    expect(httpServicePreset("newapi").sites).toEqual([]);
   });
 
   it("lists local conversion targets and enables only advertised edges", () => {

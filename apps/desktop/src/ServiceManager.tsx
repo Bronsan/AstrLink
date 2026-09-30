@@ -133,9 +133,11 @@ import {
   protocolDescriptors,
   protocolEntryPath,
   protocolLabel,
+  serviceSiteForBaseURL,
   supportsLocalConversion,
   type HTTPServicePresetID,
   type ProtocolDescriptor,
+  type ServiceSiteID,
 } from "./service-presets";
 import { notify } from "./notify";
 import { PageHeader } from "./PageHeader";
@@ -262,7 +264,9 @@ function serviceKindPickerHint(kind: ServiceKind): string {
   if (kind === "newapi") return i18n.t("services.kindPickerNewapiHint");
   if (kind === "openai_compatible") return "Chat · Completions · Models";
   if (kind === "custom") return i18n.t("services.kindPickerCustomHint");
-  return new URL(httpServicePreset(kind).baseURL).host;
+  return httpServicePreset(kind)
+    .sites.map(({ baseURL }) => new URL(baseURL).host)
+    .join(" · ");
 }
 
 function serviceKindPickerOption(
@@ -847,6 +851,8 @@ export function ServiceManager({
   );
   const [editing, setEditing] = useState<ServiceRecord | null>(null);
   const [baseline, setBaseline] = useState<string | null>(null);
+  // A preset address stays read-only until the user asks to type their own.
+  const [customSite, setCustomSite] = useState(false);
   const [loadingRecord, setLoadingRecord] = useState(false);
   const [saving, setSaving] = useState(false);
   const [actionID, setActionID] = useState<string | null>(null);
@@ -1018,6 +1024,7 @@ export function ServiceManager({
     setModelPreviewQuery("");
     setUpstreamModels(null);
     setEditorTab(requestedEditorTab);
+    setCustomSite(false);
     if (view.kind === "list") {
       setEditing(null);
       setBaseline(null);
@@ -1219,7 +1226,26 @@ export function ServiceManager({
   const selectKind = (kind: ServiceKind) => {
     const next = draftForKind(kind, protocols);
     setDraft(next);
+    setCustomSite(false);
     setError(null);
+  };
+
+  const selectSite = (value: ServiceSiteID | "custom") => {
+    if (value === "custom") {
+      setCustomSite(true);
+      return;
+    }
+    setCustomSite(false);
+    setDraft((current) => {
+      if (isSubscriptionKind(current.kind)) return current;
+      const preset = httpServicePreset(current.kind as HTTPServicePresetID);
+      // A saved vendor path on the same site (e.g. /anthropic) is kept.
+      if (serviceSiteForBaseURL(preset, current.baseURL) === value) {
+        return current;
+      }
+      const site = preset.sites.find(({ id }) => id === value);
+      return site ? { ...current, baseURL: site.baseURL } : current;
+    });
   };
 
   const setConvertTo = (protocol: string, value: string) => {
@@ -2656,6 +2682,29 @@ export function ServiceManager({
   const selectedPreset = isSubscriptionKind(draft.kind)
     ? null
     : httpServicePreset(draft.kind as HTTPServicePresetID, protocols);
+  const presetSites = selectedPreset?.sites ?? [];
+  const presetSite =
+    selectedPreset && !customSite
+      ? serviceSiteForBaseURL(selectedPreset, draft.baseURL)
+      : null;
+  const baseURLInput = (
+    <Input
+      aria-label={t("services.apiAddress")}
+      maxLength={2048}
+      placeholder={
+        selectedPreset?.baseURLPlaceholder ?? "https://api.example.com"
+      }
+      required
+      type="url"
+      value={draft.baseURL}
+      onChange={(event) =>
+        setDraft((current) => ({
+          ...current,
+          baseURL: event.target.value,
+        }))
+      }
+    />
+  );
   const modelsEditor = (
     <ServiceModelsEditor
       key={editingServiceID ?? "create"}
@@ -3035,63 +3084,82 @@ export function ServiceManager({
             </>
           ) : (
             <>
-              <Field label={t("services.apiAddress")}>
-                <Input
-                  maxLength={2048}
-                  placeholder={
-                    selectedPreset?.baseURLPlaceholder ??
-                    "https://api.example.com"
-                  }
-                  required
-                  type="url"
-                  value={draft.baseURL}
-                  onChange={(event) =>
-                    setDraft((current) => ({
-                      ...current,
-                      baseURL: event.target.value,
-                    }))
-                  }
-                />
-              </Field>
-              <Field label={t("services.authScheme")}>
-                <Select
-                  value={draft.authScheme}
-                  onValueChange={(value) =>
-                    setDraft((current) => ({
-                      ...current,
-                      authScheme: value as ServiceAuthScheme,
-                    }))
+              {presetSites.length > 0 ? (
+                <Field
+                  group
+                  label={t("services.apiAddress")}
+                  hint={
+                    presetSite ? (
+                      <span className="break-all">
+                        {t("services.siteAddressHint", {
+                          url: draft.baseURL.trim(),
+                        })}
+                      </span>
+                    ) : undefined
                   }
                 >
-                  <SelectTrigger
-                    aria-label={t("services.authScheme")}
-                    className="w-full"
-                  >
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {Object.entries(authLabels).map(([scheme, label]) => (
-                      <SelectItem key={scheme} value={scheme}>
-                        {label}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </Field>
-              {draft.authScheme === "custom_header" ? (
-                <Field label={t("services.headerName")}>
-                  <Input
-                    maxLength={128}
-                    placeholder="X-Api-Key"
-                    value={draft.headerName}
-                    onChange={(event) =>
-                      setDraft((current) => ({
-                        ...current,
-                        headerName: event.target.value,
-                      }))
-                    }
+                  <SegmentedControl<ServiceSiteID | "custom">
+                    label={t("services.apiSite")}
+                    options={[
+                      ...presetSites.map(({ id }) => ({
+                        value: id,
+                        label: t(`services.site.${id}`),
+                      })),
+                      { value: "custom", label: t("services.site.custom") },
+                    ]}
+                    value={presetSite ?? "custom"}
+                    onValueChange={selectSite}
                   />
+                  {presetSite ? null : baseURLInput}
                 </Field>
+              ) : (
+                <Field label={t("services.apiAddress")}>{baseURLInput}</Field>
+              )}
+              {/* Presets use the vendor's documented auth; only a custom
+                  provider declares its own. */}
+              {draft.kind === "custom" ? (
+                <>
+                  <Field label={t("services.authScheme")}>
+                    <Select
+                      value={draft.authScheme}
+                      onValueChange={(value) =>
+                        setDraft((current) => ({
+                          ...current,
+                          authScheme: value as ServiceAuthScheme,
+                        }))
+                      }
+                    >
+                      <SelectTrigger
+                        aria-label={t("services.authScheme")}
+                        className="w-full"
+                      >
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {Object.entries(authLabels).map(([scheme, label]) => (
+                          <SelectItem key={scheme} value={scheme}>
+                            {label}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </Field>
+                  {draft.authScheme === "custom_header" ? (
+                    <Field label={t("services.headerName")}>
+                      <Input
+                        maxLength={128}
+                        placeholder="X-Api-Key"
+                        value={draft.headerName}
+                        onChange={(event) =>
+                          setDraft((current) => ({
+                            ...current,
+                            headerName: event.target.value,
+                          }))
+                        }
+                      />
+                    </Field>
+                  ) : null}
+                </>
               ) : null}
               {draft.authScheme !== "none" ? (
                 <Field

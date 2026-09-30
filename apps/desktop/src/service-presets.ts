@@ -35,6 +35,16 @@ export interface ProtocolDescriptor {
   streaming: boolean;
 }
 
+/** Where a preset account lives; "official" marks a single-site vendor. */
+export type ServiceSiteID = "cn" | "global" | "official";
+
+export interface ServiceSite {
+  id: ServiceSiteID;
+  baseURL: string;
+  /** Other hosts of the same site that saved addresses may still use. */
+  aliases?: readonly string[];
+}
+
 export interface HTTPServicePreset {
   id: HTTPServicePresetID;
   label: string;
@@ -43,6 +53,8 @@ export interface HTTPServicePreset {
   kind: HTTPServiceKind;
   baseURL: string;
   baseURLPlaceholder: string;
+  /** Selectable vendor addresses; empty when the user must supply one. */
+  sites: readonly ServiceSite[];
   authScheme: ServiceAuthScheme;
   headerName: string;
   capabilities: ServiceCapability[];
@@ -196,7 +208,8 @@ const allProtocolIDs = alphaProtocolDescriptors.map(({ id }) => id);
 const profileDefinitions: Readonly<
   Record<
     HTTPServicePresetID,
-    Omit<HTTPServicePreset, "capabilities"> & {
+    Omit<HTTPServicePreset, "capabilities" | "sites"> & {
+      sites?: readonly ServiceSite[];
       capabilityIDs: readonly string[];
       convertTo?: Readonly<Record<string, string>>;
     }
@@ -246,6 +259,14 @@ const profileDefinitions: Readonly<
     kind: "kimi_coding",
     baseURL: "https://api.kimi.ai/coding",
     baseURLPlaceholder: "https://api.kimi.ai/coding",
+    // api.kimi.com is the same service under its previous domain.
+    sites: [
+      {
+        id: "official",
+        baseURL: "https://api.kimi.ai/coding",
+        aliases: ["api.kimi.com"],
+      },
+    ],
     authScheme: "bearer",
     headerName: "",
     capabilityIDs: ["anthropic.messages", "openai.chat", "openai.models"],
@@ -260,6 +281,10 @@ const profileDefinitions: Readonly<
     kind: "glm_coding",
     baseURL: "https://open.bigmodel.cn/api/coding/paas/v4",
     baseURLPlaceholder: "https://open.bigmodel.cn/api/coding/paas/v4",
+    sites: [
+      { id: "cn", baseURL: "https://open.bigmodel.cn/api/coding/paas/v4" },
+      { id: "global", baseURL: "https://api.z.ai/api/coding/paas/v4" },
+    ],
     authScheme: "bearer",
     headerName: "",
     capabilityIDs: ["anthropic.messages", "openai.chat"],
@@ -274,6 +299,14 @@ const profileDefinitions: Readonly<
     kind: "minimax_coding",
     baseURL: "https://api.minimax.cn/v1",
     baseURLPlaceholder: "https://api.minimax.cn/v1",
+    sites: [
+      {
+        id: "cn",
+        baseURL: "https://api.minimax.cn/v1",
+        aliases: ["api.minimaxi.com"],
+      },
+      { id: "global", baseURL: "https://api.minimax.io/v1" },
+    ],
     authScheme: "bearer",
     headerName: "",
     capabilityIDs: [
@@ -385,6 +418,16 @@ const profileDefinitions: Readonly<
     kind: "qwen",
     baseURL: "https://dashscope.aliyuncs.com/compatible-mode/v1",
     baseURLPlaceholder: "https://dashscope.aliyuncs.com/compatible-mode/v1",
+    sites: [
+      {
+        id: "cn",
+        baseURL: "https://dashscope.aliyuncs.com/compatible-mode/v1",
+      },
+      {
+        id: "global",
+        baseURL: "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+      },
+    ],
     authScheme: "bearer",
     headerName: "",
     capabilityIDs: ["openai.responses", "anthropic.messages", "openai.chat"],
@@ -398,6 +441,10 @@ const profileDefinitions: Readonly<
     kind: "moonshot",
     baseURL: "https://api.moonshot.cn/v1",
     baseURLPlaceholder: "https://api.moonshot.cn/v1",
+    sites: [
+      { id: "cn", baseURL: "https://api.moonshot.cn/v1" },
+      { id: "global", baseURL: "https://api.moonshot.ai/v1" },
+    ],
     authScheme: "bearer",
     headerName: "",
     capabilityIDs: [
@@ -416,6 +463,10 @@ const profileDefinitions: Readonly<
     kind: "glm",
     baseURL: "https://open.bigmodel.cn/api/paas/v4",
     baseURLPlaceholder: "https://open.bigmodel.cn/api/paas/v4",
+    sites: [
+      { id: "cn", baseURL: "https://open.bigmodel.cn/api/paas/v4" },
+      { id: "global", baseURL: "https://api.z.ai/api/paas/v4" },
+    ],
     authScheme: "bearer",
     headerName: "",
     capabilityIDs: ["anthropic.messages", "openai.chat"],
@@ -429,6 +480,14 @@ const profileDefinitions: Readonly<
     kind: "minimax",
     baseURL: "https://api.minimax.cn/v1",
     baseURLPlaceholder: "https://api.minimax.cn/v1",
+    sites: [
+      {
+        id: "cn",
+        baseURL: "https://api.minimax.cn/v1",
+        aliases: ["api.minimaxi.com"],
+      },
+      { id: "global", baseURL: "https://api.minimax.io/v1" },
+    ],
     authScheme: "bearer",
     headerName: "",
     capabilityIDs: [
@@ -525,12 +584,35 @@ export function httpServicePreset(
   const {
     capabilityIDs: _ids,
     convertTo: _conversions,
+    sites,
     ...preset
   } = definition;
   return localizeHttpPreset({
     ...preset,
+    sites:
+      sites ??
+      (preset.baseURL ? [{ id: "official", baseURL: preset.baseURL }] : []),
     capabilities,
   });
+}
+
+/** The preset site an address belongs to, or null for a custom address. */
+export function serviceSiteForBaseURL(
+  preset: Pick<HTTPServicePreset, "sites">,
+  baseURL: string,
+): ServiceSiteID | null {
+  let host: string;
+  try {
+    host = new URL(baseURL.trim()).host;
+  } catch {
+    return null;
+  }
+  return (
+    preset.sites.find(
+      (site) =>
+        new URL(site.baseURL).host === host || site.aliases?.includes(host),
+    )?.id ?? null
+  );
 }
 
 function localizeHttpPreset(preset: HTTPServicePreset): HTTPServicePreset {

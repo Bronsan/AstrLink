@@ -76,6 +76,13 @@ func TestCodingPlanSurfacesAcceptSavedAndDocumentedBases(t *testing.T) {
 		{contract.ServiceKindGLMCoding, contract.ProtocolOpenAIChat, "/v1/chat/completions",
 			[]string{"https://open.bigmodel.cn/api/anthropic", "https://open.bigmodel.cn/api/coding/paas/v4", "https://open.bigmodel.cn/api/paas/v4"},
 			"https://open.bigmodel.cn/api/coding/paas/v4/chat/completions"},
+		// The international Z.ai site shares BigModel's paths.
+		{contract.ServiceKindGLMCoding, contract.ProtocolAnthropicMessages, "/v1/messages",
+			[]string{"https://api.z.ai/api/coding/paas/v4"}, "https://api.z.ai/api/anthropic/v1/messages"},
+		{contract.ServiceKindGLMCoding, contract.ProtocolOpenAIChat, "/v1/chat/completions",
+			[]string{"https://api.z.ai/api/coding/paas/v4"}, "https://api.z.ai/api/coding/paas/v4/chat/completions"},
+		{contract.ServiceKindMiniMaxCoding, contract.ProtocolAnthropicMessages, "/v1/messages",
+			[]string{"https://api.minimax.io/v1"}, "https://api.minimax.io/anthropic/v1/messages"},
 		{contract.ServiceKindKimiCoding, contract.ProtocolAnthropicMessages, "/v1/messages",
 			[]string{"https://api.kimi.ai/coding", "https://api.kimi.ai/coding/", "https://api.kimi.ai/coding/v1"}, "https://api.kimi.ai/coding/v1/messages"},
 		{contract.ServiceKindKimiCoding, contract.ProtocolOpenAIChat, "/v1/chat/completions",
