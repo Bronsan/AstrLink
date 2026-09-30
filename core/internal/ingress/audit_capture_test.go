@@ -221,17 +221,31 @@ func TestIngressAuditToleratesRequestBodyReadAfterResponse(t *testing.T) {
 					AuditSettings:  settings,
 					AuditBlobs:     blobs,
 					Forwarder: transport.New(roundTripFunc(func(request *http.Request) (*http.Response, error) {
+						received := make(chan struct{})
 						go func() {
 							if afterFinish {
 								<-finished
 							}
 							body, _ := io.ReadAll(request.Body)
 							sent <- body
+							close(received)
 						}()
+						reply := io.NopCloser(strings.NewReader(`{}`))
+						if !afterFinish {
+							// Headers arrive at once, but a real upstream finishes its
+							// reply only after receiving the request body.
+							pipe, writer := io.Pipe()
+							go func() {
+								<-received
+								_, _ = writer.Write([]byte(`{}`))
+								_ = writer.Close()
+							}()
+							reply = pipe
+						}
 						return &http.Response{
 							StatusCode: http.StatusOK,
 							Header:     http.Header{"Content-Type": {"application/json"}},
-							Body:       io.NopCloser(strings.NewReader(`{}`)),
+							Body:       reply,
 						}, nil
 					})),
 				})
