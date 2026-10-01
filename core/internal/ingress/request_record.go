@@ -1043,6 +1043,12 @@ func (session *recordSession) noteCancelled() {
 	session.status = contract.RequestStatusCancelled
 }
 
+// clientReceivedTerminal reports whether the client-facing stream already
+// carried its terminal event, so a later disconnect cut nothing off.
+func (session *recordSession) clientReceivedTerminal() bool {
+	return session != nil && session.scanner != nil && session.scanner.streaming && session.scanner.complete
+}
+
 // demoteCurrentAttemptToChild stages a failed attempt. It becomes an independent
 // child only when another actual network attempt begins.
 func (session *recordSession) demoteCurrentAttemptToChild(

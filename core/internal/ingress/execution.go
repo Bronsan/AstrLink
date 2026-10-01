@@ -820,6 +820,11 @@ func (handler *Handler) executeCandidatesWithTest(
 				forwardErr = fmt.Errorf("%w: upstream response start", context.DeadlineExceeded)
 			}
 		}
+		if forwardErr != nil && !timedOut && request.Context().Err() != nil && recordSession.clientReceivedTerminal() {
+			// Clients such as Codex hang up as soon as the terminal event arrives,
+			// often before upstream EOF. The response was already delivered whole.
+			forwardErr = nil
+		}
 		if forwardErr == nil {
 			if deferHealthStatus && upstreamStatus.Load() != 0 {
 				health.RecordStatus(int(upstreamStatus.Load()))
@@ -832,8 +837,10 @@ func (handler *Handler) executeCandidatesWithTest(
 				if session.status == contract.RequestStatusSucceeded {
 					session.noteRecoveryStop("succeeded")
 					if test == nil {
-						handler.rememberResponseAffinity(request.Context(), session, candidate, plan)
-						handler.rememberChannelBinding(request.Context(), session, candidate)
+						// The client may already be gone after a delivered response.
+						rememberContext := context.WithoutCancel(request.Context())
+						handler.rememberResponseAffinity(rememberContext, session, candidate, plan)
+						handler.rememberChannelBinding(rememberContext, session, candidate)
 					}
 				}
 			}

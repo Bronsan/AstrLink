@@ -1455,6 +1455,67 @@ func TestInferencePlaneRecordsFailedCancelledBlockedAndStreaming(t *testing.T) {
 	})
 }
 
+// Codex closes the stream once response.completed arrives, which can be
+// before upstream EOF. Only a hangup before the terminal event is a cancel.
+func TestInferencePlaneClientHangupAfterTerminalEventSucceeds(t *testing.T) {
+	const completed = "data: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\":1,\"output_tokens\":2,\"total_tokens\":3}}}\n\n"
+	const delta = "data: {\"type\":\"response.output_text.delta\",\"delta\":\"hi\"}\n\n"
+	for _, test := range []struct {
+		name string
+		sent string
+		want contract.RequestStatus
+	}{
+		{name: "after terminal", sent: delta + completed, want: contract.RequestStatusSucceeded},
+		{name: "before terminal", sent: delta, want: contract.RequestStatusCancelled},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			store := &memoryRequestRecordStore{}
+			delivered := make(chan struct{})
+			handler := NewWithDependencies(Dependencies{
+				Resolver: candidateResolver{candidates: []endpoint.Resolved{{
+					Endpoint: validEndpoint(contract.ProtocolOpenAIResponses, true),
+				}}},
+				RequestRecords: store,
+				Forwarder: forwarderFunc(func(writer http.ResponseWriter, request *http.Request, _ transport.Target) error {
+					writer.Header().Set("Content-Type", "text/event-stream")
+					writer.WriteHeader(http.StatusOK)
+					if _, err := writer.Write([]byte(test.sent)); err != nil {
+						return err
+					}
+					close(delivered)
+					// Upstream EOF never arrives before the client hangs up.
+					<-request.Context().Done()
+					return transport.NewResponseError(request.Context().Err())
+				}),
+			})
+			ctx, cancel := context.WithCancel(context.Background())
+			request := httptest.NewRequest(
+				http.MethodPost, "/v1/responses", strings.NewReader(`{"model":"m","input":"hi","stream":true}`),
+			).WithContext(ctx)
+			response := httptest.NewRecorder()
+			done := make(chan struct{})
+			go func() {
+				handler.ServeHTTP(response, request)
+				close(done)
+			}()
+			<-delivered
+			cancel()
+			<-done
+			if len(store.records) != 1 {
+				t.Fatalf("records=%d", len(store.records))
+			}
+			record := store.records[0]
+			if record.Status != test.want {
+				t.Fatalf("status=%q want %q, record=%#v", record.Status, test.want, record)
+			}
+			if test.want == contract.RequestStatusSucceeded &&
+				(record.Usage == nil || record.Usage.BillingIncomplete || record.Usage.TotalTokens != 3) {
+				t.Fatalf("usage=%#v", record.Usage)
+			}
+		})
+	}
+}
+
 func TestInferencePlaneModelRewriteStreamsUpstreamSSEUnchanged(t *testing.T) {
 	const sse = "event: response.created\n" +
 		"data: {\"type\":\"response.created\",\"response\":{\"model\":\"upstream-model\"}}\n\n" +
