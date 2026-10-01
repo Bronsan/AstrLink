@@ -6,15 +6,19 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 
 	"github.com/QuantumNous/astrlink/core/contract"
+	"github.com/QuantumNous/astrlink/core/internal/controlapi"
 	"github.com/QuantumNous/astrlink/core/internal/endpoint"
 	"github.com/QuantumNous/astrlink/core/internal/privacy"
 	"github.com/QuantumNous/astrlink/core/internal/relaykitbridge"
+	"github.com/QuantumNous/astrlink/core/internal/storage"
+	"github.com/QuantumNous/astrlink/core/internal/storage/sqlite"
 	"github.com/QuantumNous/astrlink/core/internal/transport"
 )
 
@@ -259,6 +263,107 @@ func TestRelayKitEachAttemptConvertsWithItsOwnState(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestRelayKitConversionDiagnosticsAreRecordedPerAttempt(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "records.db")
+	store, err := sqlite.Open(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var attempts atomic.Int32
+	handler := NewWithDependencies(Dependencies{
+		Resolver: candidateResolver{candidates: []endpoint.Resolved{
+			relayKitCandidate("endpoint_chat", contract.ProtocolOpenAIChat, "gpt-upstream"),
+			relayKitCandidate("endpoint_gemini", contract.ProtocolGoogleGenerateContent, "gemini-upstream"),
+		}},
+		ConversionEngine: relaykitbridge.NewEngine(),
+		RequestRecords:   store,
+		RecordLogger:     t.Logf,
+		Forwarder: transport.New(roundTripFunc(func(request *http.Request) (*http.Response, error) {
+			body, _ := io.ReadAll(request.Body)
+			if strings.Contains(string(body), "local_shell") {
+				t.Fatalf("dropped tool reached upstream: %s", body)
+			}
+			if attempts.Add(1) == 1 {
+				return jsonResponse(http.StatusServiceUnavailable, `{"error":{"message":"busy"}}`), nil
+			}
+			return jsonResponse(http.StatusOK, `{"candidates":[{"finishReason":"STOP","content":{"role":"model","parts":[{"text":"ok"}]}}],"usageMetadata":{"promptTokenCount":1,"candidatesTokenCount":1,"totalTokenCount":2}}`), nil
+		})),
+	})
+	// The lossy conversion still succeeds; the dropped tool is only reported.
+	serveRelayKitResponses(t, handler, `{"model":"public-responses","input":"list files","tools":[{"type":"local_shell"},`+
+		`{"type":"function","name":"read_file","parameters":{"type":"object"}}]}`)
+	if attempts.Load() != 2 {
+		t.Fatalf("attempts=%d, want 2", attempts.Load())
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	// Reopen the database and read the records the way the desktop does.
+	store, err = sqlite.Open(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	control, err := controlapi.NewWithDependencies(contract.VersionResponse{
+		CoreVersion: "0.0.0-test", ControlAPIVersion: "v1", ProtocolContractVersion: "v1",
+	}, controlapi.Dependencies{ServiceStore: store, RequestRecords: store, ControlToken: "control-token-123456"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	page, err := store.ListRequestRecords(ctx, storage.RequestRecordListOptions{Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantCode := map[contract.ServiceID]string{
+		"endpoint_chat":   "unsupported_hosted_tool",
+		"endpoint_gemini": "unsupported_opaque_tool",
+	}
+	seen := 0
+	for _, summary := range page.Items {
+		for _, id := range append([]contract.RequestID{summary.ID}, childRecordIDs(t, store, summary.ID)...) {
+			request := httptest.NewRequest(http.MethodGet, controlapi.RequestsPath+"/"+string(id), nil)
+			request.Header.Set("Authorization", "Bearer control-token-123456")
+			response := httptest.NewRecorder()
+			control.ServeHTTP(response, request)
+			if response.Code != http.StatusOK {
+				t.Fatalf("get %s status=%d body=%s", id, response.Code, response.Body.String())
+			}
+			var record contract.RequestRecord
+			if err := json.Unmarshal(response.Body.Bytes(), &record); err != nil {
+				t.Fatal(err)
+			}
+			if record.ServiceID == nil {
+				t.Fatalf("record %s has no service", id)
+			}
+			diagnostics := record.ConversionDiagnostics
+			if len(diagnostics) != 1 || diagnostics[0].Phase != contract.ConversionDiagnosticPhaseRequest ||
+				diagnostics[0].Code != wantCode[*record.ServiceID] || diagnostics[0].Path != "tools[0]" ||
+				diagnostics[0].Message == "" {
+				t.Fatalf("record %s (%s) diagnostics=%#v", id, *record.ServiceID, diagnostics)
+			}
+			seen++
+		}
+	}
+	if seen != 2 {
+		t.Fatalf("checked %d attempt records, want 2", seen)
+	}
+}
+
+func childRecordIDs(t *testing.T, store *sqlite.Store, parent contract.RequestID) []contract.RequestID {
+	t.Helper()
+	children, err := store.ListRequestRecordChildren(context.Background(), parent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ids := make([]contract.RequestID, 0, len(children))
+	for _, child := range children {
+		ids = append(ids, child.ID)
+	}
+	return ids
 }
 
 func TestRelayKitRestoresRedactedValuesInsideCustomToolInput(t *testing.T) {

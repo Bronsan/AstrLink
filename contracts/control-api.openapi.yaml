@@ -5962,6 +5962,15 @@ components:
           oneOf:
             - $ref: ./protocol-capabilities.schema.json#/$defs/ExecutionPlan
             - type: "null"
+        conversion_diagnostics:
+          type: array
+          maxItems: 64
+          items:
+            $ref: "#/components/schemas/ConversionDiagnostic"
+          description: |
+            Tools and fields this attempt's local protocol conversion dropped or
+            rewrote. Informational: the conversion still succeeded. Omitted when
+            nothing was lost, for unconverted plans, and on legacy rows.
         http_status:
           type: [integer, "null"]
           minimum: 100
@@ -6067,6 +6076,33 @@ components:
         Request-time privacy outcome. Retries combine to the most severe decision
         any attempt reached. Omitted on records captured before decisions were
         recorded.
+    ConversionDiagnostic:
+      type: object
+      required: [phase, severity, code, message]
+      description: |
+        One tool or field a local protocol conversion dropped or rewrote. error
+        marks a loss that can change what the model or its tools do; warning
+        marks presentation-only detail. Path points into the converted body and
+        never carries the content itself.
+      properties:
+        phase:
+          type: string
+          enum: [request, response]
+        severity:
+          type: string
+          enum: [warning, error]
+        code:
+          type: string
+          minLength: 1
+          maxLength: 128
+        path:
+          type: string
+          minLength: 1
+          maxLength: 256
+        message:
+          type: string
+          maxLength: 1024
+      additionalProperties: false
     PrivacyFinding:
       type: object
       required: [kind, json_path, count]

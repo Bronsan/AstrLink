@@ -124,6 +124,20 @@ export interface RequestRoutingDecision {
   skipped: RoutingSkip[];
 }
 
+/**
+ * One tool or field that converting between the client's and the provider's
+ * protocol dropped or rewrote. `error` can change what the model or its tools
+ * do; `warning` loses presentation-only detail. The call still succeeded.
+ */
+export interface ConversionDiagnostic {
+  phase: "request" | "response";
+  severity: "warning" | "error";
+  code: string;
+  /** Location in the converted body, such as `tools[0]`. */
+  path?: string;
+  message: string;
+}
+
 export interface RequestEvent {
   kind: RequestEventKind;
   started_at: string;
@@ -187,6 +201,8 @@ export interface RequestRecord {
   service_id: string | null;
   /** Absent on historical records, discovery, and pending calls. */
   routing_decision?: RequestRoutingDecision;
+  /** Absent when this attempt's conversion lost nothing or none ran. */
+  conversion_diagnostics?: ConversionDiagnostic[];
   local_access_token_id: string | null;
   http_status: number | null;
   latency_ms: number | null;
@@ -724,6 +740,49 @@ function optionalRoutingDecision(
   return { routing_decision: parsed };
 }
 
+const conversionPhases = new Set(["request", "response"]);
+const conversionSeverities = new Set(["warning", "error"]);
+
+function optionalConversionDiagnostics(
+  value: unknown,
+  path: string,
+): { conversion_diagnostics?: ConversionDiagnostic[] } {
+  if (value == null) return {};
+  if (!Array.isArray(value)) invalid(path, "应为数组");
+  if (value.length > 64) invalid(path, "条目过多");
+  if (value.length === 0) return {};
+  return {
+    conversion_diagnostics: value.map((item, index) => {
+      const at = `${path}[${index}]`;
+      const diagnostic = objectAt(item, at);
+      if (
+        typeof diagnostic.phase !== "string" ||
+        !conversionPhases.has(diagnostic.phase)
+      ) {
+        invalid(`${at}.phase`, "转换阶段无效");
+      }
+      if (
+        typeof diagnostic.severity !== "string" ||
+        !conversionSeverities.has(diagnostic.severity)
+      ) {
+        invalid(`${at}.severity`, "影响程度无效");
+      }
+      const code = stringAt(diagnostic.code, `${at}.code`);
+      if (!code) invalid(`${at}.code`, "不得为空");
+      const parsed: ConversionDiagnostic = {
+        phase: diagnostic.phase as ConversionDiagnostic["phase"],
+        severity: diagnostic.severity as ConversionDiagnostic["severity"],
+        code,
+        message: stringAt(diagnostic.message, `${at}.message`),
+      };
+      if (diagnostic.path !== undefined) {
+        parsed.path = stringAt(diagnostic.path, `${at}.path`);
+      }
+      return parsed;
+    }),
+  };
+}
+
 function optionalClientType(value: unknown): { client_type?: ClientType } {
   if (value == null) return {};
   // Future Core labels remain displayable by older desktop builds.
@@ -800,6 +859,10 @@ function parseRequestRecordAt(value: unknown, path: string): RequestRecord {
     ...optionalRoutingDecision(
       record.routing_decision,
       `${path}.routing_decision`,
+    ),
+    ...optionalConversionDiagnostics(
+      record.conversion_diagnostics,
+      `${path}.conversion_diagnostics`,
     ),
     local_access_token_id: nullableStringAt(
       record.local_access_token_id,

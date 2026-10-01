@@ -2307,6 +2307,18 @@
       "websocket_unsupported": "无法通过 WebSocket 服务该模型"
     }
   },
+  "conversionDiagnostics": {
+    "tools": "转换时丢弃或改写的工具",
+    "fields": "转换时丢弃或改写的字段",
+    "phases": {
+      "request": "请求",
+      "response": "响应"
+    },
+    "severities": {
+      "error": "可能影响结果",
+      "warning": "仅细节差异"
+    }
+  },
   "paths": {
     "title": "调用路径"
   },

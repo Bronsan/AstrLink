@@ -280,6 +280,57 @@ describe("routing decision metadata", () => {
   });
 });
 
+describe("conversion diagnostics", () => {
+  const diagnostics = [
+    {
+      phase: "request",
+      severity: "error",
+      code: "unsupported_hosted_tool",
+      path: "tools[0]",
+      message:
+        'OpenAI Chat Completions cannot represent hosted tool "local_shell"',
+    },
+    {
+      phase: "response",
+      severity: "warning",
+      code: "hosted_tool_event_unrepresentable",
+      message: "",
+    },
+  ];
+
+  it("keeps what the conversion dropped or rewrote", () => {
+    expect(
+      parseRequestRecord({ ...fullRecord, conversion_diagnostics: diagnostics })
+        .conversion_diagnostics,
+    ).toStrictEqual(diagnostics);
+  });
+
+  it("leaves the key out when nothing was lost", () => {
+    for (const conversion_diagnostics of [null, undefined, []]) {
+      expect(
+        parseRequestRecord({ ...fullRecord, conversion_diagnostics }),
+      ).not.toHaveProperty("conversion_diagnostics");
+    }
+  });
+
+  it("rejects diagnostics it cannot show", () => {
+    const valid = diagnostics[0];
+    for (const [conversion_diagnostics, message] of [
+      [valid, "应为数组"],
+      [["tools[0]"], "应为对象"],
+      [[{ ...valid, phase: "routing" }], "转换阶段无效"],
+      [[{ ...valid, severity: "fatal" }], "影响程度无效"],
+      [[{ ...valid, code: "" }], "不得为空"],
+      [[{ ...valid, path: 0 }], "应为字符串"],
+      [Array.from({ length: 65 }, () => valid), "条目过多"],
+    ] as const) {
+      expect(() =>
+        parseRequestRecord({ ...fullRecord, conversion_diagnostics }),
+      ).toThrow(message);
+    }
+  });
+});
+
 describe("request-record IPC contract", () => {
   it("round-trips a valid record and drops plan/extensions", () => {
     const parsed = parseRequestRecord(fullRecord);

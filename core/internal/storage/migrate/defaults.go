@@ -791,5 +791,8 @@ CHECK(sealed IN (0, 1) AND (sealed = 0 OR length(credential_value) >= 30))`,
 		}},
 		// Removed before release; the version stays so databases that ran it still open.
 		{Version: 46, Name: "raw_passkey_envelopes"},
+		{Version: 47, Name: "request_conversion_diagnostics", Statements: []string{
+			`ALTER TABLE request_records ADD COLUMN conversion_diagnostics_json TEXT`,
+		}},
 	}
 }

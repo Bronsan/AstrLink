@@ -19,6 +19,7 @@ import (
 	"github.com/QuantumNous/astrlink/core/contract"
 	"github.com/QuantumNous/astrlink/core/internal/endpoint"
 	"github.com/QuantumNous/astrlink/core/internal/privacy"
+	"github.com/QuantumNous/astrlink/core/internal/relaykitbridge"
 	"github.com/QuantumNous/astrlink/core/internal/storage"
 )
 
@@ -178,6 +179,9 @@ type recordSession struct {
 	hasUpstreamHTTPStatus bool
 	endpointID            *contract.ServiceID
 	plan                  *contract.ExecutionPlan
+	// conversionDiagnostics is what the current attempt's local protocol
+	// conversion dropped or rewrote, request side first.
+	conversionDiagnostics []contract.ConversionDiagnostic
 	errorSummary          *contract.ErrorSummary
 	privacyRestore        *contract.PrivacyRestoreSummary
 	privacyBatch          string
@@ -511,6 +515,7 @@ func (session *recordSession) recordSnapshot(
 		PrivacyFindings:    append([]contract.PrivacyFinding(nil), session.privacyFindings...),
 		Events:             append([]contract.RequestEvent(nil), session.events...),
 	}
+	record.ConversionDiagnostics = slices.Clone(session.conversionDiagnostics)
 	if session.privacyDecision != "" {
 		decision := session.privacyDecision
 		record.PrivacyDecision = &decision
@@ -744,6 +749,51 @@ func (session *recordSession) beginNetworkAttempt(
 		session.persistLogf = logf
 	}
 	session.persistAvailableAudit(ctx)
+}
+
+// noteConversionDiagnostics records what the current attempt's conversion
+// dropped or rewrote. Call it only after beginNetworkAttempt, so a previous
+// attempt's record never receives the next attempt's diagnostics.
+func (session *recordSession) noteConversionDiagnostics(
+	phase contract.ConversionDiagnosticPhase,
+	diagnostics []relaykitbridge.ConversionDiagnostic,
+) {
+	if session == nil {
+		return
+	}
+	for _, diagnostic := range diagnostics {
+		if len(session.conversionDiagnostics) >= contract.MaxConversionDiagnostics {
+			return
+		}
+		severity := contract.ConversionDiagnosticSeverity(diagnostic.Severity)
+		if !severity.Valid() {
+			severity = contract.ConversionDiagnosticWarning
+		}
+		entry := contract.ConversionDiagnostic{
+			Phase:    phase,
+			Severity: severity,
+			Code:     conversionDiagnosticText(diagnostic.Code, contract.MaxConversionDiagnosticCodeRunes),
+			Path:     conversionDiagnosticText(diagnostic.Path, contract.MaxConversionDiagnosticPathRunes),
+			Message:  conversionDiagnosticText(diagnostic.Message, contract.MaxConversionDiagnosticDetailRunes),
+		}
+		if entry.Code == "" {
+			entry.Code = "unspecified"
+		}
+		if slices.Contains(session.conversionDiagnostics, entry) {
+			continue
+		}
+		session.conversionDiagnostics = append(session.conversionDiagnostics, entry)
+	}
+}
+
+func conversionDiagnosticText(value string, maxRunes int) string {
+	value = strings.Map(func(r rune) rune {
+		if r < 32 && r != '\t' {
+			return ' '
+		}
+		return r
+	}, value)
+	return contract.ClampRunes(strings.TrimSpace(value), maxRunes)
 }
 
 // observeOutboundCapture records the exact upstream request after transport
@@ -1117,6 +1167,7 @@ func (session *recordSession) resetAttemptLocal() {
 	session.hasUpstreamHTTPStatus = false
 	session.endpointID = nil
 	session.plan = nil
+	session.conversionDiagnostics = nil
 	session.errorSummary = nil
 	session.privacyRestore = nil
 	session.networkAttemptOpen = false

@@ -1,4 +1,5 @@
 import { RecoveryDetails } from "./components/RecoveryDetails";
+import { ConversionDiagnosticsDetails } from "./components/ConversionDiagnosticsDetails";
 import { RoutingDecisionDetails } from "./components/RoutingDecisionDetails";
 import { useEffect, useMemo, useRef, useState } from "react";
 
@@ -463,6 +464,7 @@ function RouteInspector({
         )}
         value={record.routing_decision}
       />
+      <ConversionDiagnosticsDetails value={record.conversion_diagnostics} />
     </>
   );
 }

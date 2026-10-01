@@ -889,6 +889,72 @@ describe("TrajectoryInspectorWindow", () => {
     ).toBeNull();
   });
 
+  it("lists the tools and fields the protocol conversion dropped", async () => {
+    const routeRow: TrajectoryRow = {
+      ...row,
+      id: `${record.id}:routed`,
+      chip: "ROUTE",
+      lane: "gateway",
+    };
+    await render();
+
+    await act(async () => {
+      pushSelection({
+        row: routeRow,
+        record: {
+          ...record,
+          conversion_diagnostics: [
+            {
+              phase: "request",
+              severity: "error",
+              code: "unsupported_hosted_tool",
+              path: "tools[0]",
+              message:
+                'OpenAI Chat Completions cannot represent hosted tool "local_shell"',
+            },
+            {
+              phase: "request",
+              severity: "warning",
+              code: "unsupported_parallel_tool_control",
+              path: "parallel_tool_calls",
+              message: "",
+            },
+          ],
+        },
+      });
+    });
+    await flush();
+
+    const details = inspector(container)?.querySelector(
+      '[data-testid="conversion-diagnostics"]',
+    );
+    const groups = [...(details?.querySelectorAll("[data-group]") ?? [])];
+    expect(groups.map((group) => group.getAttribute("data-group"))).toEqual([
+      "tools",
+      "fields",
+    ]);
+    expect(groups[0]?.textContent).toContain("转换时丢弃或改写的工具");
+    expect(groups[0]?.textContent).toContain("请求 · tools[0]");
+    expect(groups[0]?.textContent).toContain("可能影响结果");
+    expect(groups[0]?.textContent).toContain('hosted tool "local_shell"');
+    expect(groups[1]?.textContent).toContain("转换时丢弃或改写的字段");
+    expect(groups[1]?.textContent).toContain("仅细节差异");
+    // Without a message the code still says what was lost.
+    expect(groups[1]?.textContent).toContain(
+      "unsupported_parallel_tool_control",
+    );
+
+    await act(async () => {
+      pushSelection({ row: routeRow, record });
+    });
+    await flush();
+    expect(
+      inspector(container)?.querySelector(
+        '[data-testid="conversion-diagnostics"]',
+      ),
+    ).toBeNull();
+  });
+
   it("uses the same icon and hint for continuation and provider stickiness", async () => {
     await render();
     await act(async () => {

@@ -438,7 +438,7 @@ const requestSessionSummaryColumns = `
     turn_index, NULL, NULL, NULL, NULL,
     (SELECT COUNT(*) FROM request_records children
      WHERE children.parent_request_id = request_records.id), NULL, NULL, model_redirect_json, NULL, client_type,
-    NULL, NULL`
+    NULL, NULL, NULL`
 
 func (store *Store) loadSessionSummaries(ctx context.Context, items []sessionAggregate) (map[string][]contract.RequestRecord, error) {
 	result := make(map[string][]contract.RequestRecord, len(items))

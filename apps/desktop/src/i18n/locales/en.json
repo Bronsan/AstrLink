@@ -2307,6 +2307,18 @@
       "websocket_unsupported": "Cannot serve this model over WebSocket"
     }
   },
+  "conversionDiagnostics": {
+    "tools": "Tools dropped or changed during conversion",
+    "fields": "Fields dropped or changed during conversion",
+    "phases": {
+      "request": "Request",
+      "response": "Response"
+    },
+    "severities": {
+      "error": "May change results",
+      "warning": "Detail only"
+    }
+  },
   "paths": {
     "title": "Call paths"
   },

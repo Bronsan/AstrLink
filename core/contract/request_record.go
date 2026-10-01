@@ -436,8 +436,12 @@ type RequestRecord struct {
 	RoutingDecision    *RequestRoutingDecision `json:"routing_decision,omitempty"`
 	LocalAccessTokenID *AccessTokenID          `json:"local_access_token_id"`
 	Plan               *ExecutionPlan          `json:"plan"`
-	HTTPStatus         *int                    `json:"http_status"`
-	LatencyMs          *int                    `json:"latency_ms"`
+	// ConversionDiagnostics lists what this attempt's local protocol
+	// conversion dropped or rewrote; empty for unconverted plans and
+	// historical records.
+	ConversionDiagnostics []ConversionDiagnostic `json:"conversion_diagnostics,omitempty"`
+	HTTPStatus            *int                   `json:"http_status"`
+	LatencyMs             *int                   `json:"latency_ms"`
 	// FirstTokenMs measures upstream send to first generated stream content
 	// (text, reasoning, or tool call). Nil for non-streaming and historical calls.
 	FirstTokenMs   *int                   `json:"first_token_ms"`
@@ -583,6 +587,9 @@ func (record RequestRecord) Validate() error {
 		return fmt.Errorf("unknown privacy decision %q", *record.PrivacyDecision)
 	}
 	if err := validatePrivacyFindings(record.PrivacyFindings); err != nil {
+		return err
+	}
+	if err := validateConversionDiagnostics(record.ConversionDiagnostics); err != nil {
 		return err
 	}
 	if record.SessionID != nil {

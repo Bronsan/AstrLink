@@ -22,6 +22,7 @@ type relayKitResponseWriter struct {
 	// state is what this attempt's request conversion recorded; the response
 	// conversion needs it to restore client-only tool call shapes.
 	state       relaykitbridge.ConversionState
+	diagnostics []relaykitbridge.ConversionDiagnostic
 	streaming   bool
 	status      int
 	body        bytes.Buffer
@@ -97,6 +98,7 @@ func (writer *relayKitResponseWriter) Finish() error {
 		if err != nil {
 			return err
 		}
+		writer.diagnostics = output.Diagnostics
 		writer.Header().Set("Content-Type", output.ContentType)
 		writer.ResponseWriter.WriteHeader(output.StatusCode)
 		_, err = writer.ResponseWriter.Write(output.Body)
@@ -110,6 +112,18 @@ func (writer *relayKitResponseWriter) Finish() error {
 		return err
 	}
 	return writer.writeEvents(events)
+}
+
+// responseDiagnostics reports what the response conversion dropped or
+// rewrote so far; a passthrough error response is never converted.
+func (writer *relayKitResponseWriter) responseDiagnostics() []relaykitbridge.ConversionDiagnostic {
+	if writer.passthrough {
+		return nil
+	}
+	if writer.stream != nil {
+		return writer.stream.Diagnostics()
+	}
+	return writer.diagnostics
 }
 
 func (writer *relayKitResponseWriter) streamClose() error {

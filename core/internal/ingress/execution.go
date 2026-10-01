@@ -608,6 +608,7 @@ func (handler *Handler) executeCandidatesWithTest(
 					handler.requestRecords,
 					handler.recordLogger,
 				)
+				recordSession.noteConversionDiagnostics(contract.ConversionDiagnosticPhaseRequest, conversion.Diagnostics)
 				recordSession.observeOutboundCapture(outbound)
 			}
 			if test != nil && test.observer.Outbound != nil {
@@ -779,6 +780,9 @@ func (handler *Handler) executeCandidatesWithTest(
 				forwardErr = transport.NewResponseError(finishErr)
 				relayConversionFailed = !downstream.Committed()
 			}
+		}
+		if relayWriter != nil && attemptStarted {
+			recordSession.noteConversionDiagnostics(contract.ConversionDiagnosticPhaseResponse, relayWriter.responseDiagnostics())
 		}
 		if retryHTTP == nil && restoring != nil && (forwardErr == nil || classified.Streaming) {
 			if finishErr := restoring.Finish(); finishErr != nil && forwardErr == nil {
