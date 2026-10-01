@@ -2419,7 +2419,7 @@ describe("ServiceManager", () => {
       );
       expect(
         entryRow
-          ?.querySelector('[role="checkbox"]')
+          ?.querySelector('[role="switch"]')
           ?.getAttribute("aria-checked"),
       ).toBe("true");
       expect(entryRow?.textContent).toContain(
@@ -4336,20 +4336,20 @@ describe("ServiceManager", () => {
       "只能以 OpenAI Responses 格式发给上游",
     );
     const responses = row("OpenAI Responses")!;
-    const responsesCheckbox = responses.querySelector('[role="checkbox"]')!;
-    expect(responsesCheckbox.getAttribute("aria-checked")).toBe("true");
-    expect(responsesCheckbox.hasAttribute("disabled")).toBe(true);
+    const responsesSwitch = responses.querySelector('[role="switch"]')!;
+    expect(responsesSwitch.getAttribute("aria-checked")).toBe("true");
+    expect(responsesSwitch.hasAttribute("disabled")).toBe(true);
     expect(responses.textContent).toContain("订阅原生支持");
     expect(row("OpenAI Legacy Completions")).toBeUndefined();
     expect(row("Gemini Models")).toBeUndefined();
     const anthropic = row("Anthropic Messages")!;
     expect(
-      anthropic.querySelector('[role="checkbox"]')!.hasAttribute("disabled"),
+      anthropic.querySelector('[role="switch"]')!.hasAttribute("disabled"),
     ).toBe(true);
 
     await act(async () => {
       row("OpenAI Chat Completions")!
-        .querySelector<HTMLButtonElement>('[role="checkbox"]')!
+        .querySelector<HTMLButtonElement>('[role="switch"]')!
         .click();
       await Promise.resolve();
     });

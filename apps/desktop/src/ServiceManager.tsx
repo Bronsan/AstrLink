@@ -2804,16 +2804,13 @@ export function ServiceManager({
                 key={descriptor.id}
               >
                 <Label className="flex min-w-0 items-center gap-3 text-xs text-text-secondary">
-                  <Checkbox
+                  <Switch
                     checked={Boolean(capability)}
                     disabled={locked}
                     onCheckedChange={(checked) =>
-                      toggleCapability(
-                        descriptor,
-                        checked === true,
-                        defaultTarget,
-                      )
+                      toggleCapability(descriptor, checked, defaultTarget)
                     }
+                    size="sm"
                   />
                   <span className="grid min-w-0 gap-1">
                     <span className="font-medium text-foreground">

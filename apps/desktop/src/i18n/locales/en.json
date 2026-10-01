@@ -824,9 +824,9 @@
     "deleted": "Deleted “{{name}}”.",
     "logoutFailed": "Sign-out failed.",
     "deleteFailed": "Failed to delete the API provider.",
-    "capabilityHintConvert": "Clients can reach this provider only through checked protocols. Use Pass through for protocols the upstream supports; convert only the ones it doesn't.",
-    "capabilityHintPassthrough": "Clients can reach this provider only through checked protocols. Local format conversion isn't enabled yet, so requests go to the upstream unchanged. Check only protocols the upstream supports.",
-    "capabilityHintSubscription": "Protocols this subscription serves natively are always on and pass through. Any other checked protocol is converted locally and can only be sent upstream as {{targets}}.",
+    "capabilityHintConvert": "Clients can reach this provider only through enabled protocols. Use Pass through for protocols the upstream supports; convert only the ones it doesn't.",
+    "capabilityHintPassthrough": "Clients can reach this provider only through enabled protocols. Local format conversion isn't enabled yet, so requests go to the upstream unchanged. Enable only protocols the upstream supports.",
+    "capabilityHintSubscription": "Protocols this subscription serves natively are always on and pass through. Any other enabled protocol is converted locally and can only be sent upstream as {{targets}}.",
     "capabilityHintSubscriptionUnavailable": "Local format conversion isn't enabled yet, so this subscription accepts only the protocols it serves natively.",
     "subscriptionNative": "Native to this subscription",
     "protocolModes": {
