@@ -4855,8 +4855,10 @@ components:
       description: >
         Per-kind detection switch and placeholder shape. url and ip_address ship
         disabled because they are the dominant false-positive source for coding
-        agents. common_secret, private_person, private_address, and private_date
-        are rejected with any style other than token.
+        agents. phone ships with the token style because models regroup its
+        stand-in and its fictional number block is small. common_secret,
+        private_person, private_address, and private_date are rejected with any
+        style other than token.
     PlaceholderStyle:
       type: string
       enum: [natural, token]
