@@ -33,6 +33,8 @@ type fakeGuardHub struct {
 	server   *httptest.Server
 	releases []fakeGuardRelease
 	requests atomic.Int64
+	// downloadCounts records the HEADs the Hub counts as downloads.
+	downloadCounts atomic.Int64
 }
 
 func newFakeGuardHub(t *testing.T, releases ...fakeGuardRelease) *fakeGuardHub {
@@ -48,6 +50,9 @@ func (hub *fakeGuardHub) serveHTTP(writer http.ResponseWriter, request *http.Req
 	api := "/api/models/" + astrLinkGuardRepoID + "/"
 	resolve := "/" + astrLinkGuardRepoID + "/resolve/"
 	switch {
+	case request.Method == http.MethodHead &&
+		request.URL.Path == resolve+astrLinkGuardCountRevision+"/config.json":
+		hub.downloadCounts.Add(1)
 	case request.URL.Path == api+"refs":
 		tags := []map[string]string{{"name": "v" + astrLinkGuardVersion}}
 		for _, release := range hub.releases {
@@ -338,6 +343,10 @@ func TestAstrLinkGuardReleaseSkipsIncompatibleTagsAndInstallsUpdate(t *testing.T
 		}
 	}
 
+	if counted := hub.downloadCounts.Load(); counted != 0 {
+		t.Fatalf("release checks counted %d downloads", counted)
+	}
+
 	// A fresh registry resolves the release by commit, as the desktop sends it.
 	registry, err = NewRegistry(context.Background(), config)
 	if err != nil {
@@ -356,6 +365,9 @@ func TestAstrLinkGuardReleaseSkipsIncompatibleTagsAndInstallsUpdate(t *testing.T
 		ready.BytesTotal != int8Total ||
 		len(ready.LabelMapping) != len(astrLinkGuardKinds) {
 		t.Fatalf("installed release=%#v", ready)
+	}
+	if counted := hub.downloadCounts.Load(); counted != 1 {
+		t.Fatalf("install counted %d downloads, want 1", counted)
 	}
 
 	installed := hub.requests.Load()

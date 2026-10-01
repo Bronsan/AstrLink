@@ -1132,6 +1132,9 @@ func (registry *Registry) download(
 				current.BytesDownloaded,
 			)
 		}
+		if plan.installation.RepoID == astrLinkGuardRepoID {
+			registry.countAstrLinkGuardDownload(ctx)
+		}
 	} else if registry.logf != nil {
 		registry.logf(
 			"privacy model download failed: model_id=%s stage=persist reason=filesystem",

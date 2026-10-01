@@ -1,8 +1,11 @@
 package privacymodel
 
 import (
+	"context"
 	"encoding/json"
+	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/QuantumNous/astrlink/core/contract"
 )
@@ -12,6 +15,12 @@ const (
 	astrLinkGuardRevision = "49e8b7b83d34fd75a86cf07698bd80972d444ff3"
 	astrLinkGuardVersion  = "0.1.0"
 	astrLinkGuardLicense  = "LICENSE"
+
+	// The Hub counts a download only for requests to the repository's root
+	// config.json, which the variant folders never match. This is the first
+	// commit that has one.
+	astrLinkGuardCountRevision = "5fb09dd8831224273c8db11bb0ed4b0890bd42e9"
+	astrLinkGuardCountTimeout  = 10 * time.Second
 
 	astrLinkGuardDecoderContractField = "astrlink_guard_decoder_contract"
 	astrLinkGuardDecoderContract      = "bio-offset-consistency-v1"
@@ -115,6 +124,22 @@ func astrLinkGuardAssets(variant string) []Asset {
 		Path: astrLinkGuardLicense, Size: 11_357,
 		SHA256: "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
 	})
+}
+
+// countAstrLinkGuardDownload sends the HEAD the Hub counts as one download.
+// It is best effort; the installation is already ready and never depends on it.
+func (registry *Registry) countAstrLinkGuardDownload(ctx context.Context) {
+	ctx, cancel := context.WithTimeout(ctx, astrLinkGuardCountTimeout)
+	defer cancel()
+	request, err := http.NewRequestWithContext(ctx, http.MethodHead, registry.probe.endpoint(
+		astrLinkGuardRepoID, "resolve", astrLinkGuardCountRevision, "config.json",
+	), nil)
+	if err != nil {
+		return
+	}
+	if response, err := registry.httpClient.Do(request); err == nil && response.Body != nil {
+		_ = response.Body.Close()
+	}
 }
 
 func defaultAstrLinkGuardLabelMapping() map[string]*contract.CanonicalKind {
