@@ -405,9 +405,22 @@ if (process.argv.includes("--test-runtime-only")) {
 await stageOnnxRuntimeNotices();
 await stageWindowsVcRuntime({ target, binariesDirectory });
 
+// Release jobs stamp the tag into package.json before this script runs, so
+// Core reports the same version as the desktop shell.
+const { version: appVersion } = JSON.parse(
+  readFileSync(path.join(desktopDirectory, "package.json"), "utf8"),
+);
 execFileSync(
   "go",
-  ["build", "-trimpath", "-o", output, "./cmd/astrlink-core"],
+  [
+    "build",
+    "-trimpath",
+    "-ldflags",
+    `-X github.com/QuantumNous/astrlink/core/internal/buildinfo.Version=${appVersion}`,
+    "-o",
+    output,
+    "./cmd/astrlink-core",
+  ],
   {
     cwd: coreDirectory,
     stdio: "inherit",

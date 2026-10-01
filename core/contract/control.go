@@ -11,7 +11,7 @@ import (
 const (
 	ControlAPIVersion       = "v1"
 	ProtocolContractVersion = "v1"
-	DefaultCoreVersion      = "0.1.0-dev"
+	DefaultCoreVersion      = "dev"
 )
 
 type HealthResponse struct {
