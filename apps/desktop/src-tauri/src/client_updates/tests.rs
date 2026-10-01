@@ -268,6 +268,183 @@ fn ignores_unrelated_pi_commands() {
 }
 
 #[test]
+fn reads_npm_cmd_shim_targets_inside_the_shim_directory() {
+    let fixture = Fixture::new();
+    let codex = fixture
+        .0
+        .join("npm/node_modules/@openai/codex/bin/codex.js");
+    for shim in [
+        // npm 7 and later
+        r#"@ECHO off
+GOTO start
+:find_dp0
+SET dp0=%~dp0
+EXIT /b
+:start
+SETLOCAL
+CALL :find_dp0
+
+IF EXIST "%dp0%\node.exe" (
+  SET "_prog=%dp0%\node.exe"
+) ELSE (
+  SET "_prog=node"
+  SET PATHEXT=%PATHEXT:;.JS;=;%
+)
+
+endLocal & goto #_undefined_# 2>NUL || title %COMSPEC% & "%_prog%"  "%dp0%\node_modules\@openai\codex\bin\codex.js" %*
+"#,
+        // npm 6
+        r#"@IF EXIST "%~dp0\node.exe" (
+  "%~dp0\node.exe"  "%~dp0\node_modules\@openai\codex\bin\codex.js" %*
+) ELSE (
+  @SETLOCAL
+  @SET PATHEXT=%PATHEXT:;.JS;=;%
+  node  "%~dp0\node_modules\@openai\codex\bin\codex.js" %*
+)
+"#,
+    ] {
+        let path = fixture.write("npm/codex.cmd", shim);
+        assert_eq!(cmd_shim_target(&path), Some(codex.clone()));
+    }
+    // A native binary has no interpreter, as in Claude Code 2.1.113 and later.
+    let path = fixture.write(
+        "npm/claude.cmd",
+        r#"CALL :find_dp0
+"%dp0%\node_modules\@anthropic-ai\claude-code\bin\claude.exe"   %*
+"#,
+    );
+    assert_eq!(
+        cmd_shim_target(&path),
+        Some(
+            fixture
+                .0
+                .join("npm/node_modules/@anthropic-ai/claude-code/bin/claude.exe")
+        )
+    );
+    for invalid in [
+        r#""%dp0%\..\@openai\codex\bin\codex.js" %*"#,
+        r#""%dp0%\C:\other\codex.js" %*"#,
+        "@echo off\ncodex.exe %*\n",
+    ] {
+        let path = fixture.write("npm/codex.cmd", invalid);
+        assert_eq!(cmd_shim_target(&path), None);
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn runs_cmd_shim_targets_without_cmd_exe() {
+    let fixture = Fixture::new();
+    let node = fixture.script("bin/node", "#!/bin/sh\n");
+    let shim = fixture.0.join("npm/codex.cmd");
+    let script = fixture
+        .0
+        .join("npm/node_modules/@openai/codex/bin/codex.js");
+    let command = shim_command(&fixture.environment(), &shim, &script).unwrap();
+    assert_eq!(command.program, node);
+    assert_eq!(command.args, [script.into_os_string()]);
+    let binary = fixture
+        .0
+        .join("npm/node_modules/@anthropic-ai/claude-code/bin/claude.exe");
+    assert_eq!(
+        shim_command(&fixture.environment(), &shim, &binary).unwrap(),
+        CommandSpec::new(&binary, &[])
+    );
+    // A shim whose target could not be read is never passed to cmd.exe.
+    assert_eq!(
+        shim_command(&fixture.environment(), &shim, &shim)
+            .unwrap_err()
+            .code,
+        "unsupported"
+    );
+}
+
+#[cfg(windows)]
+#[test]
+fn follows_npm_shims_on_windows_without_verbatim_paths() {
+    let fixture = Fixture::new();
+    // std's canonical form is \\?\C:\..., which Node cannot load as a script.
+    let root = dunce::canonicalize(&fixture.0).unwrap();
+    let npm = root.join("npm");
+    let nodejs = root.join("nodejs");
+    for (name, entry) in [
+        ("@earendil-works/pi-coding-agent", "dist/bundle/cli.js"),
+        ("@anthropic-ai/claude-code", "bin/claude.exe"),
+    ] {
+        fixture.write(
+            &format!("npm/node_modules/{name}/package.json"),
+            &format!(r#"{{"name":"{name}"}}"#),
+        );
+        fixture.write(&format!("npm/node_modules/{name}/{entry}"), "");
+    }
+    fixture.write(
+        "npm/pi.cmd",
+        r#""%_prog%"  "%dp0%\node_modules\@earendil-works\pi-coding-agent\dist\bundle\cli.js" %*"#,
+    );
+    // npm's sh shim for Git Bash is the same installation.
+    fixture.write("npm/pi", "#!/bin/sh\n");
+    fixture.write(
+        "npm/claude.cmd",
+        r#""%dp0%\node_modules\@anthropic-ai\claude-code\bin\claude.exe"   %*"#,
+    );
+    fixture.write("npm/node.exe", "");
+    fixture.write("nodejs/npm.cmd", "");
+    fixture.write("nodejs/node_modules/npm/bin/npm-cli.js", "");
+    let environment = Environment {
+        home: root.clone(),
+        path: std::env::join_paths([&npm, &nodejs]).unwrap(),
+        use_system_proxy: false,
+        proxy_env: None,
+    };
+
+    let pi = detect(&environment, ClientId::Pi).unwrap();
+    assert_eq!(
+        pi.method,
+        InstallMethod::Npm {
+            prefix: npm.clone()
+        }
+    );
+    assert!(pi.others.is_empty());
+    let command = client_command(&environment, &pi).unwrap();
+    assert_eq!(command.program, npm.join("node.exe"));
+    assert_eq!(
+        command.args,
+        [
+            npm.join(r"node_modules\@earendil-works\pi-coding-agent\dist\bundle\cli.js")
+                .into_os_string()
+        ]
+    );
+
+    let claude = detect(&environment, ClientId::Claude).unwrap();
+    assert_eq!(
+        claude.method,
+        InstallMethod::Npm {
+            prefix: npm.clone()
+        }
+    );
+    assert_eq!(
+        client_command(&environment, &claude).unwrap(),
+        CommandSpec::new(
+            npm.join(r"node_modules\@anthropic-ai\claude-code\bin\claude.exe"),
+            &[]
+        )
+    );
+    // Node's own npm.cmd runs the npm-cli.js beside it.
+    let command = update_command(
+        &environment,
+        ClientId::Claude,
+        &claude,
+        &version(ClientId::Claude, "2.1.286"),
+    )
+    .unwrap();
+    assert_eq!(
+        PathBuf::from(&command.args[0]),
+        nodejs.join(r"node_modules\npm\bin\npm-cli.js")
+    );
+    assert_eq!(command.args[4], npm.as_os_str());
+}
+
+#[test]
 fn parses_latest_sources_and_rejects_invalid_versions() {
     assert_eq!(
         parse_latest(

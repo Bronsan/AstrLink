@@ -266,18 +266,16 @@ fn find_programs(path: &std::ffi::OsStr, name: &str) -> Vec<PathBuf> {
     let mut found = Vec::new();
     let mut seen = HashSet::new();
     for directory in std::env::split_paths(path).filter(|p| p.is_absolute()) {
+        // npm also writes an extensionless sh shim beside each .cmd. Windows
+        // cannot launch it, and it is not a second installation.
         #[cfg(windows)]
-        let names = [
-            format!("{name}.exe"),
-            format!("{name}.cmd"),
-            name.to_string(),
-        ];
+        let names = [format!("{name}.exe"), format!("{name}.cmd")];
         #[cfg(not(windows))]
         let names = [name.to_string()];
         for name in names {
             let file = directory.join(name);
             if executable(&file) {
-                if let Ok(resolved) = fs::canonicalize(&file) {
+                if let Ok(resolved) = dunce::canonicalize(&file) {
                     if seen.insert(resolved) {
                         found.push(file);
                     }
@@ -286,6 +284,27 @@ fn find_programs(path: &std::ffi::OsStr, name: &str) -> Vec<PathBuf> {
         }
     }
     found
+}
+
+/// npm's Windows shims run their target as `"%dp0%\<path>"` (`"%~dp0\<path>"`
+/// before npm 7), after the script's interpreter. Read the target instead of
+/// guessing each package's entry point; package ownership is checked later.
+fn cmd_shim_target(shim: &Path) -> Option<PathBuf> {
+    let raw = fs::read_to_string(shim).ok()?;
+    let (_, rest) = raw
+        .rsplit_once("\"%dp0%\\")
+        .or_else(|| raw.rsplit_once("\"%~dp0\\"))?;
+    let (target, _) = rest.split_once('"')?;
+    let mut path = shim.parent()?.to_path_buf();
+    for part in target.split(['\\', '/']).filter(|p| !p.is_empty()) {
+        // Global shims point into their own directory. A project's
+        // node_modules\.bin shim climbs out of it and is not a global install.
+        if part == ".." || part.contains(':') {
+            return None;
+        }
+        path.push(part);
+    }
+    Some(path)
 }
 
 fn manifest_name(directory: &Path) -> Option<String> {
@@ -419,19 +438,13 @@ fn installation_method(id: ClientId, resolved: &Path, home: &Path) -> InstallMet
 fn detect(environment: &Environment, id: ClientId) -> Option<Installation> {
     let mut paths = find_programs(&environment.path, id.name()).into_iter();
     let executable = paths.next()?;
-    let mut resolved = fs::canonicalize(&executable).ok()?;
+    let mut resolved = dunce::canonicalize(&executable).ok()?;
     if cfg!(windows) && executable.extension().is_some_and(|s| s == "cmd") {
-        let entry = match id {
-            ClientId::Codex => Some("@openai/codex/bin/codex.js"),
-            ClientId::Claude => Some("@anthropic-ai/claude-code/cli.js"),
-            ClientId::Pi => Some("@earendil-works/pi-coding-agent/dist/bundle/cli.js"),
-            ClientId::Cursor => None,
-        };
-        if let Some(entry) = entry {
-            let entry = executable.parent()?.join("node_modules").join(entry);
-            if entry.is_file() {
-                resolved = fs::canonicalize(entry).ok()?;
-            }
+        if let Some(target) = cmd_shim_target(&executable)
+            .filter(|t| t.is_file())
+            .and_then(|t| dunce::canonicalize(t).ok())
+        {
+            resolved = target;
         }
     }
     let method = installation_method(id, &resolved, &environment.home);
@@ -467,8 +480,6 @@ fn current_version(
     id: ClientId,
     install: &Installation,
 ) -> Result<ClientVersion, ClientError> {
-    // On Windows avoid passing a .cmd wrapper through cmd.exe; run the known
-    // npm entry point through Node with a literal argument vector instead.
     let mut command = client_command(environment, install)?;
     command.args.push("--version".into());
     parse_version(id, &process::run(environment, &command, PROBE_TIMEOUT)?)
@@ -492,20 +503,39 @@ fn client_command(
     install: &Installation,
 ) -> Result<CommandSpec, ClientError> {
     if cfg!(windows) && install.executable.extension().is_some_and(|s| s == "cmd") {
-        if let InstallMethod::Npm { prefix } = &install.method {
-            let node = node_program(environment, prefix)
-                .ok_or_else(|| ClientError::new("unsupported", "Node.js is unavailable"))?;
-            return Ok(CommandSpec {
-                program: node,
-                args: vec![install.resolved.as_os_str().into()],
-            });
-        }
-        return Err(ClientError::new(
-            "unsupported",
-            "Unsupported command wrapper",
-        ));
+        return shim_command(environment, &install.executable, &install.resolved);
     }
     Ok(CommandSpec::new(&install.executable, &[]))
+}
+
+/// Runs a .cmd shim's target as the shim would, but with a literal argument
+/// vector instead of a command line that cmd.exe parses again.
+fn shim_command(
+    environment: &Environment,
+    shim: &Path,
+    target: &Path,
+) -> Result<CommandSpec, ClientError> {
+    let extension = target
+        .extension()
+        .map(|s| s.to_string_lossy().to_ascii_lowercase());
+    match extension.as_deref() {
+        Some("exe") => Ok(CommandSpec::new(target, &[])),
+        Some("js" | "cjs" | "mjs") => {
+            // Like the shim, prefer a node.exe beside it, then PATH.
+            let node = shim
+                .parent()
+                .and_then(|prefix| node_program(environment, prefix))
+                .ok_or_else(|| ClientError::new("unsupported", "Node.js is unavailable"))?;
+            Ok(CommandSpec {
+                program: node,
+                args: vec![target.as_os_str().into()],
+            })
+        }
+        _ => Err(ClientError::new(
+            "unsupported",
+            "Unsupported command wrapper",
+        )),
+    }
 }
 
 /// Cursor's `update` command reads its release channel from cli-config.json.
@@ -576,8 +606,16 @@ fn update_command(
             } else {
                 find_programs(&environment.path, "npm")
                     .into_iter()
-                    .filter_map(|p| fs::canonicalize(p).ok())
-                    .find(|p| p.ends_with("npm/bin/npm-cli.js"))
+                    .filter_map(|p| {
+                        // Node's Windows npm.cmd runs the npm-cli.js beside it.
+                        if p.extension().is_some_and(|s| s == "cmd") {
+                            p.parent()
+                                .map(|d| d.join("node_modules/npm/bin/npm-cli.js"))
+                        } else {
+                            dunce::canonicalize(p).ok()
+                        }
+                    })
+                    .find(|p| p.ends_with("npm/bin/npm-cli.js") && p.is_file())
                     .ok_or_else(|| ClientError::new("unsupported", "npm is unavailable"))?
             };
             let node = node_program(environment, prefix)
