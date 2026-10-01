@@ -2,6 +2,9 @@ use tauri::{LogicalSize, Manager, PhysicalPosition, PhysicalRect, PhysicalSize, 
 
 const WORK_AREA_FRACTION: f64 = 0.82;
 const ASPECT_RATIO: f64 = 19.0 / 12.0;
+// Large and ultrawide displays would otherwise open a window whose extra width
+// only spreads fixed-size content apart.
+const MAX_LOGICAL_WIDTH: f64 = 1200.0;
 
 #[derive(Debug)]
 struct StartupGeometry {
@@ -14,11 +17,13 @@ fn startup_geometry(
     work_area: &PhysicalRect<i32, u32>,
     frame: PhysicalSize<u32>,
     minimum_size: PhysicalSize<u32>,
+    maximum_width: u32,
 ) -> Option<StartupGeometry> {
     // Fit the entire window, including native decorations, inside the usable
     // desktop. Physical coordinates preserve placement on mixed-DPI monitors.
     let width = (f64::from(work_area.size.width) * WORK_AREA_FRACTION)
         .min(f64::from(work_area.size.height) * WORK_AREA_FRACTION * ASPECT_RATIO)
+        .min(f64::from(maximum_width))
         .floor() as u32;
     let height = (f64::from(width) / ASPECT_RATIO).floor() as u32;
     if width <= frame.width || height <= frame.height {
@@ -57,18 +62,20 @@ pub fn fit_to_monitor(window: &WebviewWindow) -> Result<(), Box<dyn std::error::
         .iter()
         .find(|config| config.label == window.label())
         .ok_or("main window configuration is missing")?;
+    let scale = window.scale_factor()?;
     let minimum_size = LogicalSize::new(
         config.min_width.unwrap_or(0.0),
         config.min_height.unwrap_or(0.0),
     )
-    .to_physical(window.scale_factor()?);
+    .to_physical(scale);
+    let maximum_width = (MAX_LOGICAL_WIDTH * scale).floor() as u32;
     let outer_size = window.outer_size()?;
     let inner_size = window.inner_size()?;
     let frame = PhysicalSize::new(
         outer_size.width.saturating_sub(inner_size.width),
         outer_size.height.saturating_sub(inner_size.height),
     );
-    let geometry = startup_geometry(monitor.work_area(), frame, minimum_size)
+    let geometry = startup_geometry(monitor.work_area(), frame, minimum_size, maximum_width)
         .ok_or("monitor work area is too small for the main window")?;
 
     window.set_min_size(Some(geometry.minimum_size))?;
@@ -96,6 +103,7 @@ mod tests {
             &work_area(0, 66, 3024, 1782),
             PhysicalSize::new(0, 0),
             PhysicalSize::new(1520, 1200),
+            2400,
         )
         .unwrap();
         assert_eq!(geometry.inner_size, PhysicalSize::new(2313, 1460));
@@ -109,6 +117,7 @@ mod tests {
             &work_area(0, 24, 1280, 696),
             PhysicalSize::new(0, 0),
             PhysicalSize::new(760, 600),
+            1200,
         )
         .unwrap();
         assert_eq!(geometry.inner_size, PhysicalSize::new(903, 570));
@@ -128,6 +137,7 @@ mod tests {
                 &area,
                 PhysicalSize::new(0, 0),
                 PhysicalSize::new(760 * scale, 600 * scale),
+                1400 * scale,
             )
             .unwrap();
             assert_eq!(geometry.inner_size, PhysicalSize::new(width, height));
@@ -139,11 +149,27 @@ mod tests {
     }
 
     #[test]
+    fn wide_displays_stop_at_the_maximum_width() {
+        // 2560 × 1080 logical ultrawide below a 25-point menu bar, at 2×.
+        let geometry = startup_geometry(
+            &work_area(0, 50, 5120, 2110),
+            PhysicalSize::new(0, 0),
+            PhysicalSize::new(1520, 1200),
+            2400,
+        )
+        .unwrap();
+        assert_eq!(geometry.inner_size, PhysicalSize::new(2400, 1515));
+        assert_eq!(geometry.minimum_size, PhysicalSize::new(1520, 1200));
+        assert_eq!(geometry.position, PhysicalPosition::new(1360, 347));
+    }
+
+    #[test]
     fn portrait_displays_are_limited_by_width_and_include_native_borders() {
         let geometry = startup_geometry(
             &work_area(1920, -200, 1000, 1600),
             PhysicalSize::new(16, 38),
             PhysicalSize::new(760, 600),
+            1200,
         )
         .unwrap();
         assert_eq!(geometry.inner_size, PhysicalSize::new(804, 479));
@@ -158,6 +184,7 @@ mod tests {
                 &area,
                 PhysicalSize::new(16, 38),
                 PhysicalSize::new(760, 600),
+                1200,
             )
             .is_none());
         }
