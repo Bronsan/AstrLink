@@ -445,7 +445,7 @@ fn tray_popover_resize(app: tauri::AppHandle, height: f64) -> Result<(), String>
 
 #[tauri::command]
 fn tray_popover_hide(app: tauri::AppHandle) {
-    tray::hide_popover(&app);
+    tray::dismiss_popover(&app);
 }
 
 fn receive_deep_links(app: &tauri::AppHandle, urls: Vec<tauri::Url>) {

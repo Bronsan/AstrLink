@@ -86,6 +86,9 @@ const OBSERVER_POLL_INTERVAL: Duration = Duration::from_secs(4);
 const POPOVER_REOPEN_GUARD: Duration = Duration::from_millis(350);
 /// A blur delivered this soon after showing is the show itself settling.
 const POPOVER_BLUR_GUARD: Duration = Duration::from_millis(150);
+/// A dismissal that hands the foreground back hides the popover on the
+/// resulting blur; past this it hides regardless.
+const POPOVER_HANDOFF_TIMEOUT: Duration = Duration::from_millis(400);
 
 const SUBSCRIPTION_KINDS: [&str; 8] = [
     "codex_subscription",
@@ -981,6 +984,10 @@ struct TrayRuntime {
     popover_height: f64,
     popover_shown_at: Option<Instant>,
     popover_hidden_at: Option<Instant>,
+    /// The app the popover took the foreground from, if not AstrLink.
+    popover_return_to: Option<i32>,
+    /// A dismissal is waiting for that app to take the foreground back.
+    popover_handoff_pending: bool,
 }
 
 /// Managed state for the tray. Separate from `CoreManager` so the tray can be
@@ -1447,7 +1454,7 @@ fn toggle_popover(app: &AppHandle, position: PhysicalPosition<f64>, rect: Rect) 
     };
     if let Some(window) = app.get_webview_window(POPOVER_LABEL) {
         if window.is_visible().unwrap_or(false) {
-            hide_popover(app);
+            dismiss_popover(app);
             return;
         }
     }
@@ -1502,12 +1509,17 @@ fn present_popover(app: &AppHandle) {
     let Some(window) = app.get_webview_window(POPOVER_LABEL) else {
         return;
     };
+    // Read before focusing: focusing activates AstrLink.
+    let return_to = frontmost_other_app();
     if let Err(error) = window.show() {
         eprintln!("unable to show the AstrLink tray popover: {error}");
     }
     let _ = window.set_focus();
     if let Some(state) = app.try_state::<TrayState>() {
-        state.lock().popover_shown_at = Some(Instant::now());
+        let mut runtime = state.lock();
+        runtime.popover_shown_at = Some(Instant::now());
+        runtime.popover_return_to = return_to;
+        runtime.popover_handoff_pending = false;
     }
     if let Err(error) = app.emit_to(POPOVER_LABEL, STATE_EVENT, state_snapshot(app, None)) {
         eprintln!("unable to seed the AstrLink tray popover: {error}");
@@ -1524,22 +1536,95 @@ pub fn hide_popover(app: &AppHandle) {
     }
     let _ = window.hide();
     if let Some(state) = app.try_state::<TrayState>() {
-        state.lock().popover_hidden_at = Some(Instant::now());
+        let mut runtime = state.lock();
+        runtime.popover_hidden_at = Some(Instant::now());
+        runtime.popover_handoff_pending = false;
     }
+}
+
+/// Closes the popover at the operator's request: its close button, Escape,
+/// a click beside the panel or on the tray icon. Hiding the key window of
+/// the active app makes macOS raise the app's next window, so the main
+/// window would jump in front of whatever the operator was using. When the
+/// popover took the foreground from another app, that app gets it back
+/// first and the popover hides on the resulting blur.
+pub fn dismiss_popover(app: &AppHandle) {
+    if !popover_visible(app) {
+        return;
+    }
+    let Some(state) = app.try_state::<TrayState>() else {
+        hide_popover(app);
+        return;
+    };
+    let return_to = {
+        let mut runtime = state.lock();
+        if runtime.popover_handoff_pending {
+            return;
+        }
+        runtime.popover_return_to.take()
+    };
+    if !return_to.is_some_and(return_foreground) {
+        hide_popover(app);
+        return;
+    }
+    state.lock().popover_handoff_pending = true;
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(POPOVER_HANDOFF_TIMEOUT).await;
+        let pending = app
+            .try_state::<TrayState>()
+            .is_some_and(|state| state.lock().popover_handoff_pending);
+        if pending {
+            hide_popover(&app);
+        }
+    });
 }
 
 /// Focus loss closes the popover, except for the blur that accompanies its
 /// own appearance.
 pub fn on_popover_blur(app: &AppHandle) {
     let settling = app.try_state::<TrayState>().is_some_and(|state| {
-        state
-            .lock()
-            .popover_shown_at
-            .is_some_and(|at| at.elapsed() < POPOVER_BLUR_GUARD)
+        let runtime = state.lock();
+        !runtime.popover_handoff_pending
+            && runtime
+                .popover_shown_at
+                .is_some_and(|at| at.elapsed() < POPOVER_BLUR_GUARD)
     });
     if !settling {
         hide_popover(app);
     }
+}
+
+/// The pid of the frontmost app when that is not AstrLink.
+#[cfg(target_os = "macos")]
+fn frontmost_other_app() -> Option<i32> {
+    let pid = objc2_app_kit::NSWorkspace::sharedWorkspace()
+        .frontmostApplication()?
+        .processIdentifier();
+    (pid > 0 && u32::try_from(pid).ok() != Some(std::process::id())).then_some(pid)
+}
+
+#[cfg(not(target_os = "macos"))]
+fn frontmost_other_app() -> Option<i32> {
+    None
+}
+
+/// Hands the foreground from AstrLink back to `pid`. Returns whether AstrLink
+/// is about to deactivate as a result.
+#[cfg(target_os = "macos")]
+fn return_foreground(pid: i32) -> bool {
+    use objc2_app_kit::{NSApplicationActivationOptions, NSRunningApplication};
+    if !NSRunningApplication::currentApplication().isActive() {
+        return false;
+    }
+    NSRunningApplication::runningApplicationWithProcessIdentifier(pid).is_some_and(|other| {
+        !other.isTerminated() && other.activateWithOptions(NSApplicationActivationOptions::empty())
+    })
+}
+
+#[cfg(not(target_os = "macos"))]
+fn return_foreground(_pid: i32) -> bool {
+    false
 }
 
 /// The popover reports its content height; the window follows it and stays
