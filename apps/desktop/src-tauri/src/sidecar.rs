@@ -4396,12 +4396,12 @@ fn validate_rfc3339_timestamp<'a>(
             .ok()
             .and_then(|part| part.parse::<u32>().ok())
     };
-    let year = parse(0..4).ok_or_else(&invalid)?;
-    let month = parse(5..7).ok_or_else(&invalid)?;
-    let day = parse(8..10).ok_or_else(&invalid)?;
-    let hour = parse(11..13).ok_or_else(&invalid)?;
-    let minute = parse(14..16).ok_or_else(&invalid)?;
-    let second = parse(17..19).ok_or_else(&invalid)?;
+    let year = parse(0..4).ok_or_else(invalid)?;
+    let month = parse(5..7).ok_or_else(invalid)?;
+    let day = parse(8..10).ok_or_else(invalid)?;
+    let hour = parse(11..13).ok_or_else(invalid)?;
+    let minute = parse(14..16).ok_or_else(invalid)?;
+    let second = parse(17..19).ok_or_else(invalid)?;
     let leap_year = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
     let days_in_month = match month {
         1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
@@ -4436,11 +4436,11 @@ fn validate_rfc3339_timestamp<'a>(
             let offset_hour = std::str::from_utf8(&bytes[cursor + 1..cursor + 3])
                 .ok()
                 .and_then(|part| part.parse::<u32>().ok())
-                .ok_or_else(&invalid)?;
+                .ok_or_else(invalid)?;
             let offset_minute = std::str::from_utf8(&bytes[cursor + 4..cursor + 6])
                 .ok()
                 .and_then(|part| part.parse::<u32>().ok())
-                .ok_or_else(&invalid)?;
+                .ok_or_else(invalid)?;
             if offset_hour > 23 || offset_minute > 59 {
                 return Err(invalid());
             }
