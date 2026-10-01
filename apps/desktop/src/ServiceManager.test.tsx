@@ -4119,6 +4119,96 @@ describe("ServiceManager", () => {
     expect(container.textContent).not.toContain("上游实际协议");
   });
 
+  it.each([false, true])(
+    "defaults HTTP Responses to Chat and permits passthrough (passthrough=%s)",
+    async (passthrough) => {
+      const listed: Service = {
+        ...gatewayService,
+        kind: "openai_compatible",
+        capabilities: [
+          { protocol: "openai.chat", mode: "native", streaming: true },
+        ],
+      };
+      bridgeMocks.getService.mockResolvedValue({ service: listed, etag });
+      bridgeMocks.updateService.mockResolvedValue({ service: listed, etag });
+      await act(async () =>
+        root.render(
+          <ServiceManager
+            catalogError={null}
+            catalogStatus="ready"
+            isReady
+            conversionEngine={{
+              name: "relaykit",
+              version: null,
+              available: true,
+              edges: [
+                {
+                  from: "openai.responses",
+                  to: "openai.chat",
+                  quality: "good",
+                  streaming: true,
+                },
+              ],
+            }}
+            onDirtyChange={() => {}}
+            onRefresh={() => {}}
+            onServiceRemoved={() => {}}
+            onServiceSaved={() => {}}
+            onViewChange={() => {}}
+            protocols={[]}
+            services={[listed]}
+            view={{ kind: "edit", serviceId: listed.id }}
+          />,
+        ),
+      );
+      await openEditorTab("protocols");
+      for (const label of [
+        "Codex、OpenAI SDK 使用",
+        "Claude Code 使用",
+        "Gemini CLI 使用",
+        "OpenCode、OpenClaw 及多数兼容工具使用",
+      ])
+        expect(container.textContent).toContain(label);
+      const row = [
+        ...container.querySelectorAll<HTMLElement>(
+          '[data-testid="service-capability-row"]',
+        ),
+      ].find(
+        (item) =>
+          item.querySelector("span.font-medium")?.textContent ===
+          "OpenAI Responses",
+      )!;
+      await act(async () =>
+        row.querySelector<HTMLButtonElement>('[role="switch"]')!.click(),
+      );
+      expect(row.textContent).toContain("转换为 OpenAI Chat Completions");
+      if (passthrough)
+        await chooseOption("OpenAI Responses 本地转换", "原样转发");
+      await act(async () =>
+        container
+          .querySelector("form")!
+          .dispatchEvent(
+            new Event("submit", { bubbles: true, cancelable: true }),
+          ),
+      );
+      expect(bridgeMocks.updateService).toHaveBeenCalledWith(
+        listed.id,
+        etag,
+        expect.objectContaining({
+          capabilities: [
+            ...listed.capabilities,
+            {
+              protocol: "openai.responses",
+              mode: "native",
+              streaming: true,
+              ...(passthrough ? {} : { convert_to: "openai.chat" }),
+            },
+          ],
+        }),
+      );
+    },
+  );
+
   it("shows conversion quality on a flattened protocol row when the engine is available", async () => {
     const converting: Service = {
       ...gatewayService,

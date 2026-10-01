@@ -133,6 +133,7 @@ import {
   localConversionTargets,
   protocolDescriptors,
   protocolEntryPath,
+  protocolClients,
   protocolLabel,
   serviceAuthLabels,
   serviceSiteForBaseURL,
@@ -155,6 +156,7 @@ import {
   supportsResponsesWebSocket,
   serviceKindLabel,
   hasPlanUsage,
+  bestConversionTarget,
   isSubscriptionKind,
   serviceStatusLabel,
   subscriptionConversionTargets,
@@ -421,6 +423,7 @@ function modelDiscoveryKey(draft: Draft): string {
 function draftForKind(
   kind: ServiceKind,
   protocols: readonly ProtocolDescriptor[],
+  conversionEngine?: ConversionEngineCapability | null,
 ): Draft {
   if (isSubscriptionKind(kind)) {
     return {
@@ -441,7 +444,11 @@ function draftForKind(
       authorizationFlow: defaultAuthorizationFlow(kind),
     };
   }
-  const preset = httpServicePreset(kind as HTTPServicePresetID, protocols);
+  const preset = httpServicePreset(
+    kind as HTTPServicePresetID,
+    protocols,
+    conversionEngine,
+  );
   return {
     kind,
     name: preset.defaultName,
@@ -1216,7 +1223,7 @@ export function ServiceManager({
   }, [hasSubscriptionServices, isReady, view.kind]);
 
   const selectKind = (kind: ServiceKind) => {
-    const next = draftForKind(kind, protocols);
+    const next = draftForKind(kind, protocols, conversionEngine);
     setDraft(next);
     setCustomSite(false);
     setError(null);
@@ -1230,7 +1237,11 @@ export function ServiceManager({
     setCustomSite(false);
     setDraft((current) => {
       if (isSubscriptionKind(current.kind)) return current;
-      const preset = httpServicePreset(current.kind as HTTPServicePresetID);
+      const preset = httpServicePreset(
+        current.kind as HTTPServicePresetID,
+        protocols,
+        conversionEngine,
+      );
       // A saved vendor path on the same site (e.g. /anthropic) is kept.
       if (serviceSiteForBaseURL(preset, current.baseURL) === value) {
         return current;
@@ -2678,7 +2689,11 @@ export function ServiceManager({
   const savedKeyHint = editing?.service.http?.credential_hint;
   const selectedPreset = isSubscriptionKind(draft.kind)
     ? null
-    : httpServicePreset(draft.kind as HTTPServicePresetID, protocols);
+    : httpServicePreset(
+        draft.kind as HTTPServicePresetID,
+        protocols,
+        conversionEngine,
+      );
   const presetSites = selectedPreset?.sites ?? [];
   const presetSite =
     selectedPreset && !customSite
@@ -2793,7 +2808,13 @@ export function ServiceManager({
             );
             const defaultTarget = egressTargets
               ? targets.find((target) => target.enabled)?.id
-              : undefined;
+              : bestConversionTarget(
+                  descriptor.id,
+                  draft.capabilities
+                    .filter((row) => !row.convert_to)
+                    .map((row) => row.protocol),
+                  conversionEngine,
+                );
             const locked =
               native ||
               (egressTargets !== null && !capability && !defaultTarget);
@@ -2819,6 +2840,11 @@ export function ServiceManager({
                     <code className="min-w-0 truncate font-mono text-micro text-muted-foreground">
                       {protocolEntryPath(descriptor.id)}
                     </code>
+                    {protocolClients[descriptor.id] ? (
+                      <span className="truncate text-micro text-muted-foreground">
+                        {t(protocolClients[descriptor.id])}
+                      </span>
+                    ) : null}
                     {selected ? (
                       <span className="text-micro text-warning-foreground">
                         {t("services.protocolModes.rowCaveat")}

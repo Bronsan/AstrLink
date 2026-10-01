@@ -1,3 +1,4 @@
+import type { ConversionEngineSnapshot } from "./service-presets";
 import {
   parseServiceProxy,
   type ServiceProxy,
@@ -48,6 +49,35 @@ export interface ServiceCapability {
   mode: "native" | "delegated";
   streaming: boolean;
   convert_to?: string;
+}
+
+/** Prefer advertised, non-discouraged edges to an actual upstream protocol. */
+export function bestConversionTarget(
+  from: string,
+  upstreamProtocols: readonly string[],
+  engine?: ConversionEngineSnapshot | null,
+): string | undefined {
+  if (engine?.available !== true) return undefined;
+  const preference = [
+    "openai.responses",
+    "openai.chat",
+    "anthropic.messages",
+    "google.generate_content",
+  ];
+  return engine.edges
+    .filter(
+      (edge) =>
+        edge.from === from &&
+        edge.to !== from &&
+        preference.includes(edge.to) &&
+        upstreamProtocols.includes(edge.to) &&
+        edge.quality !== "discouraged",
+    )
+    .sort(
+      (a, b) =>
+        Number(b.quality === "good") - Number(a.quality === "good") ||
+        preference.indexOf(a.to) - preference.indexOf(b.to),
+    )[0]?.to;
 }
 
 export type ModelDiscoveryProtocol = "openai.models" | "google.models";

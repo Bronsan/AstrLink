@@ -1,8 +1,9 @@
 import { i18n } from "./i18n";
-import type {
-  HTTPServiceKind,
-  ServiceAuthScheme,
-  ServiceCapability,
+import {
+  bestConversionTarget,
+  type HTTPServiceKind,
+  type ServiceAuthScheme,
+  type ServiceCapability,
 } from "./service-model";
 
 export type HTTPServicePresetID = HTTPServiceKind;
@@ -73,7 +74,7 @@ export interface ConversionTarget {
   streaming: boolean;
 }
 
-interface ConversionEngineSnapshot {
+export interface ConversionEngineSnapshot {
   available: boolean;
   edges: Array<{
     from: string;
@@ -179,6 +180,13 @@ export const protocolLabels: Readonly<Record<string, string>> = {
   "openai.completions": "OpenAI Legacy Completions",
   "openai.models": "OpenAI Models",
   "google.models": "Gemini Models",
+};
+
+export const protocolClients: Readonly<Record<string, string>> = {
+  "openai.responses": "services.protocolClients.responses",
+  "openai.chat": "services.protocolClients.chat",
+  "anthropic.messages": "services.protocolClients.messages",
+  "google.generate_content": "services.protocolClients.gemini",
 };
 
 /** Client entry path on the local inference plane. Gemini keeps the action suffix. */
@@ -573,6 +581,7 @@ export function protocolLabel(protocolID: string): string {
 export function httpServicePreset(
   profileID: HTTPServicePresetID,
   discovered: readonly ProtocolDescriptor[] = [],
+  engine?: ConversionEngineSnapshot | null,
 ): HTTPServicePreset {
   const definition = profileDefinitions[profileID];
   const descriptors = new Map(
@@ -586,6 +595,28 @@ export function httpServicePreset(
       ? { convert_to: definition.convertTo[protocol] }
       : {}),
   }));
+  if (!["opencode_go", "opencode_zen", "custom"].includes(profileID)) {
+    // Existing conversion entries (e.g. Gemini's Chat entry) are not upstreams.
+    const upstream = definition.capabilityIDs.filter(
+      (protocol) => !definition.convertTo?.[protocol],
+    );
+    for (const protocol of [
+      "openai.responses",
+      "openai.chat",
+      "anthropic.messages",
+      "google.generate_content",
+    ]) {
+      if (definition.capabilityIDs.includes(protocol)) continue;
+      const target = bestConversionTarget(protocol, upstream, engine);
+      if (target)
+        capabilities.push({
+          protocol,
+          mode: "native",
+          streaming: true,
+          convert_to: target,
+        });
+    }
+  }
   const {
     capabilityIDs: _ids,
     convertTo: _conversions,

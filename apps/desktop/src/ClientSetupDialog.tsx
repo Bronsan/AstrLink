@@ -25,6 +25,7 @@ import { RadioGroup } from "@/components/ui/radio-group";
 import { ModelSelect } from "@/components/ModelSelect";
 import { FormMessage } from "@/components/FormMessage";
 import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
 import {
   Dialog,
   DialogContent,
@@ -40,6 +41,8 @@ import {
   checkClientProxy,
   getClientConfigStatus,
   getRoutingSettings,
+  getService,
+  updateService,
   isCCSwitchInstalled,
   listServices,
   openCCSwitchImport,
@@ -59,7 +62,9 @@ import {
   astrlinkAutoModelId,
   type ModelRedirect,
 } from "./failure-policy-model";
-import type { Service } from "./service-model";
+import { bestConversionTarget, type Service } from "./service-model";
+import type { ConversionEngineCapability } from "./core-model";
+import { protocolLabel } from "./service-presets";
 import { i18n } from "./i18n";
 import { notify } from "./notify";
 
@@ -157,6 +162,7 @@ export function ClientSetupDialog({
   token,
   tokens = [],
   inferenceURL,
+  conversionEngine,
   onClose,
   onChanged,
 }: {
@@ -164,6 +170,7 @@ export function ClientSetupDialog({
   /** Names the token another client is configured with. */
   tokens?: readonly AccessTokenSummary[];
   inferenceURL: string;
+  conversionEngine?: ConversionEngineCapability | null;
   onClose: () => void;
   /** Called after a client config was written or removed. */
   onChanged?: () => void;
@@ -306,16 +313,45 @@ export function ClientSetupDialog({
       ? tokens.find((item) => item.id === status.token_id)
       : undefined;
 
+  const hasEntry = (service: Service, protocol: string) =>
+    service.capabilities.some((row) => row.protocol === protocol);
+  const entryTarget = (service: Service, protocol: string) =>
+    bestConversionTarget(
+      protocol,
+      service.capabilities
+        .filter((row) => !row.convert_to)
+        .map((row) => row.protocol),
+      conversionEngine,
+    );
+  const supportsEntry = (service: Service, protocol: string) =>
+    service.enabled &&
+    (hasEntry(service, protocol) || Boolean(entryTarget(service, protocol)));
+
+  // Preserve the existing route when any provider already accepts this entry.
+  const modelService = (modelID: string, protocol: string) => {
+    const upstreamModel =
+      catalog.redirects.find(
+        (redirect) => redirect.enabled && redirect.from === modelID,
+      )?.to ?? modelID;
+    const candidates = catalog.services.filter(
+      (service) =>
+        service.models.includes(upstreamModel) &&
+        supportsEntry(service, protocol),
+    );
+    return (
+      candidates.find((service) => hasEntry(service, protocol)) ?? candidates[0]
+    );
+  };
+  const requiredEntry = (modelID: string, protocol: string) => {
+    const service = modelService(modelID.trim(), protocol);
+    if (!service || hasEntry(service, protocol)) return undefined;
+    const target = entryTarget(service, protocol);
+    return target ? { service, target } : undefined;
+  };
   const modelOptions = client
     ? [
         ...catalog.services
-          .filter(
-            (service) =>
-              service.enabled &&
-              service.capabilities.some(
-                (capability) => capability.protocol === protocols[client],
-              ),
-          )
+          .filter((service) => supportsEntry(service, protocols[client]))
           .flatMap((service) => service.models),
         ...catalog.redirects
           .filter(
@@ -326,16 +362,32 @@ export function ClientSetupDialog({
               !(client === "gemini" && redirect.from.includes("/")) &&
               catalog.services.some(
                 (service) =>
-                  service.enabled &&
                   service.models.includes(redirect.to) &&
-                  service.capabilities.some(
-                    (capability) => capability.protocol === protocols[client],
-                  ),
+                  supportsEntry(service, protocols[client]),
               ),
           )
           .map((redirect) => redirect.from),
       ].sort()
     : [];
+  const optionAdornment = (modelID: string) =>
+    client && requiredEntry(modelID, protocols[client]) ? (
+      <Badge variant="secondary" className="ml-auto shrink-0 text-micro">
+        {t("clientSetup.entryRequired")}
+      </Badge>
+    ) : null;
+  const entryNote = (modelID: string) => {
+    if (!client) return null;
+    const entry = requiredEntry(modelID, protocols[client]);
+    return entry ? (
+      <FormMessage tone="notice">
+        {t("clientSetup.entryWillEnable", {
+          service: entry.service.name,
+          protocol: protocolLabel(protocols[client]),
+          target: protocolLabel(entry.target),
+        })}
+      </FormMessage>
+    ) : null;
+  };
 
   const models = (): ClientConfigModels =>
     isClaude
@@ -358,9 +410,77 @@ export function ClientSetupDialog({
     if (active.current) setBusy(null);
   };
 
+  // Read a fresh record and patch against its ETag so concurrent edits survive.
+  const enableEntries = async (target: {
+    client: ClientConfigClient;
+    models: ClientConfigModels;
+  }): Promise<boolean> => {
+    const protocol = protocols[target.client];
+    const entries = new Map(
+      Object.values(target.models).flatMap((modelID) => {
+        const entry = requiredEntry(modelID ?? "", protocol);
+        return entry ? [[entry.service.id, entry.service] as const] : [];
+      }),
+    );
+    for (const service of entries.values()) {
+      try {
+        const record = await getService(service.id);
+        if (!record.service.enabled)
+          throw new Error(t("clientSetup.entryRequired"));
+        if (!hasEntry(record.service, protocol)) {
+          const convertTo = entryTarget(record.service, protocol);
+          if (!convertTo) throw new Error(t("clientSetup.entryRequired"));
+          const updated = await updateService(service.id, record.etag, {
+            capabilities: [
+              ...record.service.capabilities,
+              {
+                protocol,
+                mode: "native",
+                streaming: true,
+                convert_to: convertTo,
+              },
+            ],
+          });
+          record.service = updated.service;
+        }
+        if (active.current)
+          setCatalog((current) => ({
+            ...current,
+            services: current.services.map((item) =>
+              item.id === service.id ? record.service : item,
+            ),
+          }));
+      } catch (cause) {
+        if (active.current)
+          setError(
+            failure(
+              t("clientSetup.entryEnableFailed", {
+                service: service.name,
+                protocol: protocolLabel(protocol),
+              }),
+              cause,
+            ),
+          );
+        return false;
+      }
+    }
+    if (entries.size > 0) {
+      // The fresh patched records above also keep the marker correct if refresh fails.
+      try {
+        const next = await listServices();
+        if (active.current)
+          setCatalog((current) => ({ ...current, services: next.items }));
+      } catch {
+        /* Keep the freshly read records. */
+      }
+    }
+    return active.current;
+  };
+
   const write = async (target: ClientConfigTarget, replace: boolean) => {
     if (!begin("write")) return;
     try {
+      if (!(await enableEntries(target))) return;
       const outcome = await applyClientConfig({ ...target, replace });
       if (!active.current) return;
       if (outcome.status === "needs_confirmation") {
@@ -399,12 +519,14 @@ export function ClientSetupDialog({
   const importWithCCSwitch = async () => {
     if (!client || modelRequired || !begin("cc-switch")) return;
     try {
-      await openCCSwitchImport({
+      const target = {
         tokenId: token.id,
         client,
         models: models(),
         inferenceUrl: inferenceURL,
-      });
+      };
+      if (!(await enableEntries(target))) return;
+      await openCCSwitchImport(target);
       if (!active.current) return;
       notify.success(t("clientSetup.ccSwitchOpened"));
       onClose();
@@ -620,6 +742,7 @@ export function ClientSetupDialog({
                     isClaude ? "clientSetup.defaultModel" : "clientSetup.model",
                   )}
                   options={modelOptions}
+                  optionAdornment={optionAdornment}
                   value={isClaude ? claudeModels.model : model}
                   placeholder={t("clientSetup.modelPlaceholder")}
                   onValueChange={(value) =>
@@ -634,6 +757,7 @@ export function ClientSetupDialog({
                   disabled={working}
                 />
               </Field>
+              {entryNote(isClaude ? claudeModels.model : model)}
               {isClaude && (
                 <div className="grid gap-3 min-[540px]:grid-cols-2">
                   {claudeTiers.map((key) => (
@@ -651,6 +775,7 @@ export function ClientSetupDialog({
                         id={`client-setup-${key}`}
                         aria-label={t(`clientSetup.${key}`)}
                         options={modelOptions}
+                        optionAdornment={optionAdornment}
                         value={claudeModels[key]}
                         onValueChange={(value) =>
                           setClaudeModels((current) => ({
@@ -662,6 +787,7 @@ export function ClientSetupDialog({
                         maxLength={256}
                         disabled={working}
                       />
+                      {entryNote(claudeModels[key])}
                     </Field>
                   ))}
                 </div>

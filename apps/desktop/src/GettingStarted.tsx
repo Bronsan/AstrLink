@@ -1,3 +1,4 @@
+import type { ConversionEngineCapability } from "./core-model";
 import { useEffect, useRef, useState } from "react";
 
 import {
@@ -50,6 +51,7 @@ import type { useOnboarding } from "./use-onboarding";
 import type { UsageState } from "./usage-range";
 
 export function GettingStarted({
+  conversionEngine,
   onboarding,
   catalog,
   tokenCatalog,
@@ -66,6 +68,7 @@ export function GettingStarted({
   onRawSealingStatus,
   rawSealing,
 }: {
+  conversionEngine?: ConversionEngineCapability | null;
   onboarding: ReturnType<typeof useOnboarding>;
   catalog: ServiceCatalog;
   tokenCatalog: AccessTokenCatalog;
@@ -661,6 +664,7 @@ export function GettingStarted({
       </Panel>
       {importOpen && token && canConnect ? (
         <ClientSetupDialog
+          conversionEngine={conversionEngine}
           token={token}
           tokens={tokenCatalog.items}
           inferenceURL={inferenceURL}

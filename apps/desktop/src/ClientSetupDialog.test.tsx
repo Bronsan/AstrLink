@@ -11,12 +11,16 @@ const bridgeMocks = vi.hoisted(() => ({
   getRoutingSettings: vi.fn(),
   isCCSwitchInstalled: vi.fn(),
   listServices: vi.fn(),
+  getService: vi.fn(),
+  updateService: vi.fn(),
   openCCSwitchImport: vi.fn(),
   removeClientConfig: vi.fn(),
 }));
 
 vi.mock("./bridge", () => bridgeMocks);
 
+import type { ConversionEngineCapability } from "./core-model";
+import type { Service } from "./service-model";
 import { ClientSetupDialog } from "./ClientSetupDialog";
 import type { AccessTokenSummary } from "./access-token-model";
 import type {
@@ -166,10 +170,14 @@ describe("ClientSetupDialog", () => {
     container.remove();
   });
 
-  const renderDialog = async (inferenceURL = "http://127.0.0.1:8317") => {
+  const renderDialog = async (
+    inferenceURL = "http://127.0.0.1:8317",
+    conversionEngine?: ConversionEngineCapability | null,
+  ) => {
     await act(async () => {
       reactRoot.render(
         <ClientSetupDialog
+          conversionEngine={conversionEngine}
           token={token}
           tokens={[token, otherToken]}
           inferenceURL={inferenceURL}
@@ -180,6 +188,237 @@ describe("ClientSetupDialog", () => {
       await Promise.resolve();
     });
   };
+
+  const engine: ConversionEngineCapability = {
+    name: "relaykit",
+    version: null,
+    available: true,
+    edges: [
+      {
+        from: "openai.responses",
+        to: "openai.chat",
+        quality: "good",
+        streaming: true,
+      },
+      {
+        from: "anthropic.messages",
+        to: "openai.chat",
+        quality: "fair",
+        streaming: true,
+      },
+      {
+        from: "google.generate_content",
+        to: "openai.chat",
+        quality: "fair",
+        streaming: true,
+      },
+    ],
+  };
+  const chatOnly: Service = {
+    id: "service_chat",
+    name: "Chat provider",
+    kind: "openai_compatible",
+    enabled: true,
+    models: ["chat-model"],
+    capabilities: [
+      { protocol: "openai.chat", mode: "native", streaming: true },
+    ],
+    created_at: "2026-10-01T00:00:00Z",
+    updated_at: "2026-10-01T00:00:00Z",
+  };
+  function mockChatProvider(service = chatOnly) {
+    bridgeMocks.listServices.mockResolvedValue({ items: [service] });
+    bridgeMocks.getService.mockResolvedValue({ service, etag: '"fresh-etag"' });
+    bridgeMocks.updateService.mockImplementation(async (_id, _etag, patch) => {
+      const updated = { ...service, ...patch };
+      bridgeMocks.listServices.mockResolvedValue({ items: [updated] });
+      return { service: updated, etag: '"updated-etag"' };
+    });
+    bridgeMocks.applyClientConfig.mockResolvedValue({ status: "applied" });
+  }
+
+  it.each([false, true])(
+    "enables a missing Codex entry before writing (redirect=%s)",
+    async (redirect) => {
+      mockChatProvider();
+      bridgeMocks.getRoutingSettings.mockResolvedValue({
+        model_redirects: redirect
+          ? [{ from: "codex-alias", to: "chat-model", enabled: true }]
+          : [],
+      });
+      // An unrelated concurrent capability edit must survive the patch.
+      const fresh = {
+        ...chatOnly,
+        capabilities: [
+          ...chatOnly.capabilities,
+          { protocol: "openai.models", mode: "native", streaming: false },
+        ],
+      };
+      bridgeMocks.getService.mockResolvedValue({
+        service: fresh,
+        etag: '"fresh-etag"',
+      });
+      await renderDialog(undefined, engine);
+      await act(async () => card("Codex").click());
+      const selected = redirect ? "codex-alias" : "chat-model";
+      await act(async () =>
+        document
+          .querySelector<HTMLInputElement>("#client-setup-model")!
+          .click(),
+      );
+      const option = document.querySelector<HTMLElement>(
+        `[role="option"][aria-label="${selected}"]`,
+      )!;
+      expect(option.textContent).toContain("需开启入口");
+      expect(bridgeMocks.updateService).not.toHaveBeenCalled();
+      await act(async () => option.click());
+      expect(dialog().textContent).toContain(
+        "Chat provider 尚未开启 OpenAI Responses 入口，写入配置时将自动开启（转换为 OpenAI Chat Completions）",
+      );
+      await act(async () => button("写入配置").click());
+      expect(bridgeMocks.updateService).toHaveBeenCalledWith(
+        chatOnly.id,
+        '"fresh-etag"',
+        {
+          capabilities: [
+            ...fresh.capabilities,
+            {
+              protocol: "openai.responses",
+              mode: "native",
+              streaming: true,
+              convert_to: "openai.chat",
+            },
+          ],
+        },
+      );
+      expect(
+        bridgeMocks.updateService.mock.invocationCallOrder[0],
+      ).toBeLessThan(bridgeMocks.applyClientConfig.mock.invocationCallOrder[0]);
+      expect(bridgeMocks.applyClientConfig).toHaveBeenCalledWith(
+        expect.objectContaining({ models: { model: selected } }),
+      );
+      expect(bridgeMocks.listServices).toHaveBeenCalledTimes(2);
+      expect(dialog().textContent).not.toContain("尚未开启");
+      await act(async () =>
+        document
+          .querySelector<HTMLInputElement>("#client-setup-model")!
+          .click(),
+      );
+      expect(
+        document.querySelector(`[role="option"][aria-label="${selected}"]`)!
+          .textContent,
+      ).not.toContain("需开启入口");
+    },
+  );
+
+  it("stops before writing when enabling the entry fails", async () => {
+    mockChatProvider();
+    bridgeMocks.updateService.mockRejectedValue(new Error("ETag conflict"));
+    await renderDialog(undefined, engine);
+    await act(async () => card("Codex").click());
+    await setInput("#client-setup-model", "chat-model");
+    await act(async () => button("写入配置").click());
+    expect(dialog().textContent).toContain(
+      "无法为 Chat provider 开启 OpenAI Responses 入口",
+    );
+    expect(bridgeMocks.applyClientConfig).not.toHaveBeenCalled();
+  });
+
+  it("leaves an existing entry untouched", async () => {
+    mockChatProvider({
+      ...chatOnly,
+      capabilities: [
+        ...chatOnly.capabilities,
+        { protocol: "openai.responses", mode: "native", streaming: true },
+      ],
+    });
+    await renderDialog(undefined, engine);
+    await act(async () => card("Codex").click());
+    expect(await suggestions()).toEqual(["chat-model"]);
+    await setInput("#client-setup-model", "chat-model");
+    expect(dialog().textContent).not.toContain("尚未开启");
+    await act(async () => button("写入配置").click());
+    expect(bridgeMocks.getService).not.toHaveBeenCalled();
+    expect(bridgeMocks.updateService).not.toHaveBeenCalled();
+    expect(bridgeMocks.applyClientConfig).toHaveBeenCalledOnce();
+  });
+
+  it("does not duplicate an entry enabled by a concurrent edit", async () => {
+    mockChatProvider();
+    bridgeMocks.getService.mockResolvedValue({
+      service: {
+        ...chatOnly,
+        capabilities: [
+          ...chatOnly.capabilities,
+          { protocol: "openai.responses", mode: "native", streaming: true },
+        ],
+      },
+      etag: '"new-etag"',
+    });
+    await renderDialog(undefined, engine);
+    await act(async () => card("Codex").click());
+    await setInput("#client-setup-model", "chat-model");
+    await act(async () => button("写入配置").click());
+    expect(bridgeMocks.updateService).not.toHaveBeenCalled();
+    expect(bridgeMocks.applyClientConfig).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    null,
+    { ...engine, available: false },
+    { ...engine, edges: [] },
+    {
+      ...engine,
+      edges: engine.edges.map((edge) => ({
+        ...edge,
+        quality: "discouraged" as const,
+      })),
+    },
+  ])("does not suggest unsupported conversions (%j)", async (snapshot) => {
+    mockChatProvider();
+    await renderDialog(undefined, snapshot);
+    await act(async () => card("Codex").click());
+    expect(await suggestions()).toEqual([]);
+  });
+
+  it("enables Claude tier model entries once per provider", async () => {
+    mockChatProvider();
+    await renderDialog(undefined, engine);
+    await setInput("#client-setup-sonnetModel", "chat-model");
+    await setInput("#client-setup-opusModel", "chat-model");
+    expect(dialog().textContent).toContain("尚未开启 Anthropic Messages");
+    await act(async () => button("写入配置").click());
+    expect(bridgeMocks.updateService).toHaveBeenCalledOnce();
+    expect(bridgeMocks.updateService).toHaveBeenCalledWith(
+      chatOnly.id,
+      '"fresh-etag"',
+      {
+        capabilities: [
+          ...chatOnly.capabilities,
+          {
+            protocol: "anthropic.messages",
+            mode: "native",
+            streaming: true,
+            convert_to: "openai.chat",
+          },
+        ],
+      },
+    );
+    expect(bridgeMocks.applyClientConfig).toHaveBeenCalledOnce();
+  });
+
+  it("also enables the entry before CC Switch import", async () => {
+    mockChatProvider();
+    bridgeMocks.isCCSwitchInstalled.mockResolvedValue(true);
+    await renderDialog(undefined, engine);
+    await act(async () => card("Gemini CLI").click());
+    await setInput("#client-setup-model", "chat-model");
+    await act(async () => button("改用 CC Switch 导入").click());
+    expect(bridgeMocks.updateService).toHaveBeenCalledOnce();
+    expect(bridgeMocks.updateService.mock.invocationCallOrder[0]).toBeLessThan(
+      bridgeMocks.openCCSwitchImport.mock.invocationCallOrder[0],
+    );
+  });
 
   it("marks each client's state and disables what it cannot configure", async () => {
     bridgeMocks.getClientConfigStatus.mockResolvedValue(

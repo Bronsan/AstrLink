@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   activeServiceRisk,
+  bestConversionTarget,
   hasPlanUsage,
   parseService,
   parseServicePage,
@@ -581,5 +582,102 @@ describe("parseSubscriptionRiskEvents", () => {
         parseSubscriptionRiskEvents(value, "service_claude_personal"),
       ).toThrow(message);
     }
+  });
+});
+
+describe("bestConversionTarget", () => {
+  const edges = [
+    {
+      from: "openai.chat",
+      to: "anthropic.messages",
+      quality: "good" as const,
+      streaming: true,
+    },
+    {
+      from: "openai.chat",
+      to: "google.generate_content",
+      quality: "fair" as const,
+      streaming: true,
+    },
+    {
+      from: "openai.chat",
+      to: "openai.responses",
+      quality: "fair" as const,
+      streaming: true,
+    },
+  ];
+  it.each([
+    {
+      name: "quality before target order",
+      upstream: ["openai.responses", "anthropic.messages"],
+      edges,
+      available: true,
+      expected: "anthropic.messages",
+    },
+    {
+      name: "fixed order breaks fair ties",
+      upstream: ["google.generate_content", "openai.responses"],
+      edges,
+      available: true,
+      expected: "openai.responses",
+    },
+    {
+      name: "fixed order breaks good ties",
+      upstream: [
+        "google.generate_content",
+        "openai.responses",
+        "anthropic.messages",
+      ],
+      edges: edges.map((edge) => ({ ...edge, quality: "good" as const })),
+      available: true,
+      expected: "openai.responses",
+    },
+    {
+      name: "discouraged excluded",
+      upstream: ["anthropic.messages"],
+      edges: [{ ...edges[0], quality: "discouraged" as const }],
+      available: true,
+      expected: undefined,
+    },
+    {
+      name: "unadvertised edge excluded",
+      upstream: ["openai.responses"],
+      edges: [edges[0]],
+      available: true,
+      expected: undefined,
+    },
+    {
+      name: "target must be upstream",
+      upstream: ["openai.models"],
+      edges,
+      available: true,
+      expected: undefined,
+    },
+    {
+      name: "unavailable engine",
+      upstream: ["anthropic.messages"],
+      edges,
+      available: false,
+      expected: undefined,
+    },
+    {
+      name: "wrong source excluded",
+      upstream: ["anthropic.messages"],
+      edges: [{ ...edges[0], from: "openai.responses" }],
+      available: true,
+      expected: undefined,
+    },
+  ])("$name", ({ upstream, edges, available, expected }) => {
+    expect(
+      bestConversionTarget("openai.chat", upstream, { available, edges }),
+    ).toBe(expected);
+  });
+  it("does not infer edges without a snapshot", () => {
+    expect(
+      bestConversionTarget("openai.chat", ["openai.responses"], null),
+    ).toBeUndefined();
+    expect(
+      bestConversionTarget("openai.chat", ["openai.responses"]),
+    ).toBeUndefined();
   });
 });

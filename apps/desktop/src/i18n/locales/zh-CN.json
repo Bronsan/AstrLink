@@ -509,7 +509,7 @@
     "copyConfig": "复制配置",
     "configCopied": "已复制配置。",
     "snippetFailed": "无法生成配置内容。",
-    "snippetNeedsModel": "Codex 需要一个模型，先接入提供 OpenAI Responses 接口的服务。"
+    "snippetNeedsModel": "Codex 需要 Responses 入口；上游只有 Chat 的提供商可在入口协议中转换"
   },
   "overview": {
     "title": "运行概览",
@@ -847,7 +847,7 @@
       "codexTools": "专用工具",
       "passthroughResult": "请求原封不动交给上游，所有工具都能用。",
       "convertResult": "函数工具会转成 Chat 格式；apply_patch 等 Codex 专用工具 Chat 表示不了，会被丢掉。",
-      "tip": "上游支持 Responses 就选原样转发，只支持 Chat 时才转换。",
+      "tip": "上游支持 Responses 就选原样转发，只支持 Chat 时才转换。Codex 走 Responses，Claude Code 走 Messages；上游没有的接口可以转换。",
       "replay": "重播演示",
       "dismiss": "知道了",
       "rowCaveat": "由 AstrLink 转换格式；函数工具会保留，目标协议表示不了的专用工具会被丢掉"
@@ -961,7 +961,13 @@
     "riskSuspendedSummary_one": "{{count}} 个订阅账号因上游风控已暂停调度。",
     "riskSuspendedSummary_other": "{{count}} 个订阅账号因上游风控已暂停调度。",
     "antigravityHint": "通过浏览器授权连接 Antigravity，使用 Gemini 原生协议。",
-    "googleAccount": "Google 账号 {{hint}}"
+    "googleAccount": "Google 账号 {{hint}}",
+    "protocolClients": {
+      "responses": "Codex、OpenAI SDK 使用",
+      "chat": "OpenCode、OpenClaw 及多数兼容工具使用",
+      "messages": "Claude Code 使用",
+      "gemini": "Gemini CLI 使用"
+    }
   },
   "models": {
     "deleteNamed": "删除 {{label}}",
@@ -2623,7 +2629,10 @@
       "numericBlocked": "系统代理 {{proxy}} 会拦下发往 127.0.0.1 的请求。AstrLink 写入的配置使用 {{url}}，不受影响；手动填写或用其他工具导入的 Codex 配置也请改用这个地址。"
     },
     "configureToken": "为“{{name}}”配置客户端",
-    "configuredIn": "已配置到 {{clients}}"
+    "configuredIn": "已配置到 {{clients}}",
+    "entryRequired": "需开启入口",
+    "entryWillEnable": "{{service}} 尚未开启 {{protocol}} 入口，写入配置时将自动开启（转换为 {{target}}）",
+    "entryEnableFailed": "无法为 {{service}} 开启 {{protocol}} 入口"
   },
   "providerImport": {
     "title": "添加 API 提供商",

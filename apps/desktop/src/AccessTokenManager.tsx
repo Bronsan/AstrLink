@@ -1,3 +1,4 @@
+import type { ConversionEngineCapability } from "./core-model";
 import { useWorkspaceSnapshot } from "./workspace-snapshots";
 import { ActionGroup } from "@/components/ActionGroup";
 import {
@@ -131,6 +132,7 @@ function tokenCountPlaceholder(
 }
 
 export function AccessTokenManager({
+  conversionEngine,
   catalog,
   coreSessionKey,
   inferenceURL,
@@ -139,6 +141,7 @@ export function AccessTokenManager({
   onTokenCreated,
   onTokenDeleted,
 }: {
+  conversionEngine?: ConversionEngineCapability | null;
   catalog: AccessTokenCatalog;
   coreSessionKey: string | null;
   inferenceURL: string;
@@ -885,6 +888,7 @@ export function AccessTokenManager({
         !catalog.stale &&
         catalog.items.some((token) => token.id === setupToken.id) && (
           <ClientSetupDialog
+            conversionEngine={conversionEngine}
             key={`${coreSessionKey}:${inferenceURL}:${setupToken.id}`}
             token={setupToken}
             tokens={catalog.items}

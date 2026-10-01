@@ -509,7 +509,7 @@
     "copyConfig": "Copy config",
     "configCopied": "Copied the config.",
     "snippetFailed": "Unable to generate the config.",
-    "snippetNeedsModel": "Codex needs a model. Add a provider that offers the OpenAI Responses API first."
+    "snippetNeedsModel": "Codex needs a Responses entry. For Chat-only providers, enable conversion in Entry protocols."
   },
   "overview": {
     "title": "Overview",
@@ -847,7 +847,7 @@
       "codexTools": "Codex-only",
       "passthroughResult": "The request reaches the upstream unchanged, and every tool works.",
       "convertResult": "Function tools are converted to Chat. Codex-only tools such as apply_patch can't be expressed in Chat and are dropped.",
-      "tip": "Pass through when the upstream supports Responses; convert only when it speaks Chat alone.",
+      "tip": "Pass through when the upstream supports Responses; convert only when it speaks Chat alone. Codex uses Responses and Claude Code uses Messages. Convert entries that the upstream does not support.",
       "replay": "Replay demo",
       "dismiss": "Got it",
       "rowCaveat": "Converted by AstrLink; function tools carry over, tools the target protocol can't express are dropped"
@@ -961,7 +961,13 @@
     "riskSuspendedSummary_one": "{{count}} subscription account is paused by an upstream risk signal.",
     "riskSuspendedSummary_other": "{{count}} subscription accounts are paused by upstream risk signals.",
     "antigravityHint": "Connect Antigravity with browser authorization using the native Gemini protocol.",
-    "googleAccount": "Google account {{hint}}"
+    "googleAccount": "Google account {{hint}}",
+    "protocolClients": {
+      "responses": "Used by Codex and the OpenAI SDK",
+      "chat": "Used by OpenCode, OpenClaw, and most compatible tools",
+      "messages": "Used by Claude Code",
+      "gemini": "Used by Gemini CLI"
+    }
   },
   "models": {
     "deleteNamed": "Delete {{label}}",
@@ -2623,7 +2629,10 @@
       "numericBlocked": "The system proxy {{proxy}} stops requests sent to 127.0.0.1. Configs AstrLink writes use {{url}} and are not affected; switch Codex configs entered by hand or imported by other tools to this address too."
     },
     "configureToken": "Configure a client for “{{name}}”",
-    "configuredIn": "Configured in {{clients}}"
+    "configuredIn": "Configured in {{clients}}",
+    "entryRequired": "Entry required",
+    "entryWillEnable": "{{service}} has no {{protocol}} entry yet. Writing the configuration will enable it automatically, converting to {{target}}.",
+    "entryEnableFailed": "Could not enable the {{protocol}} entry for {{service}}"
   },
   "providerImport": {
     "title": "Add API provider",

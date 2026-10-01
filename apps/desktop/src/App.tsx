@@ -812,6 +812,7 @@ export default function App() {
             ) : null}
             {page.kind === "overview" && onboarding.active ? (
               <GettingStarted
+                conversionEngine={snapshot?.capabilities?.conversion_engine}
                 onboarding={onboarding}
                 catalog={catalog}
                 tokenCatalog={tokenCatalog}
@@ -864,6 +865,7 @@ export default function App() {
               />
             ) : page.kind === "tokens" ? (
               <AccessTokenManager
+                conversionEngine={snapshot?.capabilities?.conversion_engine}
                 catalog={tokenCatalog}
                 coreSessionKey={coreSessionKey}
                 inferenceURL={snapshot?.ready?.client_inference_url ?? ""}
