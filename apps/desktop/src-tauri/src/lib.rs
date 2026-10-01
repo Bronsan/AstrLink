@@ -14,6 +14,7 @@ mod kek_store;
 mod macos_app;
 mod preferences;
 mod provider_import;
+mod proxy_check;
 mod raw_access;
 mod raw_approval;
 mod raw_key_pin;
@@ -1584,6 +1585,13 @@ async fn open_cc_switch_import(
     cc_switch::open_import(&manager, &token_id, client, &models, &inference_url).await
 }
 
+/// Read-only: reports whether the system proxy keeps Codex from reaching
+/// the gateway, and never changes proxy settings.
+#[tauri::command]
+async fn check_client_proxy(inference_url: String) -> Result<proxy_check::ProxyCheck, String> {
+    proxy_check::check(&inference_url).await
+}
+
 #[tauri::command]
 async fn client_config_status(
     inference_url: Option<String>,
@@ -1945,6 +1953,7 @@ pub fn run() {
             cc_switch_installed,
             open_cc_switch_import,
             client_config_status,
+            check_client_proxy,
             apply_client_config,
             remove_client_config,
             preview_client_config_snippet,

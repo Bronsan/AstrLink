@@ -71,6 +71,7 @@ import {
   isCCSwitchInstalled,
   openCCSwitchImport,
   getClientConfigStatus,
+  checkClientProxy,
   applyClientConfig,
   removeClientConfig,
   previewClientConfigSnippet,
@@ -97,6 +98,7 @@ function validSnapshot(): Record<string, unknown> {
       control_api_version: "v1",
       protocol_contract_version: "v1",
       inference_url: "http://127.0.0.1:8317",
+      client_inference_url: "http://localhost:8317",
       control_url: "http://127.0.0.1:49152",
     },
     last_error: null,
@@ -602,6 +604,32 @@ describe("desktop bridge contract", () => {
   });
 
   it.each([
+    "http://localhost:8318",
+    "http://[::1]:8317",
+    "http://localhost:8317/",
+    "http://127.0.0.1:49152",
+  ])(
+    "rejects a client inference URL %s off the inference port",
+    async (url) => {
+      const wireSnapshot = validSnapshot();
+      (wireSnapshot.ready as any).client_inference_url = url;
+      invokeMock.mockResolvedValueOnce(wireSnapshot);
+
+      await expect(getCoreStatus()).rejects.toThrow("client_inference_url");
+    },
+  );
+
+  it("accepts an IPv4-only client inference URL", async () => {
+    const wireSnapshot = validSnapshot();
+    (wireSnapshot.ready as any).client_inference_url = "http://127.0.0.1:8317";
+    invokeMock.mockResolvedValueOnce(wireSnapshot);
+
+    await expect(getCoreStatus()).resolves.toMatchObject({
+      ready: { client_inference_url: "http://127.0.0.1:8317" },
+    });
+  });
+
+  it.each([
     [
       "ready control version",
       (snapshot: any) => (snapshot.ready.control_api_version = "v2"),
@@ -816,6 +844,22 @@ describe("desktop bridge contract", () => {
     });
     invokeMock.mockResolvedValueOnce([statuses[1], statuses[0]]);
     await expect(getClientConfigStatus(null)).rejects.toThrow(
+      "Invalid client-config IPC response",
+    );
+
+    const proxyCheck = {
+      client: { route: "blocked", proxy: "127.0.0.1:7892" },
+      numeric: null,
+    };
+    invokeMock.mockResolvedValueOnce(proxyCheck);
+    await expect(checkClientProxy("http://localhost:8317")).resolves.toEqual(
+      proxyCheck,
+    );
+    expect(invokeMock).toHaveBeenLastCalledWith("check_client_proxy", {
+      inferenceUrl: "http://localhost:8317",
+    });
+    invokeMock.mockResolvedValueOnce({ client: { route: "direct" } });
+    await expect(checkClientProxy("http://localhost:8317")).rejects.toThrow(
       "Invalid client-config IPC response",
     );
 

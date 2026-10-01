@@ -3593,6 +3593,7 @@ components:
         - control_api_version
         - protocol_contract_version
         - inference_url
+        - client_inference_url
         - control_url
       properties:
         event:
@@ -3610,6 +3611,14 @@ components:
           type: string
           format: uri
           pattern: "^http://127\\.0\\.0\\.1:(?:[1-9][0-9]{0,3}|[1-5][0-9]{4}|6[0-4][0-9]{3}|65[0-4][0-9]{2}|655[0-2][0-9]|6553[0-5])(?![\\s\\S])"
+        client_inference_url:
+          description: >-
+            Address written into client configs. It is http://localhost on the
+            inference port only while the core also listens on [::1]; otherwise
+            it equals inference_url.
+          type: string
+          format: uri
+          pattern: "^http://(?:127\\.0\\.0\\.1|localhost):(?:[1-9][0-9]{0,3}|[1-5][0-9]{4}|6[0-4][0-9]{3}|65[0-4][0-9]{2}|655[0-2][0-9]|6553[0-5])(?![\\s\\S])"
         control_url:
           type: string
           format: uri

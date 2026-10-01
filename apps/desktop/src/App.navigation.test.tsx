@@ -121,6 +121,7 @@ const readySnapshot: AppSnapshot = {
     control_api_version: "v1",
     protocol_contract_version: "v1",
     inference_url: "http://127.0.0.1:8317",
+    client_inference_url: "http://localhost:8317",
     control_url: "http://127.0.0.1:43117",
   },
   health: { status: "ok" },
@@ -756,10 +757,10 @@ describe("App workspace navigation", () => {
     localStorage.setItem(ONBOARDING_STORAGE_KEY, "active");
     await renderApp();
     await act(async () => button("其他工具").click());
-    expect(container.textContent).toContain("http://127.0.0.1:8317/v1");
+    expect(container.textContent).toContain("http://localhost:8317/v1");
     await act(async () => button("Anthropic 兼容").click());
-    expect(container.textContent).toContain("http://127.0.0.1:8317");
-    expect(container.textContent).not.toContain("http://127.0.0.1:8317/v1");
+    expect(container.textContent).toContain("http://localhost:8317");
+    expect(container.textContent).not.toContain("http://localhost:8317/v1");
     const summary = await bridgeMocks.getUsageSummary.mock.results[0].value;
     bridgeMocks.getUsageSummary.mockResolvedValue({
       ...summary,
@@ -875,7 +876,7 @@ describe("App workspace navigation", () => {
       tokenId: "token_01",
       client: "codex",
       models: { model: "gpt-5" },
-      inferenceUrl: "http://127.0.0.1:8317",
+      inferenceUrl: "http://localhost:8317",
     });
     await act(async () => button("复制配置").click());
     expect(bridgeMocks.copyClientConfigSnippet).toHaveBeenCalledExactlyOnceWith(
@@ -883,7 +884,7 @@ describe("App workspace navigation", () => {
         tokenId: "token_01",
         client: "codex",
         models: { model: "gpt-5" },
-        inferenceUrl: "http://127.0.0.1:8317",
+        inferenceUrl: "http://localhost:8317",
       },
     );
   });

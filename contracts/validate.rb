@@ -130,6 +130,21 @@ ready_schema = openapi.dig("components", "schemas", "ReadyEvent", "properties")
   raise "#{field} accepts a trailing newline" if pattern.match?("http://127.0.0.1:8317\n")
 end
 
+client_url_pattern = Regexp.new(ready_schema.fetch("client_inference_url").fetch("pattern"))
+%w[http://127.0.0.1:1 http://localhost:8317 http://localhost:65535].each do |url|
+  raise "client_inference_url rejects valid loopback URL #{url}" unless client_url_pattern.match?(url)
+end
+%w[
+  http://localhost:0
+  http://localhost:65536
+  http://[::1]:8317
+  http://localhost:8317/
+  http://localhost.example:8317
+].each do |url|
+  raise "client_inference_url accepts invalid loopback URL #{url}" if client_url_pattern.match?(url)
+end
+raise "client_inference_url accepts a trailing newline" if client_url_pattern.match?("http://localhost:8317\n")
+
 audit_properties = schema.dig("$defs", "AuditSettings", "properties")
 %w[request_body_enabled response_content_enabled].each do |setting|
   raise "#{setting} must default to false" unless audit_properties.dig(setting, "default") == false

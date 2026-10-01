@@ -151,10 +151,12 @@ import {
   parseClientConfigCopied,
   parseClientConfigSnippet,
   parseClientConfigStatuses,
+  parseClientProxyCheck,
   type ClientConfigApplyOutcome,
   type ClientConfigClient,
   type ClientConfigModels,
   type ClientConfigStatus,
+  type ClientProxyCheck,
   type DirectClient,
 } from "./client-config-model";
 import {
@@ -817,6 +819,19 @@ export async function getClientConfigStatus(
   if (!hasNativeBridge()) return [];
   return parseClientConfigStatuses(
     await invoke<unknown>("client_config_status", { inferenceUrl }),
+  );
+}
+
+/**
+ * Whether the system proxy keeps Codex from reaching the gateway. Read-only:
+ * nothing on the system changes. Outside the desktop there is no Codex.
+ */
+export async function checkClientProxy(
+  inferenceUrl: string,
+): Promise<ClientProxyCheck | null> {
+  if (!hasNativeBridge()) return null;
+  return parseClientProxyCheck(
+    await invoke<unknown>("check_client_proxy", { inferenceUrl }),
   );
 }
 

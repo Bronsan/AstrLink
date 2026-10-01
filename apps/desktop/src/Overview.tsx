@@ -207,7 +207,7 @@ export function Overview({
     revision: summary,
   });
 
-  const inferenceURL = snapshot?.ready?.inference_url ?? "";
+  const inferenceURL = snapshot?.ready?.client_inference_url ?? "";
   const apiAddressLabel = t("overview.apiAddress");
   const apiCopied =
     copyFeedback === t("copy.copiedNamed", { label: apiAddressLabel });

@@ -148,11 +148,12 @@ impl Models {
     }
 }
 
-/// `http://127.0.0.1:<port>` for the gateway's root inference URL.
+/// `http://127.0.0.1:<port>` or `http://localhost:<port>` for the gateway's
+/// root inference URL; Core announces localhost only while it serves `[::1]`.
 pub fn local_origin(inference_url: &str) -> Result<String, String> {
     let url = Url::parse(inference_url).map_err(|_| "invalid inference URL")?;
     if url.scheme() != "http"
-        || url.host_str() != Some("127.0.0.1")
+        || !matches!(url.host_str(), Some("127.0.0.1" | "localhost"))
         || !url.username().is_empty()
         || url.password().is_some()
         || url.path() != "/"
@@ -177,7 +178,7 @@ pub async fn reveal_access_token(
         || before
             .ready
             .as_ref()
-            .map(|ready| ready.inference_url.as_str())
+            .map(|ready| ready.client_inference_url.as_str())
             != Some(inference_url)
     {
         return Err(changed());
@@ -1633,9 +1634,15 @@ mod tests {
             local_origin("http://127.0.0.1:18317/").unwrap(),
             "http://127.0.0.1:18317"
         );
+        assert_eq!(
+            local_origin("http://localhost:18317").unwrap(),
+            "http://localhost:18317"
+        );
         for url in [
             "https://127.0.0.1:1",
-            "http://localhost:1",
+            "http://[::1]:1",
+            "http://localhost.example:1",
+            "http://localhost:1/v1",
             "http://127.0.0.1:1/v1",
             "http://user@127.0.0.1:1",
             "http://127.0.0.1:1?x",

@@ -190,6 +190,97 @@ func TestRunEmitsOneReadyEventAndServesSeparatePlanes(t *testing.T) {
 	}
 }
 
+func TestRunServesIPv6LoopbackAndAnnouncesLocalhostForClients(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	serverConn, clientConn := net.Pipe()
+	defer clientConn.Close()
+	listeners := []net.Listener{newBlockingListener("127.0.0.1:8317"), newBlockingListener("127.0.0.1:54321")}
+	ipv6 := newConnectionListener("[::1]:8317", serverConn)
+	reader, writer := io.Pipe()
+	config := DefaultConfig("0.1.0-test", "abc1234")
+	config.InferenceListen = "127.0.0.1:0"
+	config.ControlListen = "127.0.0.1:0"
+	handler := http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		writer.WriteHeader(http.StatusNoContent)
+	})
+	runErrors := make(chan error, 1)
+	go func() {
+		runErrors <- runWithDependencies(ctx, config, writer, func(_, _ string) (net.Listener, error) {
+			listener := listeners[0]
+			listeners = listeners[1:]
+			return listener, nil
+		}, func(network, address string) (net.Listener, error) {
+			if network != "tcp" || address != "[::1]:8317" {
+				t.Errorf("IPv6 bind = %s %s", network, address)
+			}
+			return ipv6, nil
+		}, Dependencies{InferenceHandler: handler})
+	}()
+
+	var ready contract.ReadyEvent
+	if err := json.NewDecoder(reader).Decode(&ready); err != nil {
+		t.Fatalf("decode ready event: %v", err)
+	}
+	if ready.InferenceURL != "http://127.0.0.1:8317" || ready.ClientInferenceURL != "http://localhost:8317" {
+		t.Fatalf("ready URLs = %q / %q", ready.InferenceURL, ready.ClientInferenceURL)
+	}
+	if _, err := io.WriteString(clientConn, "GET /v1/models HTTP/1.1\r\nHost: localhost:8317\r\n\r\n"); err != nil {
+		t.Fatalf("write IPv6 request: %v", err)
+	}
+	response, err := http.ReadResponse(bufio.NewReader(clientConn), &http.Request{Method: http.MethodGet})
+	if err != nil {
+		t.Fatalf("read IPv6 response: %v", err)
+	}
+	_ = response.Body.Close()
+	if response.StatusCode != http.StatusNoContent {
+		t.Fatalf("IPv6 status = %d", response.StatusCode)
+	}
+
+	cancel()
+	_ = clientConn.Close()
+	if err := waitForRunError(t, runErrors); err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	select {
+	case <-ipv6.closed:
+	default:
+		t.Fatal("IPv6 listener left open after shutdown")
+	}
+}
+
+func TestRunKeepsIPv4ClientURLWhenIPv6LoopbackIsUnavailable(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	listeners := []net.Listener{newBlockingListener("127.0.0.1:8317"), newBlockingListener("127.0.0.1:54321")}
+	reader, writer := io.Pipe()
+	config := DefaultConfig("0.1.0-test", "abc1234")
+	config.InferenceListen = "127.0.0.1:0"
+	config.ControlListen = "127.0.0.1:0"
+	runErrors := make(chan error, 1)
+	go func() {
+		runErrors <- runWithDependencies(ctx, config, writer, func(_, _ string) (net.Listener, error) {
+			listener := listeners[0]
+			listeners = listeners[1:]
+			return listener, nil
+		}, func(_, _ string) (net.Listener, error) {
+			return nil, errors.New("address family not supported")
+		}, Dependencies{})
+	}()
+
+	var ready contract.ReadyEvent
+	if err := json.NewDecoder(reader).Decode(&ready); err != nil {
+		cancel()
+		t.Fatalf("decode ready event: %v", err)
+	}
+	cancel()
+	if err := waitForRunError(t, runErrors); err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+	if ready.ClientInferenceURL != ready.InferenceURL {
+		t.Fatalf("client URL = %q, want %q", ready.ClientInferenceURL, ready.InferenceURL)
+	}
+}
+
 func TestRunCancellationCancelsActiveInferenceRequestContext(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -219,7 +310,7 @@ func TestRunCancellationCancelsActiveInferenceRequestContext(t *testing.T) {
 			listener := listeners[index]
 			index++
 			return listener, nil
-		}, Dependencies{InferenceHandler: handler})
+		}, nil, Dependencies{InferenceHandler: handler})
 	}()
 
 	waitForReadyWrite(t, readyWriter)

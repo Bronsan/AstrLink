@@ -19,6 +19,10 @@ minisign-verify = "=0.2.4"
 semver = "=1.0.28"
 chrono = { version = "=0.4.45", default-features = false, features = ["clock", "serde", "std"] }
 getrandom = "=0.2.17"
+# http + hyper-util: the same system-proxy matcher reqwest (and Codex) uses,
+# read for the client proxy self-check.
+http = "=1.4.2"
+hyper-util = { version = "=0.1.20", default-features = false, features = ["client-proxy", "client-proxy-system"] }
 iana-time-zone = "=0.1.65"
 jsonc-parser = { version = "=0.34.0", features = ["cst"] }
 reqwest = { version = "=0.12.23", default-features = false, features = ["json", "rustls-tls", "system-proxy"] }

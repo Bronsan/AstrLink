@@ -2600,6 +2600,11 @@
       "claude": "Only the user-level ~/.claude/settings.json is written. A project’s .claude/settings.json or .claude/settings.local.json wins when it sets the same environment variables. With CLAUDE_CONFIG_DIR set, Claude Code reads another folder; configure it manually instead.",
       "codex": "Only the user-level ~/.codex/config.toml is written; sign-in details are left alone. With --profile or CODEX_HOME, Codex reads another config; configure it manually instead."
     },
+    "proxy": {
+      "blocked": "The system proxy {{proxy}} stops Codex requests before they reach AstrLink, so Codex shows a 502 error. Add localhost, 127.0.0.1, and ::1 to the proxy app’s bypass (exception) list, or set the environment variable NO_PROXY=localhost,127.0.0.1,::1 yourself, then restart Codex. AstrLink does not change these settings.",
+      "proxied": "Codex requests pass through the system proxy {{proxy}} before reaching AstrLink. They get through for now; if you see 502 errors or slow responses, add localhost, 127.0.0.1, and ::1 to the proxy app’s bypass (exception) list.",
+      "numericBlocked": "The system proxy {{proxy}} stops requests sent to 127.0.0.1. Configs AstrLink writes use {{url}} and are not affected; switch Codex configs entered by hand or imported by other tools to this address too."
+    },
     "configureToken": "Configure a client for “{{name}}”",
     "configuredIn": "Configured in {{clients}}"
   },

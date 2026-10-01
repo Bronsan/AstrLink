@@ -144,7 +144,12 @@ type ReadyEvent struct {
 	ControlAPIVersion       string `json:"control_api_version"`
 	ProtocolContractVersion string `json:"protocol_contract_version"`
 	InferenceURL            string `json:"inference_url"`
-	ControlURL              string `json:"control_url"`
+	// ClientInferenceURL is the address written into client configs. It is
+	// http://localhost:<port> only while the core also serves [::1]:<port>,
+	// because system-proxy bypass rules match `localhost` far more reliably
+	// than 127.0.0.1; otherwise it equals InferenceURL.
+	ClientInferenceURL string `json:"client_inference_url"`
+	ControlURL         string `json:"control_url"`
 }
 
 func (event ReadyEvent) Validate() error {
@@ -162,18 +167,23 @@ func (event ReadyEvent) Validate() error {
 	if err := validateReadyURL("inference_url", event.InferenceURL); err != nil {
 		return err
 	}
+	if event.ClientInferenceURL != event.InferenceURL &&
+		event.ClientInferenceURL != "http://localhost:"+strings.TrimPrefix(event.InferenceURL, readyURLPrefix) {
+		return fmt.Errorf("client_inference_url must be inference_url or localhost on the same port")
+	}
 	if err := validateReadyURL("control_url", event.ControlURL); err != nil {
 		return err
 	}
 	return nil
 }
 
+const readyURLPrefix = "http://127.0.0.1:"
+
 func validateReadyURL(name, value string) error {
-	const prefix = "http://127.0.0.1:"
-	if !strings.HasPrefix(value, prefix) {
+	if !strings.HasPrefix(value, readyURLPrefix) {
 		return fmt.Errorf("%s must be a canonical IPv4 loopback URL", name)
 	}
-	portText := strings.TrimPrefix(value, prefix)
+	portText := strings.TrimPrefix(value, readyURLPrefix)
 	if portText == "" || (len(portText) > 1 && portText[0] == '0') {
 		return fmt.Errorf("%s must contain a canonical port from 1 to 65535", name)
 	}

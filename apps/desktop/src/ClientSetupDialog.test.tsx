@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const bridgeMocks = vi.hoisted(() => ({
   applyClientConfig: vi.fn(),
+  checkClientProxy: vi.fn(),
   getClientConfigStatus: vi.fn(),
   getRoutingSettings: vi.fn(),
   isCCSwitchInstalled: vi.fn(),
@@ -150,6 +151,10 @@ describe("ClientSetupDialog", () => {
     bridgeMocks.isCCSwitchInstalled.mockResolvedValue(false);
     bridgeMocks.listServices.mockResolvedValue({ items: [] });
     bridgeMocks.getRoutingSettings.mockResolvedValue({ model_redirects: [] });
+    bridgeMocks.checkClientProxy.mockResolvedValue({
+      client: { route: "direct" },
+      numeric: null,
+    });
     container = document.createElement("div");
     document.body.append(container);
     reactRoot = createRoot(container);
@@ -161,13 +166,13 @@ describe("ClientSetupDialog", () => {
     container.remove();
   });
 
-  const renderDialog = async () => {
+  const renderDialog = async (inferenceURL = "http://127.0.0.1:8317") => {
     await act(async () => {
       reactRoot.render(
         <ClientSetupDialog
           token={token}
           tokens={[token, otherToken]}
-          inferenceURL="http://127.0.0.1:8317"
+          inferenceURL={inferenceURL}
           onClose={onClose}
           onChanged={onChanged}
         />,
@@ -479,5 +484,73 @@ describe("ClientSetupDialog", () => {
     expect(dialog().textContent).toContain(
       "部分模型未能读取，可手动输入模型 ID。",
     );
+  });
+
+  it("warns on the Codex card when the system proxy blocks it", async () => {
+    bridgeMocks.checkClientProxy.mockResolvedValue({
+      client: { route: "blocked", proxy: "127.0.0.1:7892" },
+      numeric: null,
+    });
+    await renderDialog("http://localhost:8317");
+
+    // Claude Code does not follow the system proxy, so it is not checked.
+    expect(bridgeMocks.checkClientProxy).not.toHaveBeenCalled();
+    expect(dialog().textContent).not.toContain("系统代理");
+
+    await act(async () => card("Codex").click());
+    expect(bridgeMocks.checkClientProxy).toHaveBeenCalledWith(
+      "http://localhost:8317",
+    );
+    const text = dialog().textContent;
+    expect(text).toContain(
+      "系统代理 127.0.0.1:7892 会拦下 Codex 发往 AstrLink 的请求",
+    );
+    expect(text).toContain("localhost、127.0.0.1 和 ::1");
+    expect(text).toContain("AstrLink 不会改动这些设置。");
+
+    await act(async () => card("Claude Code").click());
+    expect(dialog().textContent).not.toContain("系统代理");
+  });
+
+  it.each([
+    [
+      "a proxy that still reaches the gateway",
+      { client: { route: "proxied", proxy: "127.0.0.1:7892" }, numeric: null },
+      "Codex 的请求会先经过系统代理 127.0.0.1:7892 再回到 AstrLink，目前可以连通。",
+    ],
+    [
+      "a proxy that blocks only the numeric address",
+      {
+        client: { route: "direct" },
+        numeric: { route: "blocked", proxy: "127.0.0.1:7892" },
+      },
+      "AstrLink 写入的配置使用 http://localhost:8317/v1，不受影响",
+    ],
+  ])("notes %s on the Codex card", async (_, check, message) => {
+    bridgeMocks.checkClientProxy.mockResolvedValue(check);
+    await renderDialog("http://localhost:8317");
+    await act(async () => card("Codex").click());
+
+    expect(dialog().textContent).toContain(message);
+  });
+
+  it.each([
+    [
+      "direct routes",
+      () =>
+        Promise.resolve({
+          client: { route: "direct" },
+          numeric: { route: "proxied", proxy: "127.0.0.1:7892" },
+        }),
+    ],
+    ["a failed check", () => Promise.reject(new Error("offline"))],
+  ])("shows no proxy hint for %s", async (_, check) => {
+    bridgeMocks.checkClientProxy.mockImplementation(check);
+    await renderDialog("http://localhost:8317");
+    await act(async () => card("Codex").click());
+
+    expect(bridgeMocks.checkClientProxy).toHaveBeenCalledOnce();
+    expect(dialog().textContent).not.toContain("系统代理");
+    expect(dialog().querySelector('[role="alert"]')).toBeNull();
   });
 });

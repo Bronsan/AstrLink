@@ -865,7 +865,7 @@ export default function App() {
               <AccessTokenManager
                 catalog={tokenCatalog}
                 coreSessionKey={coreSessionKey}
-                inferenceURL={snapshot?.ready?.inference_url ?? ""}
+                inferenceURL={snapshot?.ready?.client_inference_url ?? ""}
                 isReady={isReady}
                 onRefresh={() => void refreshAccessTokens()}
                 onTokenCreated={handleTokenCreated}

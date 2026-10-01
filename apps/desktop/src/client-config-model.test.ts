@@ -5,6 +5,7 @@ import {
   parseClientConfigCopied,
   parseClientConfigSnippet,
   parseClientConfigStatuses,
+  parseClientProxyCheck,
 } from "./client-config-model";
 
 function statuses(
@@ -104,6 +105,48 @@ describe("client-config IPC parsing", () => {
     }
     expect(parseClientConfigCopied(false)).toBe(false);
     expect(() => parseClientConfigCopied("true")).toThrow(
+      "Invalid client-config IPC response",
+    );
+  });
+
+  it("accepts each proxy route, naming the proxy by host and port", () => {
+    const value = {
+      client: { route: "direct" },
+      numeric: { route: "blocked", proxy: "127.0.0.1:7892" },
+    };
+    expect(parseClientProxyCheck(value)).toEqual(value);
+    expect(
+      parseClientProxyCheck({
+        client: { route: "proxied", proxy: "proxy.lan:8080" },
+        numeric: null,
+      }),
+    ).toEqual({
+      client: { route: "proxied", proxy: "proxy.lan:8080" },
+      numeric: null,
+    });
+  });
+
+  it.each([
+    ["a missing numeric route", { client: { route: "direct" } }],
+    ["an unknown route", { client: { route: "tunnel" }, numeric: null }],
+    [
+      "a direct route naming a proxy",
+      { client: { route: "direct", proxy: "127.0.0.1:7892" }, numeric: null },
+    ],
+    [
+      "a blocked route without a proxy",
+      { client: { route: "blocked" }, numeric: null },
+    ],
+    [
+      "a multi-line proxy",
+      { client: { route: "blocked", proxy: "a\nb" }, numeric: null },
+    ],
+    [
+      "an unexpected field",
+      { client: { route: "direct" }, numeric: null, url: "http://x" },
+    ],
+  ])("rejects %s", (_, value) => {
+    expect(() => parseClientProxyCheck(value)).toThrow(
       "Invalid client-config IPC response",
     );
   });

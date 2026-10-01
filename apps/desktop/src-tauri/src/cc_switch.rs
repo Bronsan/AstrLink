@@ -307,6 +307,7 @@ mod tests {
         for endpoint in [
             "https://example.com",
             "http://127.0.0.1:8317/control",
+            "http://[::1]:8317",
             "http://secret@127.0.0.1:8317",
             "http://127.0.0.1:8317?secret",
             "http://127.0.0.1:8317#secret",

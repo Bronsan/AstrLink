@@ -105,7 +105,7 @@ export function GettingStarted({
     tokenCatalog.items.find((item) => item.id === tokenId) ??
     tokenCatalog.items[0];
   const inferenceURL =
-    snapshot?.ready?.inference_url?.replace(/\/+$/, "") ?? "";
+    snapshot?.ready?.client_inference_url?.replace(/\/+$/, "") ?? "";
   const baseURL = inferenceURL
     ? `${inferenceURL}${protocol === "openai" ? "/v1" : ""}`
     : "";

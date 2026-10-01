@@ -48,6 +48,21 @@ export type ClientConfigApplyOutcome =
   /** Nothing was written: these keys hold values AstrLink did not write. */
   | { status: "needs_confirmation"; keys: string[] };
 
+/** How Codex, which honours the system proxy, reaches one gateway address. */
+export type ClientProxyRoute =
+  | { route: "direct" }
+  /** Through the proxy, which still hands requests back to the gateway. */
+  | { route: "proxied"; proxy: string }
+  /** Through the proxy, which never hands requests back to the gateway. */
+  | { route: "blocked"; proxy: string };
+
+export interface ClientProxyCheck {
+  /** The address AstrLink writes into client configs. */
+  client: ClientProxyRoute;
+  /** `127.0.0.1` on the same port while the client address is localhost. */
+  numeric: ClientProxyRoute | null;
+}
+
 type JsonObject = Record<string, unknown>;
 
 const states: readonly ClientConfigState[] = [
@@ -198,4 +213,33 @@ export function parseClientConfigSnippet(value: unknown): string {
 export function parseClientConfigCopied(value: unknown): boolean {
   if (typeof value !== "boolean") invalid("$", "expected a boolean");
   return value;
+}
+
+function parseProxyRoute(value: unknown, path: string): ClientProxyRoute {
+  const route = objectAt(value, path);
+  if (route.route === "direct") {
+    exactKeys(route, ["route"], path);
+    return { route: "direct" };
+  }
+  if (route.route !== "proxied" && route.route !== "blocked") {
+    return invalid(`${path}.route`, "unknown route");
+  }
+  exactKeys(route, ["route", "proxy"], path);
+  return {
+    route: route.route,
+    proxy: lineAt(route.proxy, `${path}.proxy`, 255),
+  };
+}
+
+/** Parses `check_client_proxy`, which names the proxy by host and port only. */
+export function parseClientProxyCheck(value: unknown): ClientProxyCheck {
+  const check = objectAt(value, "$");
+  exactKeys(check, ["client", "numeric"], "$");
+  return {
+    client: parseProxyRoute(check.client, "$.client"),
+    numeric:
+      check.numeric === null
+        ? null
+        : parseProxyRoute(check.numeric, "$.numeric"),
+  };
 }

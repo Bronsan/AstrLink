@@ -37,6 +37,7 @@ import {
 import type { AccessTokenSummary } from "./access-token-model";
 import {
   applyClientConfig,
+  checkClientProxy,
   getClientConfigStatus,
   getRoutingSettings,
   isCCSwitchInstalled,
@@ -51,6 +52,7 @@ import {
   type ClientConfigModels,
   type ClientConfigState,
   type ClientConfigStatus,
+  type ClientProxyCheck,
   type DirectClient,
 } from "./client-config-model";
 import {
@@ -110,6 +112,40 @@ interface Failure {
   detail?: string;
 }
 
+/**
+ * Explains a system proxy that gets between Codex and the gateway. Only the
+ * user changes proxy settings; AstrLink just points at what to change.
+ */
+function proxyHint(
+  check: ClientProxyCheck,
+  baseURL: string,
+): { tone: "warning" | "notice"; message: string } | null {
+  const t = i18n.t.bind(i18n);
+  const { client, numeric } = check;
+  if (client.route === "blocked") {
+    return {
+      tone: "warning",
+      message: t("clientSetup.proxy.blocked", { proxy: client.proxy }),
+    };
+  }
+  if (client.route === "proxied") {
+    return {
+      tone: "notice",
+      message: t("clientSetup.proxy.proxied", { proxy: client.proxy }),
+    };
+  }
+  if (numeric?.route === "blocked") {
+    return {
+      tone: "notice",
+      message: t("clientSetup.proxy.numericBlocked", {
+        proxy: numeric.proxy,
+        url: baseURL,
+      }),
+    };
+  }
+  return null;
+}
+
 function failure(message: string, cause: unknown): Failure {
   return {
     message,
@@ -161,6 +197,10 @@ export function ClientSetupDialog({
   const [catalogStatus, setCatalogStatus] = useState<
     "loading" | "ready" | "error"
   >("loading");
+  const [proxyCheck, setProxyCheck] = useState<{
+    url: string;
+    result: ClientProxyCheck;
+  } | null>(null);
   const active = useRef(true);
   const pending = useRef(false);
 
@@ -238,6 +278,24 @@ export function ClientSetupDialog({
   const isClaude = client === "claude";
   const modelRequired = !isClaude && !model.trim();
   const configured = status?.token_id != null;
+  const checksProxy = client === "codex" && inferenceURL !== "";
+
+  useEffect(() => {
+    if (!checksProxy) return;
+    let cancelled = false;
+    // Optional and read-only: a failed check only hides its hint.
+    void Promise.resolve()
+      .then(() => checkClientProxy(inferenceURL))
+      .then(
+        (result) =>
+          !cancelled && result && setProxyCheck({ url: inferenceURL, result }),
+        () => undefined,
+      );
+    return () => {
+      cancelled = true;
+    };
+  }, [checksProxy, inferenceURL]);
+
   // Removing needs a readable file; an unreadable one is left for the user.
   const removable =
     mode === "direct" && configured && status?.state !== "invalid"
@@ -403,6 +461,10 @@ export function ClientSetupDialog({
   const baseURL = `${inferenceURL}${
     ["codex", "opencode", "openclaw"].includes(client ?? "") ? "/v1" : ""
   }`;
+  const proxy =
+    checksProxy && proxyCheck?.url === inferenceURL
+      ? proxyHint(proxyCheck.result, baseURL)
+      : null;
 
   return (
     <Dialog
@@ -533,6 +595,9 @@ export function ClientSetupDialog({
                         current: token.name,
                       })}
                 </FormMessage>
+              ) : null}
+              {proxy ? (
+                <FormMessage tone={proxy.tone}>{proxy.message}</FormMessage>
               ) : null}
               <Field
                 htmlFor="client-setup-model"

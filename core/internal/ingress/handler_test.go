@@ -279,7 +279,10 @@ func TestProductionInferenceGateRequiresCanonicalHostOriginBoundaryAndLocalToken
 		code       string
 		resolves   bool
 	}{
-		{name: "wrong Host", host: "localhost:8317", headerName: "Authorization", header: "Bearer " + token, status: http.StatusMisdirectedRequest, code: "host_forbidden"},
+		{name: "wrong Host", host: "attacker.example:8317", headerName: "Authorization", header: "Bearer " + token, status: http.StatusMisdirectedRequest, code: "host_forbidden"},
+		{name: "localhost on another port", host: "localhost:8318", headerName: "Authorization", header: "Bearer " + token, status: http.StatusMisdirectedRequest, code: "host_forbidden"},
+		{name: "localhost Host", host: "LocalHost:8317", headerName: "Authorization", header: "Bearer " + token, status: http.StatusUnprocessableEntity, code: "missing_protocol_capability", resolves: true},
+		{name: "IPv6 loopback Host", host: "[::1]:8317", headerName: "Authorization", header: "Bearer " + token, status: http.StatusUnprocessableEntity, code: "missing_protocol_capability", resolves: true},
 		{name: "browser Origin", host: "127.0.0.1:8317", origin: "https://attacker.example", headerName: "Authorization", header: "Bearer " + token, status: http.StatusForbidden, code: "origin_forbidden"},
 		{name: "browser Origin after empty value", host: "127.0.0.1:8317", origins: []string{"", "https://attacker.example"}, headerName: "Authorization", header: "Bearer " + token, status: http.StatusForbidden, code: "origin_forbidden"},
 		{name: "missing token", host: "127.0.0.1:8317", status: http.StatusUnauthorized, code: "invalid_access_token"},
@@ -322,6 +325,80 @@ func TestProductionInferenceGateRequiresCanonicalHostOriginBoundaryAndLocalToken
 				if strings.HasPrefix(http.CanonicalHeaderKey(name), "Access-Control-") {
 					t.Fatalf("CORS header leaked: %s", name)
 				}
+			}
+		})
+	}
+}
+
+func TestReachabilityProbeSkipsTokenAndRecordsButKeepsLocalGate(t *testing.T) {
+	store := &memoryRequestRecordStore{}
+	handler, err := NewProduction(Dependencies{
+		Resolver: resolverFunc(func(context.Context, endpoint.ResolveRequest) (endpoint.Resolved, error) {
+			t.Fatal("reachability probe must not resolve an endpoint")
+			return endpoint.Resolved{}, endpoint.ErrNoEndpoint
+		}),
+		Authorizer: authorizerFunc(func(context.Context, contract.Endpoint) (http.Header, error) {
+			return nil, errors.New("authorizer must not run")
+		}),
+		AccessTokenAuthenticator: AccessTokenAuthenticatorFunc(func(context.Context, string) (contract.AccessTokenID, error) {
+			t.Fatal("reachability probe must not authenticate")
+			return "", errors.New("unreachable")
+		}),
+		RequestRecords: store,
+		AllowedHost:    "127.0.0.1:8317",
+	})
+	if err != nil {
+		t.Fatalf("NewProduction: %v", err)
+	}
+	tests := []struct {
+		name   string
+		method string
+		host   string
+		status int
+		marked bool
+	}{
+		{name: "IPv4", method: http.MethodGet, host: "127.0.0.1:8317", status: http.StatusNoContent, marked: true},
+		{name: "localhost", method: http.MethodGet, host: "localhost:8317", status: http.StatusNoContent, marked: true},
+		{name: "IPv6", method: http.MethodGet, host: "[::1]:8317", status: http.StatusNoContent, marked: true},
+		{name: "POST", method: http.MethodPost, host: "localhost:8317", status: http.StatusMethodNotAllowed},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			request := httptest.NewRequest(test.method, ReachabilityPath, nil)
+			request.Host = test.host
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, request)
+			if response.Code != test.status {
+				t.Fatalf("status = %d, want %d", response.Code, test.status)
+			}
+			if got := response.Header().Get(ReachabilityHeader) == "1"; got != test.marked {
+				t.Fatalf("marker present = %t, want %t", got, test.marked)
+			}
+		})
+	}
+	if len(store.records) != 0 {
+		t.Fatalf("reachability probes were recorded: %#v", store.records)
+	}
+
+	for _, test := range []struct {
+		name, host, origin string
+		status             int
+		code               string
+	}{
+		{name: "foreign Host", host: "attacker.example:8317", status: http.StatusMisdirectedRequest, code: "host_forbidden"},
+		{name: "browser Origin", host: "localhost:8317", origin: "https://attacker.example", status: http.StatusForbidden, code: "origin_forbidden"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			request := httptest.NewRequest(http.MethodGet, ReachabilityPath, nil)
+			request.Host = test.host
+			if test.origin != "" {
+				request.Header.Set("Origin", test.origin)
+			}
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, request)
+			assertInferenceError(t, response, test.status, test.code)
+			if response.Header().Get(ReachabilityHeader) != "" {
+				t.Fatal("rejected probe carried the reachability marker")
 			}
 		})
 	}

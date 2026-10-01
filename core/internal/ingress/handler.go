@@ -15,6 +15,7 @@ import (
 	"mime"
 	"net"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -123,7 +124,7 @@ type Handler struct {
 	auditSettings            AuditSettingsProvider
 	auditBlobs               AuditBlobPersister
 	recordLogger             func(string, ...any)
-	allowedHost              string
+	allowedHosts             []string
 	responseStartTimeout     time.Duration
 	metadataSlots            chan struct{}
 	maxRequestBodyBytes      int64
@@ -174,6 +175,15 @@ func ValidateResponseStartTimeoutSeconds(n int) error {
 const PolicyWarningHeader = "X-AstrLink-Policy-Warning"
 
 const PrivacyWarningHeader = PolicyWarningHeader
+
+// ReachabilityPath answers a token-less, unrecorded probe so the desktop can
+// tell whether a client's HTTP stack (including any system proxy) reaches
+// this gateway. It reveals nothing beyond the marker header.
+const ReachabilityPath = "/astrlink/reachability"
+
+// ReachabilityHeader marks a reachability response as coming from this
+// gateway rather than from an intercepting proxy.
+const ReachabilityHeader = "X-AstrLink-Reachable"
 
 type accessTokenIDContextKey struct{}
 
@@ -227,7 +237,7 @@ func NewWithDependencies(dependencies Dependencies) *Handler {
 		auditSettings:         dependencies.AuditSettings,
 		auditBlobs:            dependencies.AuditBlobs,
 		recordLogger:          dependencies.RecordLogger,
-		allowedHost:           dependencies.AllowedHost,
+		allowedHosts:          allowedHostAliases(dependencies.AllowedHost),
 		responseStartTimeout:  dependencies.ResponseStartTimeout,
 		metadataSlots:         make(chan struct{}, metadataInspectionLimit(dependencies.MaxConcurrentInspections)),
 		maxRequestBodyBytes:   int64(dependencies.MaxRequestBodyMiB) << 20,
@@ -242,6 +252,10 @@ func (handler *Handler) ServeHTTP(writer http.ResponseWriter, request *http.Requ
 	// The policy warning header is owned by this local response boundary.
 	// Strip any client-supplied value so it cannot be spoofed upstream.
 	request.Header.Del(PolicyWarningHeader)
+	if builtinInternalFrom(request.Context()) == nil && request.URL.Path == ReachabilityPath {
+		handler.serveReachability(writer, request)
+		return
+	}
 	if builtinInternalFrom(request.Context()) == nil && !handler.allowInferenceBoundary(writer, request) {
 		return
 	}
@@ -715,13 +729,54 @@ func (body *privacyBufferedBody) Close() {
 	}
 }
 
-func (handler *Handler) allowInferenceBoundary(writer http.ResponseWriter, request *http.Request) bool {
+// allowedHostAliases accepts the loopback names that reach the same port:
+// clients are configured with localhost, which resolves to either family.
+func allowedHostAliases(allowedHost string) []string {
+	if allowedHost == "" {
+		return nil
+	}
+	host, port, err := net.SplitHostPort(allowedHost)
+	if err != nil || host != "127.0.0.1" {
+		return []string{allowedHost}
+	}
+	return []string{allowedHost, net.JoinHostPort("localhost", port), net.JoinHostPort("::1", port)}
+}
+
+func (handler *Handler) hostAllowed(host string) bool {
+	if handler.allowedHosts == nil {
+		return true
+	}
+	return slices.Contains(handler.allowedHosts, strings.ToLower(host))
+}
+
+func (handler *Handler) allowLocalCaller(writer http.ResponseWriter, request *http.Request) bool {
 	if hasBrowserOrigin(request.Header) {
 		handler.writeRecordedInferenceError(writer, request, http.StatusForbidden, "origin_forbidden", "browser origins cannot call the inference plane", false, nil)
 		return false
 	}
-	if handler.allowedHost != "" && request.Host != handler.allowedHost {
+	if !handler.hostAllowed(request.Host) {
 		handler.writeRecordedInferenceError(writer, request, http.StatusMisdirectedRequest, "host_forbidden", "request Host does not match the inference listener", false, nil)
+		return false
+	}
+	return true
+}
+
+func (handler *Handler) serveReachability(writer http.ResponseWriter, request *http.Request) {
+	if !handler.allowLocalCaller(writer, request) {
+		return
+	}
+	writer.Header().Set("Cache-Control", "no-store")
+	if request.Method != http.MethodGet {
+		writer.Header().Set("Allow", http.MethodGet)
+		writer.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	writer.Header().Set(ReachabilityHeader, "1")
+	writer.WriteHeader(http.StatusNoContent)
+}
+
+func (handler *Handler) allowInferenceBoundary(writer http.ResponseWriter, request *http.Request) bool {
+	if !handler.allowLocalCaller(writer, request) {
 		return false
 	}
 	if handler.accessTokenAuthenticator != nil {

@@ -352,6 +352,9 @@ pub struct ReadyAnnouncement {
     pub control_api_version: String,
     pub protocol_contract_version: String,
     pub inference_url: String,
+    /// The address clients are configured with: `http://localhost:<port>`
+    /// while Core also serves `[::1]`, otherwise `inference_url`.
+    pub client_inference_url: String,
     pub control_url: String,
 }
 
@@ -517,6 +520,8 @@ impl Default for CoreInner {
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
 pub struct CoreView {
     pub phase: CorePhase,
+    /// The client-facing inference address (`client_inference_url`), which is
+    /// what the tray shows, copies, and syncs into client configs.
     pub inference_url: Option<String>,
     pub core_version: Option<String>,
     pub inference_port_fallback: Option<InferencePortFallback>,
@@ -646,7 +651,10 @@ impl CoreInner {
     fn view(&self) -> CoreView {
         CoreView {
             phase: self.phase,
-            inference_url: self.ready.as_ref().map(|ready| ready.inference_url.clone()),
+            inference_url: self
+                .ready
+                .as_ref()
+                .map(|ready| ready.client_inference_url.clone()),
             core_version: self.ready.as_ref().map(|ready| ready.core_version.clone()),
             inference_port_fallback: self.inference_port_fallback(),
             last_error: self.last_error.clone(),
@@ -1279,6 +1287,7 @@ impl CoreManager {
             control_api_version: "v1".into(),
             protocol_contract_version: "v1".into(),
             inference_url: control_url.clone(),
+            client_inference_url: control_url.clone(),
             control_url,
         });
     }
@@ -5149,6 +5158,15 @@ fn parse_ready_announcement(line: &str) -> Result<ReadyAnnouncement, String> {
     }
 
     ready.inference_url = validate_loopback_url(&ready.inference_url, "inference_url")?;
+    let localhost = ready
+        .inference_url
+        .replacen("http://127.0.0.1:", "http://localhost:", 1);
+    if ready.client_inference_url != ready.inference_url && ready.client_inference_url != localhost
+    {
+        return Err(
+            "client_inference_url must be inference_url or localhost on the same port".to_string(),
+        );
+    }
     ready.control_url = validate_loopback_url(&ready.control_url, "control_url")?;
     Ok(ready)
 }
@@ -5601,13 +5619,14 @@ mod tests {
                 control_api_version: "v1".to_string(),
                 protocol_contract_version: "v1".to_string(),
                 inference_url: "http://127.0.0.1:8324".to_string(),
+                client_inference_url: "http://localhost:8324".to_string(),
                 control_url: "http://127.0.0.1:43117".to_string(),
             });
             inner.started_inference_port = Some(8317);
         }
         let view = changes.borrow_and_update().clone();
         assert_eq!(view.phase, CorePhase::Ready);
-        assert_eq!(view.inference_url.as_deref(), Some("http://127.0.0.1:8324"));
+        assert_eq!(view.inference_url.as_deref(), Some("http://localhost:8324"));
         assert_eq!(
             view.inference_port_fallback,
             Some(InferencePortFallback {
@@ -5746,6 +5765,7 @@ mod tests {
                     control_api_version: "v1".into(),
                     protocol_contract_version: "v1".into(),
                     inference_url: format!("http://{address}"),
+                    client_inference_url: format!("http://{address}"),
                     control_url: format!("http://{address}"),
                 });
             }
@@ -6066,7 +6086,7 @@ mod tests {
 
     fn ready_line(control_url: &str) -> String {
         format!(
-            r#"{{"event":"ready","core_version":"0.1.0-dev","control_api_version":"v1","protocol_contract_version":"v1","inference_url":"http://127.0.0.1:8317","control_url":"{control_url}"}}"#
+            r#"{{"event":"ready","core_version":"0.1.0-dev","control_api_version":"v1","protocol_contract_version":"v1","inference_url":"http://127.0.0.1:8317","client_inference_url":"http://localhost:8317","control_url":"{control_url}"}}"#
         )
     }
 
@@ -6125,6 +6145,36 @@ mod tests {
         assert_eq!(ready.event, "ready");
         assert_eq!(ready.control_url, "http://127.0.0.1:43210");
         assert_eq!(ready.inference_url, "http://127.0.0.1:8317");
+        assert_eq!(ready.client_inference_url, "http://localhost:8317");
+    }
+
+    #[test]
+    fn ready_client_url_must_name_the_same_inference_port() {
+        let line = ready_line("http://127.0.0.1:43210");
+        let ipv4_only = line.replace(
+            r#""client_inference_url":"http://localhost:8317""#,
+            r#""client_inference_url":"http://127.0.0.1:8317""#,
+        );
+        assert_eq!(
+            parse_ready_announcement(&ipv4_only)
+                .unwrap()
+                .client_inference_url,
+            "http://127.0.0.1:8317"
+        );
+        for client_url in [
+            "http://localhost:8318",
+            "http://[::1]:8317",
+            "http://localhost:8317/",
+            "http://127.0.0.1:43210",
+        ] {
+            let line = line.replace("http://localhost:8317", client_url);
+            assert!(
+                parse_ready_announcement(&line).is_err(),
+                "{client_url} should be rejected"
+            );
+        }
+        let missing = line.replace(r#""client_inference_url":"http://localhost:8317","#, "");
+        assert!(parse_ready_announcement(&missing).is_err());
     }
 
     #[test]
