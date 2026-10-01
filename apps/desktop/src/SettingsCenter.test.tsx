@@ -35,7 +35,10 @@ import { applyTheme } from "./theme";
 
 const snapshot = {
   phase: "ready",
-  ready: { inference_url: "http://127.0.0.1:8317" },
+  ready: {
+    inference_url: "http://127.0.0.1:8317",
+    client_inference_url: "http://localhost:8317",
+  },
   inference_port_fallback: null,
   recovery_attempt: 0,
   recovery_scheduled_in_ms: null,
@@ -258,7 +261,8 @@ describe("SettingsCenter", () => {
       ),
     );
     expect(container.textContent).toContain("端口 9000 已被占用");
-    expect(container.textContent).toContain("http://127.0.0.1:8317");
+    // Clients are told the address AstrLink writes for them.
+    expect(container.textContent).toContain("http://localhost:8317");
     expect(container.textContent).toContain("请同步修改客户端 API 地址");
     expect(container.textContent).not.toContain("入口修改尚未生效");
     expect(bridge.updatePreferences).not.toHaveBeenCalled();
