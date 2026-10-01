@@ -2290,6 +2290,7 @@
   "routingDecision": {
     "title": "Routing steps",
     "noProvider": "No API provider available",
+    "noProviderListsModel": "No API provider lists this model",
     "skippedCount": "{{count}} skipped: {{reasons}}",
     "skippedMore": "{{count}} more skipped: {{reasons}}",
     "reasonCount": "{{reason}} ×{{count}}",

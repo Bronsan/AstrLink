@@ -2290,6 +2290,7 @@
   "routingDecision": {
     "title": "路由过程",
     "noProvider": "无可用 API 提供商",
+    "noProviderListsModel": "没有 API 提供商列出该模型",
     "skippedCount": "跳过 {{count}} 个：{{reasons}}",
     "skippedMore": "另跳过 {{count}} 个：{{reasons}}",
     "reasonCount": "{{reason}} ×{{count}}",

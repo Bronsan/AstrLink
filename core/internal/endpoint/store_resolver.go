@@ -112,8 +112,7 @@ func (resolver *StoreResolver) ResolveCandidates(ctx context.Context, request Re
 }
 
 // ResolveRankedCandidates is ResolveCandidates plus the ranking of every
-// configured provider, including disabled ones when the service order is
-// available.
+// configured provider, including disabled ones.
 func (resolver *StoreResolver) ResolveRankedCandidates(ctx context.Context, request ResolveRequest) ([]Resolved, []RankedService, error) {
 	if resolver == nil || resolver.reader == nil {
 		return nil, nil, ErrUnavailable
@@ -122,7 +121,11 @@ func (resolver *StoreResolver) ResolveRankedCandidates(ctx context.Context, requ
 		return nil, nil, fmt.Errorf("resolve protocol: %w", err)
 	}
 
-	endpoints, ranking, err := resolver.readEnabledServices(ctx)
+	model := request.Model
+	if request.Protocol.IsModelDiscovery() {
+		model = ""
+	}
+	endpoints, ranking, err := resolver.readServices(ctx, model)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -176,7 +179,7 @@ func (resolver *StoreResolver) ResolveService(ctx context.Context, id contract.S
 	if resolver == nil || resolver.reader == nil {
 		return Resolved{}, ErrUnavailable
 	}
-	services, _, err := resolver.readEnabledServices(ctx)
+	services, _, err := resolver.readServices(ctx, "")
 	if err != nil {
 		return Resolved{}, err
 	}
@@ -209,12 +212,12 @@ func (resolver *StoreResolver) availableCandidates(candidates []Resolved, rankin
 	return available, nil
 }
 
-// readEnabledServices returns the schedulable services in priority order and
-// the ranking of every known service, with the reason unschedulable ones are
-// left out. Disabled services are only known through the service order.
-func (resolver *StoreResolver) readEnabledServices(ctx context.Context) ([]contract.Service, []RankedService, error) {
-	enabled := true
-	options := storage.ServiceListOptions{Limit: 200, Enabled: &enabled}
+// readServices returns the schedulable services in priority order and the
+// ranking of every service, with the reason unschedulable ones are left out.
+// An unschedulable service that does not list model is ranked as such: it
+// could not have served the request in any state.
+func (resolver *StoreResolver) readServices(ctx context.Context, model string) ([]contract.Service, []RankedService, error) {
+	options := storage.ServiceListOptions{Limit: 200}
 	byID := make(map[contract.ServiceID]contract.Service)
 	excluded := make(map[contract.ServiceID]contract.RoutingSkipReason)
 	seenCursors := make(map[string]struct{})
@@ -228,19 +231,11 @@ func (resolver *StoreResolver) readEnabledServices(ctx context.Context) ([]contr
 			if err := candidate.Validate(); err != nil {
 				return nil, nil, fmt.Errorf("persisted endpoint failed validation: %w", err)
 			}
-			if !candidate.Enabled {
-				excluded[candidate.ID] = contract.RoutingSkipDisabled
-				continue
-			}
-			if candidate.Kind.IsSubscription() &&
-				(candidate.Subscription == nil || candidate.Subscription.Status != contract.SubscriptionStatusConnected) {
-				excluded[candidate.ID] = contract.RoutingSkipNotConnected
-				continue
-			}
-			// Accounts paused by an upstream risk signal stay out of scheduling
-			// until the pause expires or the user restores them.
-			if candidate.Kind.IsSubscription() && candidate.Subscription.Risk.Blocks(resolver.breaker.now()) {
-				excluded[candidate.ID] = contract.RoutingSkipRiskPaused
+			if reason := resolver.unschedulableReason(candidate); reason != "" {
+				if model != "" && !containsModel(candidate.Models, model) {
+					reason = contract.RoutingSkipModelNotListed
+				}
+				excluded[candidate.ID] = reason
 				continue
 			}
 			if _, duplicate := byID[candidate.ID]; duplicate {
@@ -273,12 +268,6 @@ func (resolver *StoreResolver) readEnabledServices(ctx context.Context) ([]contr
 		}
 		for index, id := range record.Order.ServiceIDs {
 			positions[id] = index + 1
-			if _, listed := byID[id]; !listed {
-				if _, known := excluded[id]; !known {
-					// The enabled-only listing never returns disabled services.
-					excluded[id] = contract.RoutingSkipDisabled
-				}
-			}
 		}
 	}
 	before := func(a, b contract.ServiceID) bool {
@@ -308,6 +297,24 @@ func (resolver *StoreResolver) readEnabledServices(ctx context.Context) ([]contr
 		return before(ranking[left].ServiceID, ranking[right].ServiceID)
 	})
 	return endpoints, ranking, nil
+}
+
+// unschedulableReason says why candidate is left out of scheduling whatever
+// the request, or is empty when it can be scheduled.
+func (resolver *StoreResolver) unschedulableReason(candidate contract.Service) contract.RoutingSkipReason {
+	switch {
+	case !candidate.Enabled:
+		return contract.RoutingSkipDisabled
+	case candidate.Kind.IsSubscription() &&
+		(candidate.Subscription == nil || candidate.Subscription.Status != contract.SubscriptionStatusConnected):
+		return contract.RoutingSkipNotConnected
+	// Accounts paused by an upstream risk signal stay out of scheduling until
+	// the pause expires or the user restores them.
+	case candidate.Kind.IsSubscription() && candidate.Subscription.Risk.Blocks(resolver.breaker.now()):
+		return contract.RoutingSkipRiskPaused
+	default:
+		return ""
+	}
 }
 
 // MarkSkipped records why routing excluded a ranked provider that was still

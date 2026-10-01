@@ -28,6 +28,8 @@ export interface RouteEvent {
 
 const SEPARATOR = " · ";
 const planTypes = new Set(["native", "delegated", "relaykit"]);
+/** A provider without the model could not have served the call in any state. */
+const MODEL_NOT_LISTED = "model_not_listed";
 
 /**
  * Core writes a used provider as "plan · id" and a rejected one as
@@ -62,16 +64,19 @@ export function routeEventStep(event: RouteEvent): RoutingStep | null {
  * the providers excluded ahead of the one used, in priority order, then the
  * route events as they happened. A provider both skipped and rejected (an
  * open circuit is both) appears once, as rejected, at its priority position.
+ * Providers that do not list the model were never candidates and are left out.
  */
 export function routingSteps(
   routes: readonly RouteEvent[],
   decision: RequestRoutingDecision | undefined,
 ): RoutingStep[] {
-  const steps: RoutingStep[] = (decision?.skipped ?? []).map((skip) => ({
-    serviceId: skip.service_id,
-    outcome: "skipped",
-    code: skip.reason,
-  }));
+  const steps: RoutingStep[] = (decision?.skipped ?? [])
+    .filter((skip) => skip.reason !== MODEL_NOT_LISTED)
+    .map((skip) => ({
+      serviceId: skip.service_id,
+      outcome: "skipped",
+      code: skip.reason,
+    }));
   for (const route of routes) {
     const step = routeEventStep(route);
     if (!step) continue;
@@ -144,7 +149,17 @@ export function routeRowSummary(
   const decision = record?.routing_decision;
   const parts: string[] = [];
   if (!step) {
-    parts.push(i18n.t("routingDecision.noProvider"));
+    const unlisted =
+      decision !== undefined &&
+      decision.skipped.length > 0 &&
+      decision.skipped.every((skip) => skip.reason === MODEL_NOT_LISTED);
+    parts.push(
+      i18n.t(
+        unlisted
+          ? "routingDecision.noProviderListsModel"
+          : "routingDecision.noProvider",
+      ),
+    );
   } else {
     parts.push(serviceName(step.serviceId, services));
     if (step.outcome === "rejected") {

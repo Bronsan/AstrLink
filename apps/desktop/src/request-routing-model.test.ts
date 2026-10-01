@@ -75,15 +75,14 @@ describe("routeEventStep", () => {
 
 describe("routingSteps", () => {
   it("lists skipped providers in priority order and folds a rejection into its skip", () => {
+    // Providers without the model were never candidates.
     expect(
       routingSteps(unavailable.events, unavailable.routing_decision).map(
         (step) => [step.serviceId, step.outcome, step.code],
       ),
     ).toEqual([
       ["service_codex", "skipped", "disabled"],
-      ["service_kimi", "skipped", "model_not_listed"],
       ["service_newapi", "rejected", "circuit_open"],
-      ["service_spark", "skipped", "model_not_listed"],
       ["service_gone", "skipped", "disabled"],
     ]);
   });
@@ -112,9 +111,7 @@ describe("routeRowSummary", () => {
   it("names the refused provider in words and groups the rest by reason", () => {
     expect(
       routeRowSummary(unavailable.events[0]!, unavailable, services, true),
-    ).toBe(
-      "new-api · 连续失败，暂停使用中 · 另跳过 4 个：已停用 ×2、未列出该模型 ×2",
-    );
+    ).toBe("new-api · 连续失败，暂停使用中 · 另跳过 2 个：已停用 ×2");
     // Only the call's last route row carries the skipped providers.
     expect(
       routeRowSummary(unavailable.events[0]!, unavailable, services, false),
@@ -155,9 +152,27 @@ describe("routeRowSummary", () => {
         services,
         true,
       ),
-    ).toBe(
-      "无可用 API 提供商 · 跳过 5 个：已停用 ×2、未列出该模型 ×2、连续失败，暂停使用中",
-    );
+    ).toBe("无可用 API 提供商 · 跳过 3 个：已停用 ×2、连续失败，暂停使用中");
+  });
+
+  it("says so when no provider lists the model", () => {
+    expect(
+      routeRowSummary(
+        { summary: "", status: "failed" },
+        {
+          service_id: null,
+          events: [],
+          routing_decision: {
+            skipped: [
+              { service_id: "service_kimi", reason: "model_not_listed" },
+              { service_id: "service_spark", reason: "model_not_listed" },
+            ],
+          },
+        },
+        services,
+        true,
+      ),
+    ).toBe("没有 API 提供商列出该模型");
   });
 });
 
@@ -198,7 +213,7 @@ describe("readableRouteRows", () => {
     ).toEqual([
       "gpt-5 · openai.responses",
       "Kimi Coding · 凭据不可用",
-      "new-api · 连续失败，暂停使用中 · 另跳过 3 个：已停用 ×2、未列出该模型",
+      "new-api · 连续失败，暂停使用中 · 另跳过 2 个：已停用 ×2",
     ]);
   });
 });

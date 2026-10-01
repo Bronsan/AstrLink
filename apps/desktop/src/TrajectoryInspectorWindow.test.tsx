@@ -834,6 +834,7 @@ describe("TrajectoryInspectorWindow", () => {
   it("says why routing chose the provider and names the ones it skipped", async () => {
     const skipped = "service_aaaaaaaaaaaaaaaaaaaaaaaa";
     const deleted = "service_bbbbbbbbbbbbbbbbbbbbbbbb";
+    const unlisted = "service_eeeeeeeeeeeeeeeeeeeeeeee";
     const routeRow: TrajectoryRow = {
       ...row,
       id: `${record.id}:routed`,
@@ -850,7 +851,8 @@ describe("TrajectoryInspectorWindow", () => {
           routing_decision: {
             selected: "failover",
             skipped: [
-              { service_id: skipped, reason: "model_not_listed" },
+              { service_id: skipped, reason: "protocol_unsupported" },
+              { service_id: unlisted, reason: "model_not_listed" },
               { service_id: deleted, reason: "disabled" },
             ],
           },
@@ -870,9 +872,10 @@ describe("TrajectoryInspectorWindow", () => {
         item.getAttribute("data-outcome"),
         item.getAttribute("data-code"),
       ]);
-    // A provider missing from the list is still named, by its ID.
+    // A provider missing from the list is still named, by its ID; one without
+    // the model is no step at all.
     expect(steps()).toEqual([
-      ["已跳过mly · 未列出该模型", "skipped", "model_not_listed"],
+      ["已跳过mly · 不支持该入口协议", "skipped", "protocol_unsupported"],
       [`已跳过${deleted} · 已停用`, "skipped", "disabled"],
       [
         `已选用${record.service_id} · 故障切换：此前尝试的 API 提供商失败或被拒绝`,
