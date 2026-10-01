@@ -19,26 +19,29 @@ type relayKitResponseWriter struct {
 	engine                     relaykitbridge.ConversionEngine
 	plan                       contract.ExecutionPlan
 	publicModel, upstreamModel string
-	streaming                  bool
-	status                     int
-	body                       bytes.Buffer
-	stream                     relaykitbridge.ResponseStream
-	carry                      []byte
-	passthrough                bool
+	// state is what this attempt's request conversion recorded; the response
+	// conversion needs it to restore client-only tool call shapes.
+	state       relaykitbridge.ConversionState
+	streaming   bool
+	status      int
+	body        bytes.Buffer
+	stream      relaykitbridge.ResponseStream
+	carry       []byte
+	passthrough bool
 }
 
 func newRelayKitResponseWriter(
 	writer http.ResponseWriter, engine relaykitbridge.ConversionEngine, plan contract.ExecutionPlan,
-	publicModel, upstreamModel string,
+	publicModel, upstreamModel string, state relaykitbridge.ConversionState,
 ) (*relayKitResponseWriter, error) {
 	result := &relayKitResponseWriter{
 		ResponseWriter: writer, engine: engine, plan: plan, publicModel: publicModel,
-		upstreamModel: upstreamModel, streaming: plan.Streaming,
+		upstreamModel: upstreamModel, state: state, streaming: plan.Streaming,
 	}
 	if plan.Streaming {
 		stream, err := engine.NewResponseStream(context.Background(), relaykitbridge.StreamOptions{
 			From: plan.UpstreamProtocol, To: plan.InputProtocol, PublicModel: publicModel,
-			UpstreamModel: upstreamModel,
+			UpstreamModel: upstreamModel, State: state,
 		})
 		if err != nil {
 			return nil, err
@@ -89,7 +92,7 @@ func (writer *relayKitResponseWriter) Finish() error {
 		output, err := writer.engine.ConvertResponse(context.Background(), relaykitbridge.ConvertResponseInput{
 			From: writer.plan.UpstreamProtocol, To: writer.plan.InputProtocol, StatusCode: writer.status,
 			ContentType: writer.Header().Get("Content-Type"), Body: writer.body.Bytes(), PublicModel: writer.publicModel,
-			UpstreamModel: writer.upstreamModel,
+			UpstreamModel: writer.upstreamModel, State: writer.state,
 		})
 		if err != nil {
 			return err

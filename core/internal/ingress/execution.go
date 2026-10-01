@@ -313,6 +313,9 @@ func (handler *Handler) executeCandidatesWithTest(
 			handler.writePrivacyError(downstream, request, privacyErr)
 			return
 		}
+		// conversion belongs to this attempt only: its state must reach this
+		// attempt's response conversion and never a retry's.
+		var conversion relaykitbridge.ConvertRequestOutput
 		if plan.Type == contract.PlanTypeRelayKit {
 			convertedInput, readErr := io.ReadAll(attemptRequest.Body)
 			if readErr != nil {
@@ -323,11 +326,12 @@ func (handler *Handler) executeCandidatesWithTest(
 				continue
 			}
 			_ = attemptRequest.Body.Close()
-			converted, convertErr := handler.conversionEngine.ConvertRequest(request.Context(), relaykitbridge.ConvertRequestInput{
+			var convertErr error
+			conversion, convertErr = handler.conversionEngine.ConvertRequest(request.Context(), relaykitbridge.ConvertRequestInput{
 				From: plan.InputProtocol, To: plan.UpstreamProtocol, ContentType: attemptRequest.Header.Get("Content-Type"),
 				Body: convertedInput, PublicModel: classified.Model, UpstreamModel: upstreamModel, Streaming: classified.Streaming,
 			})
-			if convertErr != nil || adaptRelayKitRequest(attemptRequest, plan.UpstreamProtocol, classified.Streaming, upstreamModel, converted.Body) != nil {
+			if convertErr != nil || adaptRelayKitRequest(attemptRequest, plan.UpstreamProtocol, classified.Streaming, upstreamModel, conversion.Body) != nil {
 				finishPrivacy()
 				last = executionFailure{kind: executionFailureConversionUnsupported, err: convertErr, endpointID: candidate.Service.ID}
 				records.noteCandidateRejected(last.endpointID, last.code())
@@ -546,7 +550,7 @@ func (handler *Handler) executeCandidatesWithTest(
 		if plan.Type == contract.PlanTypeRelayKit {
 			attemptRequest.Header.Del("Accept-Encoding")
 			relayWriter, planErr = newRelayKitResponseWriter(
-				outWriter, handler.conversionEngine, plan, classified.Model, upstreamModel,
+				outWriter, handler.conversionEngine, plan, classified.Model, upstreamModel, conversion.State,
 			)
 			if planErr != nil {
 				health.Abandon()
