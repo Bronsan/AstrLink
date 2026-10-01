@@ -64,75 +64,6 @@ func (resolver candidateResolver) ResolveCandidates(context.Context, endpoint.Re
 	return candidates, nil
 }
 
-type healthRecordingResolver struct {
-	candidate endpoint.Resolved
-	begins    chan struct{}
-	successes chan struct{}
-	failures  chan struct{}
-	abandons  chan struct{}
-}
-
-func (resolver *healthRecordingResolver) Resolve(
-	context.Context,
-	endpoint.ResolveRequest,
-) (endpoint.Resolved, error) {
-	return resolver.candidate, nil
-}
-
-func (resolver *healthRecordingResolver) ResolveCandidates(
-	context.Context,
-	endpoint.ResolveRequest,
-) ([]endpoint.Resolved, error) {
-	return []endpoint.Resolved{resolver.candidate}, nil
-}
-
-func (resolver *healthRecordingResolver) BeginAttempt(endpoint.Resolved) bool {
-	resolver.begins <- struct{}{}
-	return true
-}
-
-func (resolver *healthRecordingResolver) RecordSuccess(endpoint.Resolved) {
-	resolver.successes <- struct{}{}
-}
-
-func (resolver *healthRecordingResolver) RecordFailure(endpoint.Resolved) {
-	resolver.failures <- struct{}{}
-}
-
-func (resolver *healthRecordingResolver) AbandonAttempt(endpoint.Resolved) {
-	resolver.abandons <- struct{}{}
-}
-
-type healthTrackingCandidateResolver struct {
-	candidateResolver
-	mu        sync.Mutex
-	successes []contract.ServiceID
-	failures  []contract.ServiceID
-	abandons  []contract.ServiceID
-}
-
-func (resolver *healthTrackingCandidateResolver) BeginAttempt(endpoint.Resolved) bool {
-	return true
-}
-
-func (resolver *healthTrackingCandidateResolver) RecordSuccess(candidate endpoint.Resolved) {
-	resolver.mu.Lock()
-	defer resolver.mu.Unlock()
-	resolver.successes = append(resolver.successes, candidate.Endpoint.ID)
-}
-
-func (resolver *healthTrackingCandidateResolver) RecordFailure(candidate endpoint.Resolved) {
-	resolver.mu.Lock()
-	defer resolver.mu.Unlock()
-	resolver.failures = append(resolver.failures, candidate.Endpoint.ID)
-}
-
-func (resolver *healthTrackingCandidateResolver) AbandonAttempt(candidate endpoint.Resolved) {
-	resolver.mu.Lock()
-	defer resolver.mu.Unlock()
-	resolver.abandons = append(resolver.abandons, candidate.Endpoint.ID)
-}
-
 type endpointPageReader struct {
 	items []storage.EndpointRecord
 }
@@ -1895,134 +1826,7 @@ func TestResponseStartTimeoutHasOneDeterministicWinner(t *testing.T) {
 	})
 }
 
-func TestInferencePlaneCompletesHealthProbeAtResponseStart(t *testing.T) {
-	tests := []struct {
-		name       string
-		status     int
-		wantSignal func(*healthRecordingResolver) <-chan struct{}
-	}{
-		{
-			name:   "successful headers close probe",
-			status: http.StatusOK,
-			wantSignal: func(resolver *healthRecordingResolver) <-chan struct{} {
-				return resolver.successes
-			},
-		},
-		{
-			name:   "server error headers reopen probe",
-			status: http.StatusServiceUnavailable,
-			wantSignal: func(resolver *healthRecordingResolver) <-chan struct{} {
-				return resolver.failures
-			},
-		},
-	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			candidate := validEndpoint(contract.ProtocolOpenAIResponses, true)
-			resolver := &healthRecordingResolver{
-				candidate: endpoint.Resolved{Endpoint: candidate},
-				begins:    make(chan struct{}, 1),
-				successes: make(chan struct{}, 1),
-				failures:  make(chan struct{}, 1),
-				abandons:  make(chan struct{}, 1),
-			}
-			releaseStream := make(chan struct{})
-			handler := NewWithDependencies(Dependencies{
-				Resolver: resolver,
-				Forwarder: forwarderFunc(func(
-					writer http.ResponseWriter,
-					_ *http.Request,
-					_ transport.Target,
-				) error {
-					writer.Header().Set("Content-Type", "text/event-stream")
-					writer.WriteHeader(test.status)
-					if err := http.NewResponseController(writer).Flush(); err != nil {
-						return err
-					}
-					<-releaseStream
-					_, err := writer.Write([]byte("data: done\n\n"))
-					return err
-				}),
-			})
-			done := make(chan struct{})
-			go func() {
-				defer close(done)
-				handler.ServeHTTP(
-					httptest.NewRecorder(),
-					httptest.NewRequest(
-						http.MethodPost,
-						"/v1/responses",
-						strings.NewReader(`{"stream":true}`),
-					),
-				)
-			}()
-
-			<-resolver.begins
-			<-test.wantSignal(resolver)
-			// Health is settled while the SSE remains open.
-			select {
-			case <-done:
-				t.Fatal("stream completed before the test released it")
-			default:
-			}
-			close(releaseStream)
-			<-done
-			select {
-			case <-resolver.abandons:
-				t.Fatal("settled health probe was abandoned a second time")
-			default:
-			}
-		})
-	}
-}
-
-func TestInferencePlaneAcquiresHealthProbeImmediatelyBeforeUpstreamIO(t *testing.T) {
-	candidate := validEndpoint(contract.ProtocolOpenAIResponses, false)
-	resolver := &healthRecordingResolver{
-		candidate: endpoint.Resolved{Endpoint: candidate},
-		begins:    make(chan struct{}, 1),
-		successes: make(chan struct{}, 1),
-		failures:  make(chan struct{}, 1),
-		abandons:  make(chan struct{}, 1),
-	}
-	authorizerEntered := make(chan struct{})
-	releaseAuthorizer := make(chan struct{})
-	handler := NewWithDependencies(Dependencies{
-		Resolver: resolver,
-		Authorizer: authorizerFunc(func(context.Context, contract.Endpoint) (http.Header, error) {
-			close(authorizerEntered)
-			<-releaseAuthorizer
-			return nil, nil
-		}),
-		Forwarder: forwarderFunc(func(http.ResponseWriter, *http.Request, transport.Target) error {
-			return nil
-		}),
-	})
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		handler.ServeHTTP(
-			httptest.NewRecorder(),
-			httptest.NewRequest(
-				http.MethodPost,
-				"/v1/responses",
-				strings.NewReader(`{"model":"gpt-5"}`),
-			),
-		)
-	}()
-
-	<-authorizerEntered
-	select {
-	case <-resolver.begins:
-		t.Fatal("half-open probe was reserved during local credential preparation")
-	default:
-	}
-	close(releaseAuthorizer)
-	<-resolver.begins
-	<-done
-}
-
-func TestInferencePlaneCircuitExcludesUnhealthyAutomaticCandidate(t *testing.T) {
+func TestInferencePlaneNeverWithholdsAProviderAfterFailures(t *testing.T) {
 	first := validEndpoint(contract.ProtocolOpenAIModels, false)
 	first.ID = "endpoint_a"
 	first.Name = "endpoint_a"
@@ -2057,10 +1861,9 @@ func TestInferencePlaneCircuitExcludesUnhealthyAutomaticCandidate(t *testing.T) 
 		})),
 	})
 
-	// Model discovery fans out to every capable endpoint, so each of the first
-	// three requests fails endpoint_a once while endpoint_b keeps serving the
-	// partial aggregate. The third consecutive failure opens endpoint_a's
-	// circuit and the fourth request must exclude it entirely.
+	// Model discovery fans out to every capable endpoint, so each request fails
+	// endpoint_a once while endpoint_b keeps serving the partial aggregate.
+	// Repeated failures must never stop AstrLink from trying endpoint_a.
 	const wantBody = `{"object":"list","data":[{"id":"model-b"}],"first_id":"model-b","has_more":false,"last_id":"model-b"}`
 	for requestIndex := 0; requestIndex < 4; requestIndex++ {
 		response := httptest.NewRecorder()
@@ -2075,8 +1878,8 @@ func TestInferencePlaneCircuitExcludesUnhealthyAutomaticCandidate(t *testing.T) 
 
 	mu.Lock()
 	defer mu.Unlock()
-	if attempts["endpoint-a.example"] != 3 || attempts["endpoint-b.example"] != 4 {
-		t.Fatalf("attempts = %v, want endpoint-a.example=3 endpoint-b.example=4", attempts)
+	if attempts["endpoint-a.example"] != 4 || attempts["endpoint-b.example"] != 4 {
+		t.Fatalf("attempts = %v, want endpoint-a.example=4 endpoint-b.example=4", attempts)
 	}
 }
 

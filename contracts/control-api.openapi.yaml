@@ -6230,8 +6230,8 @@ components:
         protocol_unsupported: the provider has no capability for the input protocol.
         streaming_unsupported: the provider cannot stream this protocol.
         conversion_unavailable: the model only speaks another protocol and the local converter cannot bridge the request.
-        circuit_open: recent failures opened the provider's circuit breaker.
-        rate_limited: the provider is cooling down after an upstream rate limit.
+        circuit_open: historical records only; AstrLink no longer withholds a provider after failures.
+        rate_limited: the upstream answered HTTP 429 for this model and its retry delay has not passed.
         websocket_disabled: Responses WebSocket is turned off for the provider.
         websocket_unsupported: the provider cannot serve this model over a native Responses WebSocket.
     RequestEvent:
@@ -6414,8 +6414,29 @@ components:
           type: string
           minLength: 1
           maxLength: 1024
-          description: Operator-visible failure text. Transport errors may include the upstream host, URL, and IP; credentials (Authorization, API keys, sensitive query values) are redacted. Never contains request or response bodies or header maps.
+          description: Operator-visible failure text. For an upstream HTTP error it is the provider's own message, prefixed with its error type or code. Transport errors may include the upstream host, URL, and IP; credentials (Authorization, API keys, sensitive query values) are redacted from transport errors.
         retryable:
+          type: boolean
+        upstream:
+          $ref: "#/components/schemas/UpstreamErrorResponse"
+      additionalProperties: false
+    UpstreamErrorResponse:
+      type: object
+      description: An upstream HTTP error as the provider sent it, kept whatever the audit capture settings and never redacted.
+      required: [status, body, truncated]
+      properties:
+        status:
+          type: integer
+          minimum: 400
+          maximum: 599
+        content_type:
+          type: string
+          maxLength: 256
+        body:
+          type: string
+          maxLength: 16384
+          description: The decoded response body, cut at 16 KiB.
+        truncated:
           type: boolean
       additionalProperties: false
     AuditRecordSummary:

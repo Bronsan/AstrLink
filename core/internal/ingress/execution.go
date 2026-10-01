@@ -146,10 +146,11 @@ func (handler *Handler) executeCandidatesWithTest(
 
 	downstream := newCommitTrackingWriter(writer)
 	initialHeaders := downstream.Header().Clone()
-	controller, healthAware := handler.resolver.(endpoint.AttemptController)
+	limiter, _ := handler.resolver.(endpoint.RateLimitController)
 	if test != nil {
-		controller, healthAware = nil, false
+		limiter = nil
 	}
+	var rateLimited []endpoint.RateLimitedCandidate
 	schedule := newRecoverySchedule(candidates, body.Replayable())
 	protection := handler.subscriptionProtection(request.Context())
 	// Each official client identity is learned at most once per request.
@@ -489,17 +490,22 @@ func (handler *Handler) executeCandidatesWithTest(
 			}
 		}
 
-		if healthAware && !controller.BeginAttempt(candidate) {
-			records.noteCandidateRejected(candidate.Service.ID, "circuit_open")
-			finishPrivacy()
-			_ = attemptRequest.Body.Close()
-			if !body.Replayable() {
-				break
+		if limiter != nil {
+			if until := limiter.RateLimitedUntil(candidate); !until.IsZero() {
+				// The upstream asked to wait; this route alone sits out until then.
+				records.noteCandidateRejected(candidate.Service.ID, string(contract.RoutingSkipRateLimited))
+				records.noteRoutingSkip(candidate.Service.ID, contract.RoutingSkipRateLimited)
+				rateLimited = append(rateLimited, endpoint.RateLimitedCandidate{
+					Service: candidate.Service.ID, ServiceName: candidate.Service.Name, Model: upstreamModel, Until: until,
+				})
+				finishPrivacy()
+				_ = attemptRequest.Body.Close()
+				if !body.Replayable() {
+					break
+				}
+				continue
 			}
-			continue
 		}
-		health := newAttemptHealthOutcome(controller, candidate, healthAware)
-		health.accountRejections = protection.risk
 		recordSession := recordSessionFromContext(request.Context())
 		if candidate.Service.Kind == contract.ServiceKindOpenCodeGo || candidate.Service.Kind == contract.ServiceKindOpenCodeZen {
 			if headers == nil {
@@ -553,7 +559,6 @@ func (handler *Handler) executeCandidatesWithTest(
 				outWriter, handler.conversionEngine, plan, classified.Model, upstreamModel, conversion.State,
 			)
 			if planErr != nil {
-				health.Abandon()
 				finishPrivacy()
 				_ = attemptRequest.Body.Close()
 				last = executionFailure{kind: executionFailureConversionUnsupported, err: planErr, endpointID: candidate.Service.ID}
@@ -569,9 +574,6 @@ func (handler *Handler) executeCandidatesWithTest(
 			codexAggregate = newCodexAggregateWriter(outWriter)
 			outWriter = codexAggregate
 		}
-		deferHealthStatus := (restoring != nil || relayWriter != nil || codexAggregate != nil) && !classified.Streaming
-		var upstreamStatus atomic.Int32
-
 		responseTimeout := handler.responseStartTimeout
 		if policy.ResponseStartTimeoutSeconds != nil {
 			responseTimeout = time.Duration(*policy.ResponseStartTimeoutSeconds) * time.Second
@@ -582,13 +584,9 @@ func (handler *Handler) executeCandidatesWithTest(
 		}
 		attemptContext := newResponseStartContext(attemptRequest.Context(), responseTimeout)
 		attemptRequest = attemptRequest.WithContext(attemptContext.Context())
-		startWriter := newResponseStartWriter(outWriter, func(status int) {
-			if attemptContext.ResponseStarted() {
-				upstreamStatus.Store(int32(status))
-				if !deferHealthStatus {
-					health.RecordStatus(status)
-				}
-			}
+		startWriter := newResponseStartWriter(outWriter, func(int) {
+			// The first response byte disarms the response-start deadline.
+			_ = attemptContext.ResponseStarted()
 		})
 		forwardTarget := transport.Target{
 			Service: candidate.Service, ProxyCredentials: handler.proxyCredentials,
@@ -717,6 +715,7 @@ func (handler *Handler) executeCandidatesWithTest(
 					stopRead.Stop()
 					_ = response.Body.Close()
 					complete := readErr == nil && len(data) <= 64*1024
+					failure := recordSession.upstreamHTTPErrorSummary(response.StatusCode)
 					savedHeaders := downstream.Header().Clone()
 					replayLastHTTP = func() {
 						resetResponseHeaders(downstream.Header(), savedHeaders)
@@ -734,7 +733,7 @@ func (handler *Handler) executeCandidatesWithTest(
 						}
 						if recordSession != nil {
 							recordSession.noteServed(candidate, plan)
-							recordSession.noteFailed(errorSummaryFromHTTPStatus(response.StatusCode))
+							recordSession.noteFailed(failure)
 							recordSession.noteRecoveryStop("targets_exhausted")
 						}
 					}
@@ -801,13 +800,12 @@ func (handler *Handler) executeCandidatesWithTest(
 		_ = attemptRequest.Body.Close()
 
 		if retryHTTP != nil {
-			health.RecordStatus(retryHTTP.status)
 			last = executionFailure{kind: executionFailureUpstream, err: retryHTTP, endpointID: candidate.Service.ID}
 			lastNetworkFailure = last
 			if recordSession != nil {
 				recordSession.noteRecoveryDecision(candidateIndex, schedule, retryHTTP.reason)
 			}
-			demoteFailedAttemptForRetry(request.Context(), recordSession, handler.requestRecords, handler.auditBlobs, errorSummaryFromHTTPStatus(retryHTTP.status), handler.recordLogger)
+			demoteFailedAttemptForRetry(request.Context(), recordSession, handler.requestRecords, handler.auditBlobs, recordSession.upstreamHTTPErrorSummary(retryHTTP.status), handler.recordLogger)
 			if relayWriter != nil {
 				_ = relayWriter.streamClose()
 			}
@@ -826,11 +824,6 @@ func (handler *Handler) executeCandidatesWithTest(
 			forwardErr = nil
 		}
 		if forwardErr == nil {
-			if deferHealthStatus && upstreamStatus.Load() != 0 {
-				health.RecordStatus(int(upstreamStatus.Load()))
-			} else {
-				health.Success()
-			}
 			if session := recordSessionFromContext(request.Context()); session != nil {
 				session.noteServed(candidate, plan)
 				session.noteSucceeded()
@@ -848,7 +841,6 @@ func (handler *Handler) executeCandidatesWithTest(
 		}
 		if request.Context().Err() != nil {
 			recordSession.noteRecoveryStop("cancelled")
-			health.Abandon()
 			return
 		}
 
@@ -864,11 +856,6 @@ func (handler *Handler) executeCandidatesWithTest(
 			bufferedResponseFailure = false
 		}
 		safeRetryFailure := preResponseFailure || bufferedResponseFailure
-		if safeRetryFailure {
-			health.Failure()
-		} else {
-			health.Abandon()
-		}
 
 		// This check is deliberately independent of transport error typing.
 		// Once headers, a flush, or body bytes reached the client, another
@@ -989,11 +976,12 @@ func (handler *Handler) executeCandidatesWithTest(
 	}
 	resetResponseHeaders(downstream.Header(), initialHeaders)
 	if last.kind == executionFailureNone {
+		// Only upstream cooldowns leave every candidate unattempted.
 		handler.writeResolveError(
 			downstream,
 			request,
 			classified,
-			endpoint.ErrNoHealthyEndpoint,
+			&endpoint.RateLimitedCandidatesError{Limits: rateLimited},
 		)
 		return
 	}
@@ -1284,74 +1272,6 @@ func (writer *commitTrackingWriter) Committed() bool {
 
 func (writer *commitTrackingWriter) Status() int {
 	return int(writer.status.Load())
-}
-
-type attemptHealthOutcome struct {
-	controller endpoint.AttemptController
-	candidate  endpoint.Resolved
-	enabled    bool
-	// accountRejections counts subscription credential and entitlement
-	// rejections as failures under subscription risk protection.
-	accountRejections bool
-	once              sync.Once
-}
-
-func newAttemptHealthOutcome(
-	controller endpoint.AttemptController,
-	candidate endpoint.Resolved,
-	enabled bool,
-) *attemptHealthOutcome {
-	return &attemptHealthOutcome{
-		controller: controller,
-		candidate:  candidate,
-		enabled:    enabled,
-	}
-}
-
-func (outcome *attemptHealthOutcome) RecordStatus(status int) {
-	if status == http.StatusTooManyRequests {
-		outcome.Abandon()
-		return
-	}
-	if status >= http.StatusInternalServerError {
-		outcome.Failure()
-		return
-	}
-	// A subscription credential or entitlement rejection affects every request
-	// of the account, unlike request errors such as 400.
-	if outcome != nil && outcome.accountRejections && outcome.candidate.CanonicalService().Kind.IsSubscription() &&
-		(status == http.StatusUnauthorized || status == http.StatusPaymentRequired || status == http.StatusForbidden) {
-		outcome.Failure()
-		return
-	}
-	outcome.Success()
-}
-
-func (outcome *attemptHealthOutcome) Success() {
-	if outcome == nil || !outcome.enabled {
-		return
-	}
-	outcome.once.Do(func() {
-		outcome.controller.RecordSuccess(outcome.candidate)
-	})
-}
-
-func (outcome *attemptHealthOutcome) Failure() {
-	if outcome == nil || !outcome.enabled {
-		return
-	}
-	outcome.once.Do(func() {
-		outcome.controller.RecordFailure(outcome.candidate)
-	})
-}
-
-func (outcome *attemptHealthOutcome) Abandon() {
-	if outcome == nil || !outcome.enabled {
-		return
-	}
-	outcome.once.Do(func() {
-		outcome.controller.AbandonAttempt(outcome.candidate)
-	})
 }
 
 type responseStartWriter struct {

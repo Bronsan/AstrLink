@@ -1743,6 +1743,8 @@
     "code": "代码",
     "retryable": "可重试",
     "message": "信息",
+    "upstreamError": "上游原始响应 · HTTP {{status}}",
+    "upstreamErrorTruncated": "响应超过 16 KiB，只保留了开头部分。",
     "related": "关联",
     "attempt": "尝试序号",
     "neverReachedUpstream": "未到达上游",

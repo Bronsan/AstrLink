@@ -69,25 +69,20 @@ func TestStoreResolverRanksEveryServiceWithItsSkipReason(t *testing.T) {
 		http("svc_unlisted", []string{"other"}),
 		http("svc_chat_only", nil, contract.Capability{Protocol: contract.ProtocolOpenAIChat, Mode: contract.CapabilityModeNative, Streaming: true}),
 		http("svc_no_stream", nil, contract.Capability{Protocol: contract.ProtocolOpenAIResponses, Mode: contract.CapabilityModeNative}),
-		http("svc_open", nil),
 		http("svc_limited", nil),
 		paused,
 		http("svc_first", nil),
 	}
 	order := []contract.ServiceID{
 		// svc_deleted stays in the order after its service is gone.
-		"svc_disabled", "svc_disabled_unlisted", "svc_deleted", "svc_unlisted", "svc_chat_only", "svc_no_stream", "svc_open", "svc_limited",
+		"svc_disabled", "svc_disabled_unlisted", "svc_deleted", "svc_unlisted", "svc_chat_only", "svc_no_stream", "svc_limited",
 		"svc_paused", "svc_first", "svc_second",
 	}
 	resolver, err := NewStoreResolver(rankingStore{services: services, order: order})
 	if err != nil {
 		t.Fatal(err)
 	}
-	resolver.breaker = newCircuitBreaker(circuitBreakerConfig{Now: func() time.Time { return now }})
-	open := Resolved{Service: http("svc_open", nil)}
-	for range defaultFailureThreshold {
-		resolver.RecordFailure(open)
-	}
+	resolver.clock = func() time.Time { return now }
 	resolver.RecordRateLimit(Resolved{
 		Service: http("svc_limited", nil), Mode: contract.CapabilityModeNative,
 		UpstreamProtocol: contract.ProtocolOpenAIResponses, UpstreamModel: "gpt-5",
@@ -108,7 +103,6 @@ func TestStoreResolverRanksEveryServiceWithItsSkipReason(t *testing.T) {
 		{ServiceID: "svc_unlisted", Skip: contract.RoutingSkipModelNotListed},
 		{ServiceID: "svc_chat_only", Skip: contract.RoutingSkipProtocolUnsupported},
 		{ServiceID: "svc_no_stream", Skip: contract.RoutingSkipStreamingUnsupported},
-		{ServiceID: "svc_open", Skip: contract.RoutingSkipCircuitOpen},
 		{ServiceID: "svc_limited", Skip: contract.RoutingSkipRateLimited},
 		{ServiceID: "svc_paused", Skip: contract.RoutingSkipRiskPaused},
 		{ServiceID: "svc_first"},
@@ -137,18 +131,21 @@ func TestStoreResolverRanksEveryServiceWithItsSkipReason(t *testing.T) {
 		}
 	}
 	for _, id := range []contract.ServiceID{"svc_first", "svc_second"} {
-		for range defaultFailureThreshold {
-			resolver.RecordFailure(Resolved{Service: http(id, nil)})
-		}
+		resolver.RecordRateLimit(Resolved{
+			Service: http(id, nil), Mode: contract.CapabilityModeNative,
+			UpstreamProtocol: contract.ProtocolOpenAIResponses, UpstreamModel: "gpt-5",
+		}, time.Minute)
 	}
 	_, ranking, err = resolver.ResolveRankedCandidates(context.Background(), request)
-	var unhealthy *UnhealthyCandidatesError
-	if !errors.As(err, &unhealthy) {
-		t.Fatalf("all circuits open err = %v", err)
+	var limited *RateLimitedCandidatesError
+	if !errors.As(err, &limited) || len(limited.Limits) != 3 ||
+		limited.Limits[1].Service != "svc_first" || limited.Limits[1].Model != "gpt-5" ||
+		!limited.RetryAt().Equal(now.Add(time.Minute)) {
+		t.Fatalf("all rate limited err = %#v", err)
 	}
-	want[8].Skip, want[9].Skip = contract.RoutingSkipCircuitOpen, contract.RoutingSkipCircuitOpen
+	want[7].Skip, want[8].Skip = contract.RoutingSkipRateLimited, contract.RoutingSkipRateLimited
 	if !reflect.DeepEqual(ranking, want) {
-		t.Fatalf("all circuits open ranking = %#v", ranking)
+		t.Fatalf("all rate limited ranking = %#v", ranking)
 	}
 }
 

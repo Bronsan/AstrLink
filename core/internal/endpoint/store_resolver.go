@@ -3,8 +3,8 @@ package endpoint
 import (
 	"context"
 	"fmt"
-	"slices"
 	"sort"
+	"time"
 
 	"github.com/QuantumNous/astrlink/core/contract"
 	"github.com/QuantumNous/astrlink/core/internal/accountauth"
@@ -48,11 +48,11 @@ func (adapter endpointReaderAdapter) ListServices(
 }
 
 // StoreResolver orders eligible services by persisted priority.
-// AttemptController owns transient circuit admission.
 type StoreResolver struct {
 	routingSettings     storage.RoutingSettingsStore
 	reader              serviceReader
-	breaker             *circuitBreaker
+	limits              rateLimits
+	clock               func() time.Time
 	runtime             contract.RuntimeProfile
 	subscriptionBaseURL string
 }
@@ -89,7 +89,6 @@ func NewStoreResolver(source any) (*StoreResolver, error) {
 	return &StoreResolver{
 		reader:              reader,
 		routingSettings:     routingSettings,
-		breaker:             newCircuitBreaker(circuitBreakerConfig{}),
 		subscriptionBaseURL: accountauth.DefaultCodexAPIBaseURL,
 	}, nil
 }
@@ -103,9 +102,7 @@ func (resolver *StoreResolver) Resolve(ctx context.Context, request ResolveReque
 	return candidates[0], nil
 }
 
-// ResolveCandidates returns the complete stable fallback sequence. Health
-// admission happens immediately before each attempt through BeginAttempt so a
-// half-open probe cannot be reserved and then left unused.
+// ResolveCandidates returns the complete stable fallback sequence.
 func (resolver *StoreResolver) ResolveCandidates(ctx context.Context, request ResolveRequest) ([]Resolved, error) {
 	candidates, _, err := resolver.ResolveRankedCandidates(ctx, request)
 	return candidates, err
@@ -174,7 +171,7 @@ func (resolver *StoreResolver) ResolveRankedCandidates(ctx context.Context, requ
 }
 
 // ResolveService returns an enabled HTTP service without consulting
-// capabilities or circuit health; the caller owns the single attempt.
+// capabilities or rate-limit cooldowns; the caller owns the single attempt.
 func (resolver *StoreResolver) ResolveService(ctx context.Context, id contract.ServiceID) (Resolved, error) {
 	if resolver == nil || resolver.reader == nil {
 		return Resolved{}, ErrUnavailable
@@ -193,21 +190,23 @@ func (resolver *StoreResolver) ResolveService(ctx context.Context, id contract.S
 
 func (resolver *StoreResolver) availableCandidates(candidates []Resolved, ranking []RankedService) ([]Resolved, error) {
 	available := make([]Resolved, 0, len(candidates))
+	limited := make([]RateLimitedCandidate, 0)
+	now := resolver.now()
 	for _, candidate := range candidates {
-		if reason := resolver.breaker.unavailableReason(candidate); reason != "" {
-			MarkSkipped(ranking, candidate.CanonicalService().ID, reason)
+		if until := resolver.limits.until(candidate, now); !until.IsZero() {
+			MarkSkipped(ranking, candidate.CanonicalService().ID, contract.RoutingSkipRateLimited)
+			limited = append(limited, RateLimitedCandidate{
+				Service:     candidate.CanonicalService().ID,
+				ServiceName: candidate.CanonicalService().Name,
+				Model:       candidate.UpstreamModel,
+				Until:       until,
+			})
 			continue
 		}
 		available = append(available, candidate)
 	}
 	if len(available) == 0 {
-		skipped := make([]contract.ServiceID, 0, len(candidates))
-		for _, candidate := range candidates {
-			if id := candidate.CanonicalService().ID; !slices.Contains(skipped, id) {
-				skipped = append(skipped, id)
-			}
-		}
-		return nil, &UnhealthyCandidatesError{Services: skipped}
+		return nil, &RateLimitedCandidatesError{Limits: limited}
 	}
 	return available, nil
 }
@@ -310,7 +309,7 @@ func (resolver *StoreResolver) unschedulableReason(candidate contract.Service) c
 		return contract.RoutingSkipNotConnected
 	// Accounts paused by an upstream risk signal stay out of scheduling until
 	// the pause expires or the user restores them.
-	case candidate.Kind.IsSubscription() && candidate.Subscription.Risk.Blocks(resolver.breaker.now()):
+	case candidate.Kind.IsSubscription() && candidate.Subscription.Risk.Blocks(resolver.now()):
 		return contract.RoutingSkipRiskPaused
 	default:
 		return ""
@@ -478,34 +477,25 @@ func containsModel(models []string, requested string) bool {
 	return false
 }
 
-func (resolver *StoreResolver) BeginAttempt(candidate Resolved) bool {
-	if resolver == nil || resolver.breaker == nil {
-		return false
+// RateLimitedUntil returns when candidate's upstream cooldown ends, or the
+// zero time when it may be attempted now.
+func (resolver *StoreResolver) RateLimitedUntil(candidate Resolved) time.Time {
+	if resolver == nil {
+		return time.Time{}
 	}
-	return resolver.breaker.begin(candidate)
+	return resolver.limits.until(candidate, resolver.now())
 }
 
-func (resolver *StoreResolver) RecordSuccess(candidate Resolved) {
-	if resolver != nil && resolver.breaker != nil {
-		resolver.breaker.success(candidate)
+func (resolver *StoreResolver) now() time.Time {
+	if resolver.clock != nil {
+		return resolver.clock()
 	}
-}
-
-func (resolver *StoreResolver) RecordFailure(candidate Resolved) {
-	if resolver != nil && resolver.breaker != nil {
-		resolver.breaker.failure(candidate)
-	}
-}
-
-func (resolver *StoreResolver) AbandonAttempt(candidate Resolved) {
-	if resolver != nil && resolver.breaker != nil {
-		resolver.breaker.abandon(candidate)
-	}
+	return time.Now()
 }
 
 var (
-	_ Resolver          = (*StoreResolver)(nil)
-	_ CandidateResolver = (*StoreResolver)(nil)
-	_ RankingResolver   = (*StoreResolver)(nil)
-	_ AttemptController = (*StoreResolver)(nil)
+	_ Resolver            = (*StoreResolver)(nil)
+	_ CandidateResolver   = (*StoreResolver)(nil)
+	_ RankingResolver     = (*StoreResolver)(nil)
+	_ RateLimitController = (*StoreResolver)(nil)
 )

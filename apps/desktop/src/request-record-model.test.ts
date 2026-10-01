@@ -215,6 +215,46 @@ describe("model redirect metadata", () => {
   });
 });
 
+describe("upstream error", () => {
+  const failed = {
+    ...fullRecord,
+    status: "failed",
+    http_status: 500,
+    error: {
+      category: "upstream",
+      code: "upstream_http_error",
+      message: "new_api_error: 模型 claude-haiku-4-5 的可用渠道不存在",
+      retryable: true,
+      upstream: {
+        status: 500,
+        content_type: "application/json",
+        body: '{"error":{"type":"new_api_error","message":"模型 claude-haiku-4-5 的可用渠道不存在"}}',
+        truncated: false,
+      },
+    },
+  };
+
+  it("keeps the provider's response verbatim", () => {
+    expect(parseRequestRecord(failed).error).toStrictEqual(failed.error);
+  });
+
+  it("accepts older errors without it", () => {
+    const { upstream: _upstream, ...older } = failed.error;
+    expect(
+      parseRequestRecord({ ...failed, error: older }).error,
+    ).not.toHaveProperty("upstream");
+  });
+
+  it("rejects a malformed response", () => {
+    expect(() =>
+      parseRequestRecord({
+        ...failed,
+        error: { ...failed.error, upstream: { status: 500 } },
+      }),
+    ).toThrow();
+  });
+});
+
 describe("routing decision metadata", () => {
   const decision = {
     selected: "failover",

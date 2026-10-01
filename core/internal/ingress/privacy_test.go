@@ -302,12 +302,10 @@ func TestBufferedResponseRestoreDiscardsInterruptedAttemptBeforeFallback(t *test
 	second.ID = "endpoint_second"
 	second.BaseURL = "https://second.example"
 	attempts := 0
-	resolver := &healthTrackingCandidateResolver{
-		candidateResolver: candidateResolver{candidates: []endpoint.Resolved{
-			{Endpoint: first},
-			{Endpoint: second},
-		}},
-	}
+	resolver := candidateResolver{candidates: []endpoint.Resolved{
+		{Endpoint: first},
+		{Endpoint: second},
+	}}
 	handler := NewWithDependencies(Dependencies{
 		Resolver:      resolver,
 		PrivacyFilter: filter,
@@ -361,16 +359,6 @@ func TestBufferedResponseRestoreDiscardsInterruptedAttemptBeforeFallback(t *test
 	}
 	if strings.Contains(response.Body.String(), "<PRIVATE_") {
 		t.Fatalf("partial first response leaked: %q", response.Body.String())
-	}
-	if len(resolver.failures) != 1 || resolver.failures[0] != "endpoint_first" ||
-		len(resolver.successes) != 1 || resolver.successes[0] != "endpoint_second" ||
-		len(resolver.abandons) != 0 {
-		t.Fatalf(
-			"health outcomes failures=%v successes=%v abandons=%v",
-			resolver.failures,
-			resolver.successes,
-			resolver.abandons,
-		)
 	}
 }
 

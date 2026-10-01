@@ -168,6 +168,34 @@ type ErrorSummary struct {
 	Code      string `json:"code"`
 	Message   string `json:"message"`
 	Retryable bool   `json:"retryable"`
+	// Upstream is the provider's own HTTP error response, kept verbatim.
+	Upstream *UpstreamErrorResponse `json:"upstream,omitempty"`
+}
+
+// MaxUpstreamErrorBodyBytes bounds the verbatim upstream error body a failed
+// record keeps; anything longer is cut and marked truncated.
+const MaxUpstreamErrorBodyBytes = 16 * 1024
+
+// UpstreamErrorResponse is an upstream HTTP error as the provider sent it:
+// its status, media type, and decoded body text, unredacted.
+type UpstreamErrorResponse struct {
+	Status      int    `json:"status"`
+	ContentType string `json:"content_type,omitempty"`
+	Body        string `json:"body"`
+	Truncated   bool   `json:"truncated"`
+}
+
+func (response UpstreamErrorResponse) Validate() error {
+	if response.Status < 400 || response.Status > 599 {
+		return fmt.Errorf("upstream error status must be between 400 and 599")
+	}
+	if utf8.RuneCountInString(response.ContentType) > 256 {
+		return fmt.Errorf("upstream error content type must not exceed 256 characters")
+	}
+	if len(response.Body) > MaxUpstreamErrorBodyBytes || !utf8.ValidString(response.Body) {
+		return fmt.Errorf("upstream error body must be valid UTF-8 within %d bytes", MaxUpstreamErrorBodyBytes)
+	}
+	return nil
 }
 
 var errorSummaryTokenPattern = regexp.MustCompile(`^[a-z][a-z0-9_]*$`)
@@ -183,6 +211,9 @@ func (summary ErrorSummary) Validate() error {
 	}
 	if summary.Message == "" || utf8.RuneCountInString(summary.Message) > 1024 {
 		return fmt.Errorf("error message must contain 1 to 1024 characters")
+	}
+	if summary.Upstream != nil {
+		return summary.Upstream.Validate()
 	}
 	return nil
 }

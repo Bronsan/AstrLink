@@ -39,6 +39,15 @@ export interface RequestErrorSummary {
   code: string;
   message: string;
   retryable: boolean;
+  /** The provider's own HTTP error response, kept verbatim. */
+  upstream?: UpstreamErrorResponse;
+}
+
+export interface UpstreamErrorResponse {
+  status: number;
+  content_type?: string;
+  body: string;
+  truncated: boolean;
 }
 
 export interface RequestAuditSummary {
@@ -491,12 +500,27 @@ function parseUsage(value: unknown, path: string): RequestUsage | null {
 function parseError(value: unknown, path: string): RequestErrorSummary | null {
   if (value === null) return null;
   const error = objectAt(value, path);
-  return {
+  const result: RequestErrorSummary = {
     category: stringAt(error.category, `${path}.category`),
     code: stringAt(error.code, `${path}.code`),
     message: stringAt(error.message, `${path}.message`),
     retryable: boolAt(error.retryable, `${path}.retryable`),
   };
+  if (error.upstream !== undefined && error.upstream !== null) {
+    const upstream = objectAt(error.upstream, `${path}.upstream`);
+    result.upstream = {
+      status: intAt(upstream.status, `${path}.upstream.status`),
+      body: stringAt(upstream.body, `${path}.upstream.body`),
+      truncated: boolAt(upstream.truncated, `${path}.upstream.truncated`),
+    };
+    if (upstream.content_type !== undefined) {
+      result.upstream.content_type = stringAt(
+        upstream.content_type,
+        `${path}.upstream.content_type`,
+      );
+    }
+  }
+  return result;
 }
 
 function optionalBoolAt(

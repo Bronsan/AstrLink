@@ -1743,6 +1743,8 @@
     "code": "Code",
     "retryable": "Retryable",
     "message": "Message",
+    "upstreamError": "Upstream response as sent · HTTP {{status}}",
+    "upstreamErrorTruncated": "The response exceeded 16 KiB; only its beginning is kept.",
     "related": "Related",
     "attempt": "Attempt",
     "neverReachedUpstream": "Never reached upstream",

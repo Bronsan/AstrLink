@@ -196,15 +196,17 @@ type recordSession struct {
 	// it is stored.
 	requestExposure storage.AuditExposure
 	// finishing tells capture-time labels that no decision is still coming.
-	finishing                bool
-	attemptIndex             int
-	childCount               int
-	networkAttemptOpen       bool
-	responseWriter           *recordStatusWriter
-	requestCapture           captureBuffer
-	responseCapture          captureBuffer
-	upstreamRequestCapture   captureBuffer
-	upstreamResponseCapture  captureBuffer
+	finishing               bool
+	attemptIndex            int
+	childCount              int
+	networkAttemptOpen      bool
+	responseWriter          *recordStatusWriter
+	requestCapture          captureBuffer
+	responseCapture         captureBuffer
+	upstreamRequestCapture  captureBuffer
+	upstreamResponseCapture captureBuffer
+	// upstreamError holds the current attempt's upstream HTTP error body.
+	upstreamError            *upstreamErrorCapture
 	requestTee               *captureTee
 	upstreamRequestTee       *captureTee
 	httpMetaEnabled          bool
@@ -633,8 +635,8 @@ func (session *recordSession) attachRequestCapture(request *http.Request) {
 }
 
 // captureUnreadRequestBody feeds the client body to the audit capture when the
-// request fails before any attempt reads it, e.g. every provider's circuit is
-// open. Reading stops one byte past the capture limit so truncation is marked.
+// request fails before any attempt reads it, e.g. every provider is waiting
+// out an upstream rate limit. Reading stops one byte past the capture limit so truncation is marked.
 func (session *recordSession) captureUnreadRequestBody(request *http.Request) {
 	if session == nil || request == nil {
 		return
@@ -710,7 +712,7 @@ func (session *recordSession) noteModelRedirect(ctx context.Context, from, to st
 }
 
 // noteCandidateRejected keeps a provider that was chosen but never called
-// visible on the root, e.g. a missing credential or an open circuit.
+// visible on the root, e.g. a missing credential or a rate-limit cooldown.
 func (session *recordSession) noteCandidateRejected(id contract.ServiceID, reason string) {
 	if session == nil || id == "" {
 		return
@@ -835,6 +837,10 @@ func (session *recordSession) wrapUpstreamResponseBody(
 	}
 	session.upstreamHTTPStatus = status
 	session.hasUpstreamHTTPStatus = true
+	session.upstreamError = nil
+	if status >= http.StatusBadRequest {
+		session.upstreamError = newUpstreamErrorCapture(status, headers.Get("Content-Type"), headers.Get("Content-Encoding"))
+	}
 	if session.upstreamHTTPMetaEnabled {
 		if !session.upstreamHTTPMetaCaptured {
 			session.upstreamHTTPMeta = contract.AuditHTTPMeta{
@@ -871,18 +877,22 @@ func (session *recordSession) wrapUpstreamResponseBody(
 		}
 		session.upstreamResponseCapture.mediaType = mediaType
 	}
-	return &upstreamResponseCaptureBody{ReadCloser: body, session: session}
+	return &upstreamResponseCaptureBody{ReadCloser: body, session: session, upstreamError: session.upstreamError}
 }
 
 type upstreamResponseCaptureBody struct {
 	io.ReadCloser
 	session *recordSession
+	// upstreamError is this attempt's own error capture, even if a late read
+	// arrives after the next attempt began.
+	upstreamError *upstreamErrorCapture
 }
 
 func (body *upstreamResponseCaptureBody) Read(p []byte) (int, error) {
 	n, err := body.ReadCloser.Read(p)
 	if n > 0 && body.session != nil {
 		body.session.upstreamResponseCapture.observe(p[:n])
+		body.upstreamError.observe(p[:n])
 		if body.session.upstreamScanner != nil {
 			body.session.upstreamScanner.observe(p[:n])
 		}
@@ -997,7 +1007,7 @@ func (session *recordSession) failFromHTTPError() bool {
 	}
 	session.status = contract.RequestStatusFailed
 	if session.errorSummary == nil {
-		summary := errorSummaryFromHTTPStatus(status)
+		summary := session.upstreamHTTPErrorSummary(status)
 		session.errorSummary = &summary
 	}
 	return true
@@ -1171,6 +1181,7 @@ func (session *recordSession) resetAttemptLocal() {
 	session.hasHTTPStatus = false
 	session.upstreamHTTPStatus = 0
 	session.hasUpstreamHTTPStatus = false
+	session.upstreamError = nil
 	session.endpointID = nil
 	session.plan = nil
 	session.conversionDiagnostics = nil

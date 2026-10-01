@@ -12,6 +12,7 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/QuantumNous/astrlink/core/contract"
 	"github.com/QuantumNous/astrlink/core/internal/endpoint"
@@ -769,16 +770,19 @@ func TestIngressAuditCapturesClientBodyWhenNoAttemptReadsIt(t *testing.T) {
 		wantRejected  []string
 	}{
 		{
-			name:         "all circuits open",
-			body:         requestBody,
-			resolverErr:  &endpoint.UnhealthyCandidatesError{Services: []contract.ServiceID{"endpoint_open_a", "endpoint_open_b"}},
+			name: "all rate limited",
+			body: requestBody,
+			resolverErr: &endpoint.RateLimitedCandidatesError{Limits: []endpoint.RateLimitedCandidate{
+				{Service: "endpoint_limited_a", Model: "public-alias", Until: time.Now().Add(time.Minute)},
+				{Service: "endpoint_limited_b", Model: "public-alias", Until: time.Now().Add(time.Minute)},
+			}},
 			maxBytes:     1024,
-			code:         "upstream_unavailable",
-			wantRejected: []string{"endpoint_open_a · circuit_open", "endpoint_open_b · circuit_open"},
+			code:         "upstream_rate_limited",
+			wantRejected: []string{"endpoint_limited_a · rate_limited", "endpoint_limited_b · rate_limited"},
 		},
 		{name: "no capable provider", body: requestBody, resolverErr: endpoint.ErrNoEndpoint, maxBytes: 1024, code: "missing_protocol_capability"},
 		{name: "retired auto model", body: `{"model":"` + contract.AstrLinkAutoModelID + `","messages":[]}`, maxBytes: 1024, code: "routing_feature_retired"},
-		{name: "capture limit", body: requestBody, resolverErr: endpoint.ErrNoHealthyEndpoint, maxBytes: 16, code: "upstream_unavailable", wantTruncated: true},
+		{name: "capture limit", body: requestBody, resolverErr: endpoint.ErrNoHealthyEndpoint, maxBytes: 16, code: "upstream_rate_limited", wantTruncated: true},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

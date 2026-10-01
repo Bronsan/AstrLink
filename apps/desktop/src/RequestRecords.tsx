@@ -2508,7 +2508,36 @@ function RecordDetail({
                   className="col-span-full"
                   label={t("records.message")}
                   value={record.error.message}
+                  wrap
                 />
+                {record.error.upstream ? (
+                  <DetailField
+                    className="col-span-full"
+                    label={`${t("records.upstreamError", {
+                      status: record.error.upstream.status,
+                    })}${
+                      record.error.upstream.content_type
+                        ? ` · ${record.error.upstream.content_type}`
+                        : ""
+                    }`}
+                    value={
+                      <>
+                        <pre
+                          className="max-h-64 overflow-auto whitespace-pre-wrap rounded-md bg-muted p-2 font-mono text-xs leading-relaxed [overflow-wrap:anywhere]"
+                          data-testid="record-upstream-error"
+                        >
+                          {record.error.upstream.body}
+                        </pre>
+                        {record.error.upstream.truncated ? (
+                          <span className="mt-1 block text-muted-foreground">
+                            {t("records.upstreamErrorTruncated")}
+                          </span>
+                        ) : null}
+                      </>
+                    }
+                    wrap
+                  />
+                ) : null}
               </dl>
             </DetailSection>
           ) : null}
@@ -2717,17 +2746,27 @@ function DetailField({
   label,
   value,
   code = false,
+  wrap = false,
   className = "",
 }: {
   label: string;
   value: ReactNode;
   code?: boolean;
+  /** Show the whole value on as many lines as it needs. */
+  wrap?: boolean;
   className?: string;
 }) {
   return (
     <div className={cn("min-w-0", className)}>
       <dt className="text-xs font-medium text-muted-foreground">{label}</dt>
-      <dd className="mt-1 overflow-hidden text-xs text-text-secondary text-ellipsis whitespace-nowrap">
+      <dd
+        className={cn(
+          "mt-1 text-xs text-text-secondary",
+          wrap
+            ? "whitespace-pre-wrap [overflow-wrap:anywhere]"
+            : "overflow-hidden text-ellipsis whitespace-nowrap",
+        )}
+      >
         {code && typeof value === "string" && value !== "—" ? (
           <code className="text-xs">{value}</code>
         ) : (
