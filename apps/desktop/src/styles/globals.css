@@ -403,6 +403,26 @@
   background: transparent;
 }
 
+/* Success and info toasts without actions only acknowledge an action, so they
+   must not cover the rows beneath them. Clicks pass through, and the Toaster
+   marks toasts under the pointer so they fade and reveal what will be clicked. */
+[data-sonner-toast]:is([data-type="success"], [data-type="info"]):not(
+    :has([data-button])
+  ) {
+  pointer-events: none;
+}
+
+[data-sonner-toast]:is([data-type="success"], [data-type="info"]):not(
+    :has([data-button])
+  )[data-pointer-over][data-removed="false"] {
+  opacity: 0.12;
+  transition:
+    transform 400ms,
+    opacity 120ms,
+    height 400ms,
+    box-shadow 200ms;
+}
+
 @theme inline {
   --font-sans:
     "IBM Plex Sans Variable", "PingFang SC", "Hiragino Sans GB",
