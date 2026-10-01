@@ -2869,11 +2869,8 @@ export function ServiceManager({
                           {t("services.convertTo", {
                             protocol: protocolLabel(target.id),
                           })}
-                          {target.enabled
-                            ? target.quality
-                              ? ` · ${conversionQualityLabels[target.quality]}`
-                              : ""
-                            : t("services.notEnabled")}
+                          {/* The row badge already shows the chosen target's quality. */}
+                          {target.enabled ? "" : t("services.notEnabled")}
                         </SelectItem>
                       ))}
                     </SelectContent>

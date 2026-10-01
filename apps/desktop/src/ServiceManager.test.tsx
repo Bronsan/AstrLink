@@ -4370,7 +4370,7 @@ describe("ServiceManager", () => {
       [...document.querySelectorAll<HTMLElement>('[role="option"]')].map(
         (option) => option.textContent?.trim(),
       ),
-    ).toEqual(["转换为 OpenAI Responses · 转换质量好"]);
+    ).toEqual(["转换为 OpenAI Responses"]);
     await act(async () => {
       document.querySelector<HTMLElement>('[role="option"]')!.click();
       await Promise.resolve();
