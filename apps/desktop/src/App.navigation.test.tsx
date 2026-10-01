@@ -199,15 +199,8 @@ async function setInput(selector: string, value: string): Promise<void> {
   });
 }
 
-async function chooseServiceKind(option: string): Promise<void> {
-  const trigger = document.querySelector<HTMLButtonElement>(
-    'button[aria-label="API 提供商类型"]',
-  );
-  if (!trigger) throw new Error("Missing API provider type picker");
-  await act(async () => {
-    trigger.click();
-    await Promise.resolve();
-  });
+/** Picks a card in the open provider-type dialog. */
+async function chooseKindCard(option: string): Promise<void> {
   const card = [
     ...document.querySelectorAll<HTMLButtonElement>('[role="dialog"] button'),
   ].find(
@@ -683,6 +676,11 @@ describe("App workspace navigation", () => {
     expect(container.querySelector("#usage-heading")).toBeNull();
     expect(localStorage.getItem(ONBOARDING_STORAGE_KEY)).toBe("active");
     await act(async () => button("添加 API 提供商").click());
+    expect(container.querySelector('[data-page="create"]')).toBeNull();
+    expect(document.querySelector('[role="dialog"]')?.textContent).toContain(
+      "选择 API 提供商类型",
+    );
+    await chooseKindCard("Codex 订阅");
     expect(container.querySelector('[data-page="create"]')).not.toBeNull();
     await act(async () => button("返回上手引导").click());
     expect(workspaceHeading().textContent).toBe("开始使用 AstrLink");
@@ -1152,10 +1150,16 @@ describe("App workspace navigation", () => {
     await act(async () => {
       button("添加 API 提供商").click();
     });
+    expect(workspaceHeading().textContent).toBe("API 提供商");
+    await chooseKindCard("New API");
     expect(workspaceHeading().textContent).toBe("添加 API 提供商");
     expect(
       container.querySelector('[data-testid="service-form"]'),
     ).not.toBeNull();
+    expect(
+      container.querySelector('button[aria-label="API 提供商类型"]')
+        ?.textContent,
+    ).toContain("New API");
     expect(
       container.querySelector('[data-slot="workspace"]')?.className,
     ).toContain("overflow-hidden");
@@ -1581,7 +1585,7 @@ describe("App workspace navigation", () => {
 
     await act(async () => button("提供商").click());
     await act(async () => button("添加 API 提供商").click());
-    await chooseServiceKind("New API");
+    await chooseKindCard("New API");
     await setInput(
       '[data-testid="service-form"] input[type="url"]',
       "https://saved.example",
@@ -1611,6 +1615,7 @@ describe("App workspace navigation", () => {
     await act(async () => {
       button("添加 API 提供商").click();
     });
+    await chooseKindCard("Codex 订阅");
     await setInput("#service-name", "Unfinished service");
 
     const back = container.querySelector<HTMLButtonElement>(

@@ -25,48 +25,50 @@ export interface DialogPickerGroup<T extends string> {
 }
 
 /**
- * A select-style trigger that opens a dialog of grouped option cards, for
- * choices too numerous or too visual to scan in a dropdown list.
+ * A dialog of grouped option cards. Picking a card closes the dialog; the
+ * optional `trigger` becomes the dialog's opener and regains focus on close.
  */
-export function DialogPicker<T extends string>({
-  "aria-label": ariaLabel,
+export function PickerDialog<T extends string>({
   description,
-  disabled,
   groups,
+  onOpenChange,
   onValueChange,
+  open,
   title,
+  trigger,
   value,
-  valueLabel,
 }: {
-  "aria-label": string;
   description?: ReactNode;
-  disabled?: boolean;
   groups: readonly DialogPickerGroup<T>[];
+  onOpenChange: (open: boolean) => void;
   onValueChange: (value: T) => void;
+  open: boolean;
   title: ReactNode;
-  value: T;
-  valueLabel: ReactNode;
+  trigger?: ReactNode;
+  /** The current choice; omit when the dialog starts a fresh pick. */
+  value?: T;
 }) {
-  const [open, setOpen] = useState(false);
   const contentRef = useRef<HTMLDivElement>(null);
+  // Without a trigger Radix has nowhere to return focus; remember the opener.
+  const openerRef = useRef<HTMLElement | null>(null);
   return (
-    <Dialog open={open} onOpenChange={setOpen}>
-      <DialogTrigger asChild>
-        <button
-          aria-label={ariaLabel}
-          className={cn(selectTriggerClassName, "w-full")}
-          data-size="default"
-          disabled={disabled}
-          type="button"
-        >
-          <span data-slot="select-value">{valueLabel}</span>
-          <ChevronDown aria-hidden="true" className="size-4 opacity-50" />
-        </button>
-      </DialogTrigger>
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      {trigger ? <DialogTrigger asChild>{trigger}</DialogTrigger> : null}
       <DialogContent
         ref={contentRef}
         className="top-[calc(50%+var(--window-chrome-height)/2)] flex max-h-[min(calc(100dvh-var(--window-chrome-height)-2rem),40rem)] flex-col gap-0 overflow-hidden p-0 sm:max-w-4xl"
+        onCloseAutoFocus={(event) => {
+          if (trigger) return;
+          event.preventDefault();
+          if (openerRef.current?.isConnected) {
+            openerRef.current.focus({ preventScroll: true });
+          }
+          openerRef.current = null;
+        }}
         onOpenAutoFocus={(event) => {
+          if (!trigger && document.activeElement instanceof HTMLElement) {
+            openerRef.current = document.activeElement;
+          }
           const current = contentRef.current?.querySelector<HTMLElement>(
             '[aria-current="true"]',
           );
@@ -105,7 +107,7 @@ export function DialogPicker<T extends string>({
                         )}
                         key={option.value}
                         onClick={() => {
-                          setOpen(false);
+                          onOpenChange(false);
                           if (!selected) onValueChange(option.value);
                         }}
                         type="button"
@@ -147,5 +149,54 @@ export function DialogPicker<T extends string>({
         </div>
       </DialogContent>
     </Dialog>
+  );
+}
+
+/**
+ * A select-style trigger that opens a dialog of grouped option cards, for
+ * choices too numerous or too visual to scan in a dropdown list.
+ */
+export function DialogPicker<T extends string>({
+  "aria-label": ariaLabel,
+  description,
+  disabled,
+  groups,
+  onValueChange,
+  title,
+  value,
+  valueLabel,
+}: {
+  "aria-label": string;
+  description?: ReactNode;
+  disabled?: boolean;
+  groups: readonly DialogPickerGroup<T>[];
+  onValueChange: (value: T) => void;
+  title: ReactNode;
+  value: T;
+  valueLabel: ReactNode;
+}) {
+  const [open, setOpen] = useState(false);
+  return (
+    <PickerDialog
+      description={description}
+      groups={groups}
+      onOpenChange={setOpen}
+      onValueChange={onValueChange}
+      open={open}
+      title={title}
+      trigger={
+        <button
+          aria-label={ariaLabel}
+          className={cn(selectTriggerClassName, "w-full")}
+          data-size="default"
+          disabled={disabled}
+          type="button"
+        >
+          <span data-slot="select-value">{valueLabel}</span>
+          <ChevronDown aria-hidden="true" className="size-4 opacity-50" />
+        </button>
+      }
+      value={value}
+    />
   );
 }

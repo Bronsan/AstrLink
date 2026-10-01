@@ -60,7 +60,11 @@ import { About } from "./About";
 import { useAppUpdates } from "./use-app-updates";
 import { updateNotice } from "./update-model";
 import { toast } from "sonner";
-import { ServiceManager, type ServiceManagerView } from "./ServiceManager";
+import {
+  ServiceKindPickerDialog,
+  ServiceManager,
+  type ServiceManagerView,
+} from "./ServiceManager";
 import { ProviderImportDialog } from "./ProviderImportDialog";
 import { useProviderImport } from "./use-provider-import";
 import { notify } from "./notify";
@@ -230,6 +234,8 @@ export default function App() {
   );
   const [page, setPage] = useState<WorkspacePage>({ kind: "overview" });
   const [pendingPage, setPendingPage] = useState<WorkspacePage | null>(null);
+  // Overview and the guide add providers through the same type picker as the list.
+  const [serviceKindPickerOpen, setServiceKindPickerOpen] = useState(false);
   const [copyFeedback, setCopyFeedback] = useState<string | null>(null);
   const [copyError, setCopyError] = useState<string | null>(null);
   const editorDirtyRef = useRef(false);
@@ -820,7 +826,7 @@ export default function App() {
                 usage={usage}
                 isReady={isReady}
                 isRestarting={isRestarting}
-                onAddService={() => navigate({ kind: "create" })}
+                onAddService={() => setServiceKindPickerOpen(true)}
                 onManageServices={() => navigate({ kind: "list" })}
                 onManageTokens={() => navigate({ kind: "tokens" })}
                 onOpenRecords={() => navigate({ kind: "records" })}
@@ -841,7 +847,7 @@ export default function App() {
                 isNativeApp={isNativeApp}
                 isReady={isReady}
                 isRestarting={isRestarting}
-                onAddService={() => navigate({ kind: "create" })}
+                onAddService={() => setServiceKindPickerOpen(true)}
                 onCopy={(value, label) => void copyValue(value, label)}
                 onManageServices={() => navigate({ kind: "list" })}
                 onManageTokens={() => navigate({ kind: "tokens" })}
@@ -942,6 +948,11 @@ export default function App() {
           </main>
         </ValueTransition>
       </WorkspaceSnapshotProvider>
+      <ServiceKindPickerDialog
+        onOpenChange={setServiceKindPickerOpen}
+        onSelect={(serviceKind) => navigate({ kind: "create", serviceKind })}
+        open={serviceKindPickerOpen}
+      />
       <ConfirmDialog
         cancelLabel={t("common.continueEditing")}
         confirmLabel={t("common.discardAndLeave")}

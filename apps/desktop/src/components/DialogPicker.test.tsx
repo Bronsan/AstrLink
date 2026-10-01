@@ -4,7 +4,7 @@ import { act, useState } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { DialogPicker } from "./DialogPicker";
+import { DialogPicker, PickerDialog } from "./DialogPicker";
 
 let container: HTMLDivElement;
 let root: Root;
@@ -104,5 +104,56 @@ describe("DialogPicker", () => {
     expect(
       container.querySelector('[aria-label="类型"]')?.textContent,
     ).toContain("gamma");
+  });
+
+  it("starts a fresh pick without a trigger and returns focus on cancel", async () => {
+    const onValueChange = vi.fn();
+    function FreshPick() {
+      const [open, setOpen] = useState(false);
+      return (
+        <>
+          <button onClick={() => setOpen(true)} type="button">
+            新建
+          </button>
+          <PickerDialog
+            groups={[
+              { label: "全部", options: [{ value: "alpha", label: "Alpha" }] },
+            ]}
+            onOpenChange={setOpen}
+            onValueChange={onValueChange}
+            open={open}
+            title="选择类型"
+          />
+        </>
+      );
+    }
+    await act(async () => root.render(<FreshPick />));
+    const opener = container.querySelector("button")!;
+    opener.focus();
+    await act(async () => {
+      opener.click();
+      await Promise.resolve();
+    });
+    expect(card("Alpha").hasAttribute("aria-current")).toBe(false);
+
+    await act(async () => {
+      document.activeElement?.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Escape", bubbles: true }),
+      );
+    });
+    // Radix restores focus on a timer after the dialog unmounts.
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    expect(document.querySelector('[role="dialog"]')).toBeNull();
+    expect(onValueChange).not.toHaveBeenCalled();
+    expect(document.activeElement).toBe(opener);
+
+    await act(async () => {
+      opener.click();
+      await Promise.resolve();
+    });
+    await act(async () => card("Alpha").click());
+    expect(onValueChange).toHaveBeenCalledWith("alpha");
   });
 });

@@ -717,7 +717,7 @@ describe("ServiceManager", () => {
           onViewChange={() => {}}
           protocols={[]}
           services={[]}
-          view={{ kind: "create" }}
+          view={{ kind: "create", serviceKind: "codex_subscription" }}
         />,
       ),
     );
@@ -950,7 +950,7 @@ describe("ServiceManager", () => {
           onViewChange={() => {}}
           protocols={[]}
           services={[]}
-          view={{ kind: "create" }}
+          view={{ kind: "create", serviceKind: "codex_subscription" }}
         />,
       ),
     );
@@ -1027,7 +1027,11 @@ describe("ServiceManager", () => {
             onViewChange={() => {}}
             protocols={[]}
             services={view === "list" ? [service] : []}
-            view={{ kind: view }}
+            view={
+              view === "list"
+                ? { kind: "list" }
+                : { kind: "create", serviceKind: "codex_subscription" }
+            }
           />,
         ),
       );
@@ -1139,7 +1143,7 @@ describe("ServiceManager", () => {
           onViewChange={() => {}}
           protocols={[]}
           services={[]}
-          view={{ kind: "create" }}
+          view={{ kind: "create", serviceKind: "codex_subscription" }}
         />,
       ),
     );
@@ -2400,7 +2404,7 @@ describe("ServiceManager", () => {
             onViewChange={() => {}}
             protocols={[]}
             services={[]}
-            view={{ kind: "create" }}
+            view={{ kind: "create", serviceKind: "codex_subscription" }}
           />,
         ),
       );
@@ -2517,7 +2521,7 @@ describe("ServiceManager", () => {
           onViewChange={() => {}}
           protocols={[]}
           services={[]}
-          view={{ kind: "create" }}
+          view={{ kind: "create", serviceKind: "codex_subscription" }}
         />,
       ),
     );
@@ -2651,7 +2655,7 @@ describe("ServiceManager", () => {
           onViewChange={changed}
           protocols={[]}
           services={[]}
-          view={{ kind: "create" }}
+          view={{ kind: "create", serviceKind: "codex_subscription" }}
         />,
       );
     });
@@ -2700,8 +2704,91 @@ describe("ServiceManager", () => {
     expect(changed).toHaveBeenCalledWith({ kind: "list" });
   });
 
+  it("asks for the provider type before opening the add editor", async () => {
+    const changed = vi.fn();
+    await act(async () =>
+      root.render(
+        <ServiceManager
+          catalogError={null}
+          catalogStatus="ready"
+          isReady
+          onDirtyChange={() => {}}
+          onRefresh={() => {}}
+          onServiceRemoved={() => {}}
+          onServiceSaved={() => {}}
+          onViewChange={changed}
+          protocols={[]}
+          services={[]}
+          view={{ kind: "list" }}
+        />,
+      ),
+    );
+    const add = container.querySelector<HTMLButtonElement>(
+      'button[aria-label="添加 API 提供商"]',
+    );
+    if (!add) throw new Error("missing add provider button");
+    await act(async () => {
+      add.click();
+      await Promise.resolve();
+    });
+
+    const dialog = document.querySelector('[role="dialog"]');
+    expect(dialog?.textContent).toContain("选择 API 提供商类型");
+    expect(dialog?.querySelector('[aria-current="true"]')).toBeNull();
+    expect(changed).not.toHaveBeenCalled();
+    const card = [
+      ...document.querySelectorAll<HTMLButtonElement>('[role="dialog"] button'),
+    ].find(
+      (candidate) =>
+        candidate.querySelector('[data-slot="dialog-picker-label"]')
+          ?.textContent === "New API",
+    );
+    if (!card) throw new Error("missing New API card");
+    await act(async () => {
+      card.click();
+      await Promise.resolve();
+    });
+
+    expect(changed).toHaveBeenCalledWith({
+      kind: "create",
+      serviceKind: "newapi",
+    });
+  });
+
+  it("opens the add editor on the picked provider type", async () => {
+    await act(async () =>
+      root.render(
+        <ServiceManager
+          catalogError={null}
+          catalogStatus="ready"
+          isReady
+          onDirtyChange={() => {}}
+          onRefresh={() => {}}
+          onServiceRemoved={() => {}}
+          onServiceSaved={() => {}}
+          onViewChange={() => {}}
+          protocols={[]}
+          services={[]}
+          view={{ kind: "create", serviceKind: "newapi" }}
+        />,
+      ),
+    );
+
+    expect(
+      container.querySelector('[aria-label="API 提供商类型"]')?.textContent,
+    ).toContain("New API");
+    expect(
+      container.querySelector<HTMLInputElement>("#service-name")?.value,
+    ).toBe("New API");
+    expect(
+      container.querySelector<HTMLInputElement>(
+        '[data-testid="service-form"] input[type="url"]',
+      ),
+    ).not.toBeNull();
+  });
+
   it("keeps the selected service kind when Core protocol capabilities refresh", async () => {
-    const view = { kind: "create" } as const;
+    const view = { kind: "create", serviceKind: "codex_subscription" } as const;
     const onDirtyChange = vi.fn();
     const onRefresh = vi.fn();
     const onServiceRemoved = vi.fn();
@@ -3586,7 +3673,7 @@ describe("ServiceManager", () => {
           onViewChange={changed}
           protocols={[]}
           services={[]}
-          view={{ kind: "create" }}
+          view={{ kind: "create", serviceKind: "codex_subscription" }}
         />,
       );
     });

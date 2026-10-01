@@ -37,6 +37,7 @@ import {
 import { ChoiceCard } from "@/components/ChoiceCard";
 import {
   DialogPicker,
+  PickerDialog,
   type DialogPickerGroup,
   type DialogPickerOption,
 } from "@/components/DialogPicker";
@@ -201,7 +202,8 @@ export type ServiceEditorTab =
 
 export type ServiceManagerView =
   | { kind: "list" }
-  | { kind: "create" }
+  /** The provider type is picked in a dialog before the editor opens. */
+  | { kind: "create"; serviceKind: ServiceKind }
   | {
       kind: "edit";
       serviceId: string;
@@ -325,6 +327,29 @@ function serviceKindPickerGroups(): DialogPickerGroup<ServiceKind>[] {
         .map(serviceKindPickerOption),
     },
   ];
+}
+
+/** Asks for the provider type before the add-provider editor opens. */
+export function ServiceKindPickerDialog({
+  onOpenChange,
+  onSelect,
+  open,
+}: {
+  onOpenChange: (open: boolean) => void;
+  onSelect: (kind: ServiceKind) => void;
+  open: boolean;
+}) {
+  const t = useT();
+  return (
+    <PickerDialog
+      description={t("services.kindPickerDescription")}
+      groups={serviceKindPickerGroups()}
+      onOpenChange={onOpenChange}
+      onValueChange={onSelect}
+      open={open}
+      title={t("services.kindPickerTitle")}
+    />
+  );
 }
 
 /** The only login transport a single-flow provider offers; null when the user must pick. */
@@ -845,6 +870,7 @@ export function ServiceManager({
     [services],
   );
   const [serviceFilter, setServiceFilter] = useState<ServiceFilter>("all");
+  const [kindPickerOpen, setKindPickerOpen] = useState(false);
   const [draft, setDraft] = useState<Draft>(() =>
     draftForKind("codex_subscription", protocols),
   );
@@ -912,7 +938,10 @@ export function ServiceManager({
   const importedAfterLogin = useRef(new Set<string>());
   const protocolsRef = useRef(protocols);
   protocolsRef.current = protocols;
+  const conversionEngineRef = useRef(conversionEngine);
+  conversionEngineRef.current = conversionEngine;
   const viewKind = view.kind;
+  const createServiceKind = view.kind === "create" ? view.serviceKind : null;
   const editingServiceID = view.kind === "edit" ? view.serviceId : null;
   const requestedEditorTab =
     view.kind === "edit" ? (view.tab ?? "connection") : "connection";
@@ -1031,7 +1060,11 @@ export function ServiceManager({
       return;
     }
     if (view.kind === "create") {
-      const next = draftForKind("codex_subscription", protocolsRef.current);
+      const next = draftForKind(
+        view.serviceKind,
+        protocolsRef.current,
+        conversionEngineRef.current,
+      );
       setDraft(next);
       setEditing(null);
       setBaseline(draftSignature(next));
@@ -1055,7 +1088,7 @@ export function ServiceManager({
       .finally(() => {
         if (loadGeneration.current === generation) setLoadingRecord(false);
       });
-  }, [editingServiceID, requestedEditorTab, t, viewKind]);
+  }, [createServiceKind, editingServiceID, requestedEditorTab, t, viewKind]);
 
   const importCodexModelsAfterLogin = useCallback(
     async (service: Service) => {
@@ -1752,6 +1785,13 @@ export function ServiceManager({
             onClose={() => setBillingService(null)}
           />
         ) : null}
+        <ServiceKindPickerDialog
+          onOpenChange={setKindPickerOpen}
+          onSelect={(serviceKind) =>
+            onViewChange({ kind: "create", serviceKind })
+          }
+          open={kindPickerOpen}
+        />
         <PageHeader
           variant="compact"
           className="@max-[360px]:gap-2"
@@ -1817,7 +1857,7 @@ export function ServiceManager({
               <Button
                 aria-label={t("services.add")}
                 disabled={!isReady || busy}
-                onClick={() => onViewChange({ kind: "create" })}
+                onClick={() => setKindPickerOpen(true)}
                 size="sm"
                 type="button"
               >
@@ -1940,7 +1980,7 @@ export function ServiceManager({
               action={
                 <Button
                   disabled={!isReady || busy}
-                  onClick={() => onViewChange({ kind: "create" })}
+                  onClick={() => setKindPickerOpen(true)}
                   size="sm"
                   type="button"
                 >
