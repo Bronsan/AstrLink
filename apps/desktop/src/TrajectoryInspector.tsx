@@ -1,6 +1,6 @@
 import { RecoveryDetails } from "./components/RecoveryDetails";
 import { ConversionDiagnosticsDetails } from "./components/ConversionDiagnosticsDetails";
-import { RoutingDecisionDetails } from "./components/RoutingDecisionDetails";
+import { RoutingSteps } from "./components/RoutingSteps";
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import { LockKeyhole } from "@/components/icons";
@@ -22,8 +22,8 @@ import {
   type RequestRecord,
   type RequestStatus,
 } from "./request-record-model";
+import { routingSteps } from "./request-routing-model";
 import {
-  namedRouteSummary,
   requestServiceIdentity,
   type RequestServiceIdentity,
   type RequestServiceMap,
@@ -347,7 +347,6 @@ function InspectorSection({
           <RouteInspector
             record={record}
             routes={routes}
-            row={row}
             service={service}
             services={services}
           />
@@ -378,13 +377,11 @@ function formatCapturedBytes(bytes: number): string {
 function RouteInspector({
   record,
   routes,
-  row,
   service,
   services = {},
 }: {
   record: RequestRecord;
   routes: TrajectoryRow[];
-  row: TrajectoryRow;
   service: RequestServiceIdentity;
   services?: RequestServiceMap;
 }) {
@@ -393,46 +390,24 @@ function RouteInspector({
   const names: RequestServiceMap = service.id
     ? { [service.id]: { id: service.id, name: service.name }, ...services }
     : services;
-  // A single successful route is already the provider field below.
-  const tried =
-    routes.length > 1 || routes.some((route) => route.tone === "failed")
-      ? routes
-      : [];
+  const stepped = routingSteps(routes, record.routing_decision).length > 0;
   return (
     <>
+      <RoutingSteps
+        decision={record.routing_decision}
+        routes={routes}
+        selectedServiceId={record.service_id}
+        serviceNames={Object.fromEntries(
+          Object.entries(names).map(([id, item]) => [id, item.name]),
+        )}
+      />
       <dl className="grid gap-2 text-xs">
-        <InspectorField
-          label={t("trajectory.summary")}
-          value={namedRouteSummary(row.summary, names)}
-        />
         {record.model_redirect ? (
           <ModelRedirectFields redirect={record.model_redirect} />
         ) : null}
-        {tried.length > 0 ? (
-          <div>
-            <dt className="text-muted-foreground">
-              {t("trajectory.triedProviders")}
-            </dt>
-            <dd className="mt-0.5">
-              <ol className="grid gap-0.5" data-testid="route-attempts">
-                {tried.map((route) => (
-                  <li
-                    className={cn(
-                      "font-mono",
-                      route.tone === "failed"
-                        ? "text-destructive"
-                        : "text-foreground",
-                    )}
-                    data-tone={route.tone}
-                    key={route.id}
-                  >
-                    {namedRouteSummary(route.summary, names)}
-                  </li>
-                ))}
-              </ol>
-            </dd>
-          </div>
-        ) : null}
+        {stepped ? null : (
+          <InspectorField label={t("records.provider")} value={service.name} />
+        )}
         <InspectorField
           code
           label={t("trajectory.entry")}
@@ -445,7 +420,6 @@ function RouteInspector({
           label={t("trajectory.protocol")}
           value={record.input_protocol}
         />
-        <InspectorField label={t("records.provider")} value={service.name} />
         {service.id ? (
           <InspectorField
             code
@@ -453,17 +427,14 @@ function RouteInspector({
             value={service.id}
           />
         ) : null}
-        <InspectorField
-          label={t("trajectory.route")}
-          value={record.route_id ?? "—"}
-        />
+        {record.route_id ? (
+          <InspectorField
+            code
+            label={t("trajectory.route")}
+            value={record.route_id}
+          />
+        ) : null}
       </dl>
-      <RoutingDecisionDetails
-        serviceNames={Object.fromEntries(
-          Object.entries(names).map(([id, item]) => [id, item.name]),
-        )}
-        value={record.routing_decision}
-      />
       <ConversionDiagnosticsDetails value={record.conversion_diagnostics} />
     </>
   );

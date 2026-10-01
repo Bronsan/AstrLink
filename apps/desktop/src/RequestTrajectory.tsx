@@ -30,8 +30,8 @@ import { i18n, useT } from "./i18n";
 import { useLiveClock } from "./live-clock";
 import { formatDuration } from "./request-live-model";
 import type { AuditContent, RequestRecord } from "./request-record-model";
+import { readableRouteRows } from "./request-routing-model";
 import {
-  namedRouteSummary,
   requestServiceIdentity,
   routeServices,
   type RequestServiceIdentity,
@@ -139,16 +139,20 @@ export function RequestTrajectory({
       ),
     [turns, childrenByRoot, services],
   );
-  const rows = useMemo(
-    () =>
-      trajectoryRows(turns, childrenByRoot).map((row) =>
-        // Keep the original event metadata; translate only service IDs for display.
-        row.chip === "ROUTE"
-          ? { ...row, summary: namedRouteSummary(row.summary, services) }
-          : row,
-      ),
-    [childrenByRoot, turns, services],
-  );
+  const rows = useMemo(() => {
+    const records = new Map(
+      [...turns, ...Object.values(childrenByRoot).flat()].map((record) => [
+        record.id,
+        record,
+      ]),
+    );
+    // Keep the original event metadata; only the route text is for display.
+    return readableRouteRows(
+      trajectoryRows(turns, childrenByRoot),
+      records,
+      services,
+    );
+  }, [childrenByRoot, turns, services]);
   const listSummaries = useMemo(() => trajectoryListSummaries(rows), [rows]);
   // Resolving a row id by scanning `rows` costs nothing once, and used to cost
   // a full scan inside every phase mark of every lane: 1300 marks against 1400

@@ -818,14 +818,17 @@ describe("TrajectoryInspectorWindow", () => {
     expect(
       [
         ...inspector(container)!.querySelectorAll(
-          '[data-testid="route-attempts"] li',
+          '[data-testid="routing-steps"] li',
         ),
-      ].map((item) => [item.textContent, item.getAttribute("data-tone")]),
+      ].map((item) => [item.textContent, item.getAttribute("data-outcome")]),
     ).toEqual([
-      ["native · Primary", "ok"],
-      ["Backup · credential_unavailable", "failed"],
+      ["已选用Primary · 原样转发", "selected"],
+      ["无法使用Backup · 凭据不可用", "rejected"],
     ]);
-    expect(inspector(container)?.textContent).toContain("尝试过的 API 提供商");
+    expect(inspector(container)?.textContent).toContain("路由过程");
+    expect(inspector(container)?.textContent).not.toContain(
+      "credential_unavailable",
+    );
   });
 
   it("says why routing chose the provider and names the ones it skipped", async () => {
@@ -857,36 +860,109 @@ describe("TrajectoryInspectorWindow", () => {
     });
     await flush();
 
-    const decision = inspector(container)?.querySelector(
-      '[data-testid="routing-decision"]',
-    );
-    expect(
-      decision
-        ?.querySelector("[data-selection]")
-        ?.getAttribute("data-selection"),
-    ).toBe("failover");
-    expect(decision?.textContent).toContain(
-      "故障切换：此前尝试的 API 提供商失败或被拒绝",
-    );
-    // A provider missing from the list is still named, by its ID.
-    expect(
+    const steps = () =>
       [
-        ...(decision?.querySelectorAll('[data-testid="routing-skipped"] li') ??
-          []),
-      ].map((item) => [item.textContent, item.getAttribute("data-reason")]),
-    ).toEqual([
-      ["mly · 未列出该模型", "model_not_listed"],
-      [`${deleted} · 已停用`, "disabled"],
+        ...(inspector(container)?.querySelectorAll(
+          '[data-testid="routing-steps"] li',
+        ) ?? []),
+      ].map((item) => [
+        item.textContent,
+        item.getAttribute("data-outcome"),
+        item.getAttribute("data-code"),
+      ]);
+    // A provider missing from the list is still named, by its ID.
+    expect(steps()).toEqual([
+      ["已跳过mly · 未列出该模型", "skipped", "model_not_listed"],
+      [`已跳过${deleted} · 已停用`, "skipped", "disabled"],
+      [
+        `已选用${record.service_id} · 故障切换：此前尝试的 API 提供商失败或被拒绝`,
+        "selected",
+        null,
+      ],
     ]);
 
-    // Records from before the gateway explained its choice show nothing.
+    // Records from before the gateway explained its choice show only the route.
     await act(async () => {
       pushSelection({ row: routeRow, record });
     });
     await flush();
+    expect(steps()).toEqual([[`已选用${record.service_id}`, "selected", null]]);
+  });
+
+  it("explains a call no provider could take, and what a paused provider is", async () => {
+    const paused = "service_cccccccccccccccccccccccc";
+    const disabled = "service_dddddddddddddddddddddddd";
+    const unavailable: RequestRecord = {
+      ...record,
+      status: "failed",
+      service_id: null,
+      http_status: null,
+      error: {
+        category: "upstream",
+        code: "upstream_unavailable",
+        message: "all capable endpoints are temporarily unhealthy",
+        retryable: true,
+      },
+      events: [
+        {
+          kind: "accepted",
+          started_at: record.started_at,
+          ended_at: record.started_at,
+          status: "succeeded",
+          summary: "claude-opus-5 · anthropic.messages",
+          attempt_index: 0,
+        },
+        {
+          kind: "completed",
+          started_at: record.started_at,
+          ended_at: record.started_at,
+          status: "failed",
+          summary: "all capable endpoints are temporarily unhealthy",
+          attempt_index: 0,
+        },
+      ],
+      routing_decision: {
+        skipped: [
+          { service_id: disabled, reason: "disabled" },
+          { service_id: paused, reason: "circuit_open" },
+        ],
+      },
+    };
+    await render();
+
+    await act(async () => {
+      pushSelection({
+        row: {
+          ...row,
+          id: `${unavailable.id}:routed`,
+          chip: "ROUTE",
+          lane: "gateway",
+        },
+        record: unavailable,
+        services: { [paused]: { id: paused, name: "new-api" } },
+      });
+    });
+    await flush();
+
+    // Without a route event the call still gets a route tab.
     expect(
-      inspector(container)?.querySelector('[data-testid="routing-decision"]'),
-    ).toBeNull();
+      [
+        ...inspector(container)!.querySelectorAll(
+          '[data-testid="inspector-tab"]',
+        ),
+      ].map((tab) => tab.getAttribute("data-chip")),
+    ).toEqual(["CLIENT", "ROUTE", "RESULT"]);
+    const steps = inspector(container)!.querySelector(
+      '[data-testid="routing-steps"]',
+    );
+    expect(
+      [...steps!.querySelectorAll("li")].map((item) => item.textContent),
+    ).toEqual([
+      `已跳过${disabled} · 已停用`,
+      "已跳过new-api · 连续失败，暂停使用中",
+    ]);
+    expect(steps?.textContent).toContain("冷却结束后先放行一次试探请求");
+    expect(inspector(container)?.textContent).not.toContain("circuit_open");
   });
 
   it("lists the tools and fields the protocol conversion dropped", async () => {

@@ -1174,6 +1174,72 @@ describe("request trajectory model", () => {
     expect(new Set(routes.map((row) => row.id)).size).toBe(2);
   });
 
+  it("gives a call no provider could take a route row of its own", () => {
+    const at = record.started_at;
+    const unroutable: RequestRecord = {
+      ...record,
+      status: "failed",
+      service_id: null,
+      http_status: null,
+      privacy_restore: null,
+      events: [
+        {
+          kind: "accepted",
+          started_at: at,
+          ended_at: at,
+          status: "succeeded",
+          summary: "gpt-5 · openai.responses",
+          attempt_index: 0,
+        },
+        {
+          kind: "completed",
+          started_at: at,
+          ended_at: at,
+          status: "failed",
+          summary: "no endpoint provides the requested protocol capability",
+          attempt_index: 0,
+        },
+      ],
+      routing_decision: {
+        skipped: [{ service_id: "service_a", reason: "model_not_listed" }],
+      },
+    };
+    expect(
+      inspectorChainRows(unroutable).map((row) => [
+        row.chip,
+        row.summary,
+        row.tone,
+      ]),
+    ).toEqual([
+      ["CLIENT", "gpt-5 · openai.responses", "ok"],
+      ["ROUTE", "", "failed"],
+      [
+        "RESULT",
+        "no endpoint provides the requested protocol capability",
+        "failed",
+      ],
+    ]);
+    // A route event already explains the call.
+    const routed: RequestRecord = {
+      ...unroutable,
+      events: [
+        unroutable.events[0]!,
+        {
+          kind: "routed",
+          started_at: at,
+          ended_at: at,
+          status: "failed",
+          summary: "service_a · circuit_open",
+          attempt_index: 0,
+        },
+        unroutable.events[1]!,
+      ],
+    };
+    expect(
+      inspectorChainRows(routed).filter((row) => row.chip === "ROUTE"),
+    ).toHaveLength(1);
+  });
+
   it("maps trajectory chips to inspector audit parts", () => {
     expect(inspectorPart("TURN")).toBe("request_body");
     expect(inspectorPart("CLIENT")).toBe("request_body");

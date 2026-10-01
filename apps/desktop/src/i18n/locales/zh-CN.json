@@ -1981,11 +1981,9 @@
       "upstream": "上游"
     },
     "hit": "命中",
-    "summary": "摘要",
     "entry": "入口",
     "protocol": "协议",
     "service": "API 提供商",
-    "triedProviders": "尝试过的 API 提供商",
     "modelRedirect": "模型重定向",
     "requestedModel": "客户端请求模型",
     "redirectTarget": "重定向到",
@@ -2290,14 +2288,35 @@
     "onceHint": "ABC 模式不进行普通重试，重试次数和退避设置不生效。请求修复独立生效；错误规则仍决定是否允许切换。"
   },
   "routingDecision": {
-    "selected": "选择原因",
-    "skipped": "跳过的 API 提供商",
+    "title": "路由过程",
+    "noProvider": "无可用 API 提供商",
+    "skippedCount": "跳过 {{count}} 个：{{reasons}}",
+    "skippedMore": "另跳过 {{count}} 个：{{reasons}}",
+    "reasonCount": "{{reason}} ×{{count}}",
+    "reasonSeparator": "、",
+    "outcomes": {
+      "selected": "已选用",
+      "rejected": "无法使用",
+      "skipped": "已跳过"
+    },
     "selections": {
       "priority": "按优先级：顺序中第一个可用的 API 提供商",
       "session_binding": "对话延续：会话粘性",
       "response_affinity": "Responses 续接：上一条响应来自该 API 提供商",
       "websocket_connection": "WebSocket 连接：沿用建立连接的 API 提供商",
       "failover": "故障切换：此前尝试的 API 提供商失败或被拒绝"
+    },
+    "selectionsShort": {
+      "priority": "按优先级",
+      "session_binding": "会话粘性",
+      "response_affinity": "续接上一条响应",
+      "websocket_connection": "沿用 WebSocket 连接",
+      "failover": "故障切换"
+    },
+    "plans": {
+      "native": "原样转发",
+      "delegated": "由 API 提供商转换协议",
+      "relaykit": "本地转换协议"
     },
     "skips": {
       "disabled": "已停用",
@@ -2307,11 +2326,21 @@
       "protocol_unsupported": "不支持该入口协议",
       "streaming_unsupported": "不支持流式",
       "conversion_unavailable": "无法转换为该模型的协议",
-      "circuit_open": "连续失败，暂时跳过",
+      "circuit_open": "连续失败，暂停使用中",
       "rate_limited": "上游限流，冷却中",
       "websocket_disabled": "未开启 Responses WebSocket",
       "websocket_unsupported": "无法通过 WebSocket 服务该模型"
-    }
+    },
+    "rejections": {
+      "credential_unavailable": "凭据不可用",
+      "missing_protocol_capability": "不支持该入口协议",
+      "invalid_endpoint_configuration": "配置无效",
+      "relaykit_conversion_unsupported": "无法转换为该 API 提供商的协议",
+      "relaykit_conversion_failed": "协议转换失败",
+      "upstream_timeout": "上游超时",
+      "upstream_unavailable": "上游不可用"
+    },
+    "pausedHint": "暂停使用：API 提供商连续请求失败后，网关会暂时不再把请求发给它；冷却结束后先放行一次试探请求，成功即恢复。"
   },
   "conversionDiagnostics": {
     "tools": "转换时丢弃或改写的工具",

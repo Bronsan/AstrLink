@@ -666,7 +666,7 @@ function statusTone(status: RequestStatus): TrajectoryTone {
 export function inspectorChainRows(record: RequestRecord): TrajectoryRow[] {
   const child = record.parent_request_id !== null;
   const rows: TrajectoryRow[] = [];
-  for (const event of synthesizeEvents(record)) {
+  for (const event of withRoutingEvent(record, synthesizeEvents(record))) {
     const row = rowFromEvent(record, event, child);
     if (event.kind === "accepted" && record.session_link) {
       row.conversationContinued = true;
@@ -674,6 +674,44 @@ export function inspectorChainRows(record: RequestRecord): TrajectoryRow[] {
     rows.push(row);
   }
   return uniqueRowIds(rows);
+}
+
+// A call no provider could take has a routing decision but often no route
+// event. It still gets a ROUTE row, with an empty summary, so the providers
+// routing skipped show in the list instead of only in the inspector.
+function withRoutingEvent(
+  record: RequestRecord,
+  events: RequestEvent[],
+): RequestEvent[] {
+  const decision = record.routing_decision;
+  if (
+    !decision ||
+    decision.selected ||
+    decision.skipped.length === 0 ||
+    events.some((event) => event.kind === "routed")
+  ) {
+    return events;
+  }
+  const at = events.findIndex(
+    (event) =>
+      event.kind === "upstream" ||
+      event.kind === "restore" ||
+      event.kind === "completed",
+  );
+  const started =
+    (at < 0 ? events[events.length - 1] : events[at])?.started_at ??
+    record.started_at;
+  const routed: RequestEvent = {
+    kind: "routed",
+    started_at: started,
+    ended_at: started,
+    status: "failed",
+    summary: "",
+    attempt_index: record.attempt_index,
+  };
+  return at < 0
+    ? [...events, routed]
+    : [...events.slice(0, at), routed, ...events.slice(at)];
 }
 
 // Candidates rejected in one pass can share a timestamp, and a row id is
@@ -766,7 +804,8 @@ function rowFromEvent(
     id: `${record.id}:${event.kind}:${event.started_at}:${event.attempt_index}`,
     requestId: record.id,
     chip,
-    summary: summary || chip,
+    // An empty route summary marks the row `withRoutingEvent` added.
+    summary: summary || (event.kind === "routed" ? "" : chip),
     result: eventResult(record, event),
     status: event.status,
     tone: eventTone(record, event),

@@ -1981,11 +1981,9 @@
       "upstream": "Upstream"
     },
     "hit": "Hit",
-    "summary": "Summary",
     "entry": "Entry",
     "protocol": "Protocol",
     "service": "API provider",
-    "triedProviders": "API providers tried",
     "modelRedirect": "Model redirect",
     "requestedModel": "Requested model",
     "redirectTarget": "Redirected to",
@@ -2290,14 +2288,35 @@
     "onceHint": "ABC skips ordinary retries, so retry counts and backoff do not apply. Request repair works independently; error rules still control switching."
   },
   "routingDecision": {
-    "selected": "Why this API provider",
-    "skipped": "API providers skipped",
+    "title": "Routing steps",
+    "noProvider": "No API provider available",
+    "skippedCount": "{{count}} skipped: {{reasons}}",
+    "skippedMore": "{{count}} more skipped: {{reasons}}",
+    "reasonCount": "{{reason}} ×{{count}}",
+    "reasonSeparator": ", ",
+    "outcomes": {
+      "selected": "Used",
+      "rejected": "Unusable",
+      "skipped": "Skipped"
+    },
     "selections": {
       "priority": "Priority: first eligible API provider in order",
       "session_binding": "Conversation continuation: session stickiness",
       "response_affinity": "Responses continuation: the previous response came from this API provider",
       "websocket_connection": "WebSocket connection: the API provider that opened it",
       "failover": "Failover: an API provider tried earlier failed or was rejected"
+    },
+    "selectionsShort": {
+      "priority": "By priority",
+      "session_binding": "Session stickiness",
+      "response_affinity": "Continues the previous response",
+      "websocket_connection": "Same WebSocket connection",
+      "failover": "Failover"
+    },
+    "plans": {
+      "native": "Forwarded as is",
+      "delegated": "API provider converts the protocol",
+      "relaykit": "Protocol converted locally"
     },
     "skips": {
       "disabled": "Disabled",
@@ -2307,11 +2326,21 @@
       "protocol_unsupported": "Entry protocol not supported",
       "streaming_unsupported": "Streaming not supported",
       "conversion_unavailable": "Cannot convert to the model's protocol",
-      "circuit_open": "Temporarily skipped after repeated failures",
+      "circuit_open": "Paused after repeated failures",
       "rate_limited": "Cooling down after an upstream rate limit",
       "websocket_disabled": "Responses WebSocket off",
       "websocket_unsupported": "Cannot serve this model over WebSocket"
-    }
+    },
+    "rejections": {
+      "credential_unavailable": "Credential unavailable",
+      "missing_protocol_capability": "Entry protocol not supported",
+      "invalid_endpoint_configuration": "Invalid configuration",
+      "relaykit_conversion_unsupported": "Cannot convert to this API provider's protocol",
+      "relaykit_conversion_failed": "Protocol conversion failed",
+      "upstream_timeout": "Upstream timed out",
+      "upstream_unavailable": "Upstream unavailable"
+    },
+    "pausedHint": "Paused: after an API provider keeps failing, the gateway stops sending it requests for a short while. When the cooldown ends it lets one trial request through and resumes the provider if that succeeds."
   },
   "conversionDiagnostics": {
     "tools": "Tools dropped or changed during conversion",
