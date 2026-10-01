@@ -587,6 +587,86 @@ describe("App workspace navigation", () => {
     expect(container.textContent).toContain("更新已就绪");
   });
 
+  it("announces downloads and manual upgrades that wait on the operator", async () => {
+    let listener: ((snapshot: UpdateSnapshot) => void) | undefined;
+    updateMocks.listen.mockImplementation(async (callback) => {
+      listener = callback;
+      return () => {};
+    });
+    await renderApp();
+    const release = {
+      version: "1.1.0",
+      notes: "New release",
+      published_at: null,
+      url: "https://github.com/Calcium-Ion/AstrLink/releases/tag/v1.1.0",
+    };
+    const base = browserUpdateSnapshot();
+    // Automatic download moves on to "ready" by itself; nothing to announce yet.
+    await act(async () =>
+      listener!({ ...base, revision: 2, phase: "available", release }),
+    );
+    expect(updateMocks.info).not.toHaveBeenCalled();
+    expect(button("关于").querySelector('[role="status"]')).toBeNull();
+    const waiting: UpdateSnapshot = {
+      ...base,
+      revision: 3,
+      phase: "available",
+      release,
+      preferences: { ...base.preferences, auto_download: false },
+    };
+    await act(async () => listener!(waiting));
+    expect(updateMocks.info).toHaveBeenCalledOnce();
+    expect(updateMocks.info.mock.calls[0][0]).toContain("可以下载");
+    expect(
+      button("关于")
+        .querySelector('[role="status"]')
+        ?.getAttribute("aria-label"),
+    ).toBe("发现新版本");
+    // A periodic re-check of the same version stays quiet.
+    await act(async () => listener!({ ...waiting, revision: 4 }));
+    expect(updateMocks.info).toHaveBeenCalledOnce();
+    await act(async () =>
+      listener!({
+        ...base,
+        revision: 5,
+        phase: "manual",
+        release: { ...release, version: "1.2.0" },
+      }),
+    );
+    expect(updateMocks.info).toHaveBeenCalledTimes(2);
+    expect(updateMocks.info.mock.calls[1][0]).toContain("版本页面");
+    expect(
+      button("关于")
+        .querySelector('[role="status"]')
+        ?.getAttribute("aria-label"),
+    ).toBe("有新版本可用");
+  });
+
+  it("does not toast an update state already shown on About", async () => {
+    let listener: ((snapshot: UpdateSnapshot) => void) | undefined;
+    updateMocks.listen.mockImplementation(async (callback) => {
+      listener = callback;
+      return () => {};
+    });
+    await renderApp();
+    await act(async () => button("关于").click());
+    const ready: UpdateSnapshot = {
+      ...browserUpdateSnapshot(),
+      revision: 2,
+      phase: "ready",
+      release: {
+        version: "1.1.0",
+        notes: "New release",
+        published_at: null,
+        url: "https://github.com/Calcium-Ion/AstrLink/releases/tag/v1.1.0",
+      },
+    };
+    await act(async () => listener!(ready));
+    await act(async () => button("概览").click());
+    expect(updateMocks.info).not.toHaveBeenCalled();
+    expect(button("关于").querySelector('[role="status"]')).not.toBeNull();
+  });
+
   it("starts a confirmed empty workspace with a resumable guide", async () => {
     bridgeMocks.listServices.mockResolvedValue({
       items: [],

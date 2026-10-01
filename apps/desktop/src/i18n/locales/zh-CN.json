@@ -2730,6 +2730,8 @@
     "description": "从 GitHub 获取新版本。更新下载完成后，由你确认安装和重启。",
     "installHint": "安装将暂时停止网关并重启 AstrLink，正在处理的请求可能中断。",
     "unsaved": "请先保存或放弃未保存的修改，再安装更新。",
+    "availableNotification": "AstrLink {{version}} 已发布，可以下载。",
+    "manualNotification": "AstrLink {{version}} 已发布，请前往版本页面下载安装包。",
     "readyNotification": "AstrLink {{version}} 已下载，可以安装。",
     "phase": {
       "idle": "尚未检查",

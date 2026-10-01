@@ -58,6 +58,7 @@ import { LocalDataNotice } from "./LocalDataNotice";
 import { SettingsCenter } from "./SettingsCenter";
 import { About } from "./About";
 import { useAppUpdates } from "./use-app-updates";
+import { updateNotice } from "./update-model";
 import { toast } from "sonner";
 import { ServiceManager, type ServiceManagerView } from "./ServiceManager";
 import { ProviderImportDialog } from "./ProviderImportDialog";
@@ -544,22 +545,22 @@ export default function App() {
     };
   }, []);
 
+  const updateNoticeKind = updateNotice(updates.snapshot);
   useEffect(() => {
     const version = updates.snapshot.release?.version;
-    if (
-      updates.snapshot.phase !== "ready" ||
-      !version ||
-      notifiedUpdate.current === version
-    )
-      return;
-    notifiedUpdate.current = version;
-    toast.info(t("about.readyNotification", { version }), {
+    if (!updateNoticeKind || !version) return;
+    const key = `${updateNoticeKind}:${version}`;
+    if (notifiedUpdate.current === key) return;
+    notifiedUpdate.current = key;
+    // About already shows this state; a toast linking back to it adds nothing.
+    if (page.kind === "about") return;
+    toast.info(t(`about.${updateNoticeKind}Notification`, { version }), {
       action: {
         label: t("about.title"),
         onClick: () => navigateRef.current({ kind: "about" }),
       },
     });
-  }, [updates.snapshot, t]);
+  }, [updateNoticeKind, updates.snapshot.release?.version, page.kind, t]);
 
   const confirmPendingNavigation = () => {
     if (pendingPage === null) return;
@@ -727,8 +728,8 @@ export default function App() {
               icon="about"
               label={t("nav.about")}
               badge={
-                updates.snapshot.phase === "ready"
-                  ? t("about.phase.ready")
+                updateNoticeKind
+                  ? t(`about.phase.${updateNoticeKind}`)
                   : undefined
               }
               onClick={() => navigate({ kind: "about" })}

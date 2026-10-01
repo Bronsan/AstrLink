@@ -2730,6 +2730,8 @@
     "description": "Get new versions from GitHub. After downloading, you choose when to install and restart.",
     "installHint": "Installation temporarily stops the gateway and restarts AstrLink. Active requests may be interrupted.",
     "unsaved": "Save or discard unsaved changes before installing.",
+    "availableNotification": "AstrLink {{version}} is available to download.",
+    "manualNotification": "AstrLink {{version}} is available. Download the installer from the release page.",
     "readyNotification": "AstrLink {{version}} is downloaded and ready to install.",
     "phase": {
       "idle": "Not checked",

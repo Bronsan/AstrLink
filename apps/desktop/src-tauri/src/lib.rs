@@ -510,21 +510,24 @@ fn notify_hidden_to_tray(app: &tauri::AppHandle) {
         ("host.tray.hiddenTitle", "host.tray.hiddenBody")
     };
     // Use a native notification: an in-window toast is invisible after hiding.
-    // Notification delivery must never prevent the app from staying in the tray.
-    #[cfg(target_os = "macos")]
-    macos_app::notify(
+    notify_native(
+        app,
         i18n::t(locale, title_key, &[]),
         i18n::t(locale, body_key, &[]),
     );
-    #[cfg(not(target_os = "macos"))]
-    if let Err(error) = app
-        .notification()
-        .builder()
-        .title(i18n::t(locale, title_key, &[]))
-        .body(i18n::t(locale, body_key, &[]))
-        .show()
+}
+
+/// Delivery failures are logged only; a notification must never block the
+/// caller, such as the app staying in the tray.
+pub(crate) fn notify_native(app: &tauri::AppHandle, title: String, body: String) {
+    #[cfg(target_os = "macos")]
     {
-        eprintln!("unable to send AstrLink tray notification: {error}");
+        let _ = app;
+        macos_app::notify(title, body);
+    }
+    #[cfg(not(target_os = "macos"))]
+    if let Err(error) = app.notification().builder().title(title).body(body).show() {
+        eprintln!("unable to send AstrLink notification: {error}");
     }
 }
 

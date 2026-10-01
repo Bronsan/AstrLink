@@ -70,7 +70,7 @@ pub fn notify(title: String, body: String) {
     // async workers, and report its actual result instead of dropping errors.
     tauri::async_runtime::spawn_blocking(move || {
         if let Err(error) = mac_notification_sys::send_notification(&title, None, &body, None) {
-            eprintln!("unable to send AstrLink tray notification: {error}");
+            eprintln!("unable to send AstrLink notification: {error}");
         }
     });
 }
