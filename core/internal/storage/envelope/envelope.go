@@ -4,7 +4,9 @@
 //	local key ─AES-256-GCM(AAD=kind)─▶ dek_secrets, dek_audit
 //	dek_secrets ─AES-256-GCM(AAD=table‖primary key)─▶ secret columns
 //
-// dek_audit keys audit bodies, content keys and session fingerprints.
+// dek_audit keys audit bodies, content keys and session fingerprints. A test
+// build's plaintext audit_keys value becomes dek_audit, so its bodies keep
+// working without re-encryption.
 package envelope
 
 import (

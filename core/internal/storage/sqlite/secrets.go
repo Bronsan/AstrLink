@@ -15,7 +15,9 @@ import (
 
 // Secret columns are sealed under dek_secrets (plan §5.4). The AAD binds the
 // table and the primary key, so a value copied onto another row does not
-// open. Every write sets sealed = 1, so a sealed = 0 row is invalid.
+// open. Rows copied by migration 45 from a test build keep sealed = 0 until
+// SealPlaintextSecrets seals them at the next start; every write sets
+// sealed = 1, so reads refuse a sealed = 0 row.
 const (
 	serviceCredentialsTable      = "service_credentials"
 	accessTokenSecretsTable      = "local_access_token_secrets"
@@ -30,18 +32,16 @@ const (
 
 type secretColumn struct {
 	table, key, value string
-	// sealedFlag marks the four tables whose rows carry an explicit sealed
-	// column. The sealed_secrets migration (v45) copied their pre-encryption
-	// rows with sealed = 0, so startup seals those rows again; the fifth
-	// table, subscription_credentials, has no plaintext form to repair.
-	sealedFlag bool
+	// flagged tables carry a sealed column; subscription_credentials is
+	// sealed from its first row.
+	flagged bool
 }
 
 var secretColumns = []secretColumn{
-	{table: serviceCredentialsTable, key: "service_id", value: "credential_value", sealedFlag: true},
-	{table: accessTokenSecretsTable, key: "token_id", value: "token_value", sealedFlag: true},
-	{table: builtinToolCredentialsTable, key: "kind", value: "credential_value", sealedFlag: true},
-	{table: serviceProxyCredentialsTable, key: "service_id", value: "credential_value", sealedFlag: true},
+	{table: serviceCredentialsTable, key: "service_id", value: "credential_value", flagged: true},
+	{table: accessTokenSecretsTable, key: "token_id", value: "token_value", flagged: true},
+	{table: builtinToolCredentialsTable, key: "kind", value: "credential_value", flagged: true},
+	{table: serviceProxyCredentialsTable, key: "service_id", value: "credential_value", flagged: true},
 	{table: subscriptionCredentialsTable, key: "service_id", value: "credential_value"},
 }
 
@@ -55,65 +55,92 @@ func (store *Store) openSecret(table, key string, stored []byte, sealed bool) ([
 	return store.keys.openColumn(table, key, stored)
 }
 
-// sealLegacyPlaintext seals rows the sealed_secrets migration (v45) copied
-// with sealed = 0. Migrations run before the data keys exist, so values saved
-// by earlier versions were left in the clear, and openSecret refuses them:
-// without this pass they would never read again. It runs once per open, after
-// ensureKeyRing, and rewrites each row under dek_secrets, so the
-// every-write-seals invariant holds from then on. A row that fails to seal is
-// logged and left as it was; the next open tries again.
-func (store *Store) sealLegacyPlaintext(ctx context.Context, logf func(format string, args ...any)) {
-	if logf == nil {
-		logf = func(string, ...any) {}
+// SealPlaintextSecrets seals every secret row still stored as plaintext, in
+// one transaction, and returns how many it sealed. It is idempotent. Open
+// calls it once the data keys are ready and then scrubs the file, so the
+// plaintext left in free pages and the WAL goes too.
+func (store *Store) SealPlaintextSecrets(ctx context.Context) (sealed int, err error) {
+	transaction, err := store.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, fmt.Errorf("begin secret sealing: %w", err)
 	}
-	type legacyRow struct {
+	defer rollbackOnError(transaction, &err)
+	for _, column := range secretColumns {
+		if !column.flagged {
+			continue
+		}
+		count, sealErr := store.sealPlaintextColumnTx(ctx, transaction, column)
+		if sealErr != nil {
+			err = sealErr
+			return 0, err
+		}
+		sealed += count
+	}
+	if err = transaction.Commit(); err != nil {
+		return 0, fmt.Errorf("commit secret sealing: %w", err)
+	}
+	return sealed, nil
+}
+
+func (store *Store) sealPlaintextColumnTx(ctx context.Context, transaction *sql.Tx, column secretColumn) (int, error) {
+	type plaintextRow struct {
 		key   string
 		value []byte
 	}
-	for _, column := range secretColumns {
-		if !column.sealedFlag {
-			continue
-		}
-		rows, err := store.db.QueryContext(ctx, fmt.Sprintf(`SELECT %s, %s FROM %s WHERE sealed = 0`, column.key, column.value, column.table))
-		if err != nil {
-			logf("astrlink storage: read legacy plaintext %s failed: %v", column.table, err)
-			continue
-		}
-		var batch []legacyRow
-		var readErr error
-		for rows.Next() {
-			var row legacyRow
-			if err := rows.Scan(&row.key, &row.value); err != nil {
-				readErr = err
-				break
-			}
-			batch = append(batch, row)
-		}
-		if readErr == nil {
-			readErr = rows.Err()
-		}
-		rows.Close()
-		if readErr != nil {
-			logf("astrlink storage: read legacy plaintext %s failed: %v", column.table, readErr)
-			continue
-		}
-		var sealedCount int
-		for _, row := range batch {
-			sealed, err := store.keys.sealColumn(column.table, row.key, row.value)
-			if err == nil {
-				_, err = store.db.ExecContext(ctx, fmt.Sprintf(`UPDATE %s SET %s = ?, sealed = 1 WHERE %s = ? AND sealed = 0`, column.table, column.value, column.key), sealed, row.key)
-			}
-			if err != nil {
-				logf("astrlink storage: seal legacy %s %s failed: %v", column.table, row.key, err)
-				continue
-			}
+	var pending []plaintextRow
+	defer func() {
+		for _, row := range pending {
 			clear(row.value)
-			sealedCount++
 		}
-		if sealedCount > 0 {
-			logf("astrlink storage: sealed %d legacy plaintext %s row(s) saved by an earlier version", sealedCount, column.table)
+	}()
+	rows, err := transaction.QueryContext(ctx, fmt.Sprintf(`SELECT %s, %s FROM %s WHERE sealed = 0`,
+		column.key, column.value, column.table))
+	if err != nil {
+		return 0, fmt.Errorf("read plaintext %s: %w", column.table, err)
+	}
+	for rows.Next() {
+		var row plaintextRow
+		if err := rows.Scan(&row.key, &row.value); err != nil {
+			_ = rows.Close()
+			return 0, fmt.Errorf("read plaintext %s: %w", column.table, err)
+		}
+		pending = append(pending, row)
+	}
+	if err := rows.Close(); err != nil {
+		return 0, fmt.Errorf("read plaintext %s: %w", column.table, err)
+	}
+	if err := rows.Err(); err != nil {
+		return 0, fmt.Errorf("read plaintext %s: %w", column.table, err)
+	}
+	for _, row := range pending {
+		sealedValue, err := store.keys.sealColumn(column.table, row.key, row.value)
+		if err != nil {
+			return 0, fmt.Errorf("seal %s: %w", column.table, err)
+		}
+		if _, err := transaction.ExecContext(ctx, fmt.Sprintf(`UPDATE %s SET %s = ?, sealed = 1 WHERE %s = ? AND sealed = 0`,
+			column.table, column.value, column.key), sealedValue, row.key); err != nil {
+			return 0, fmt.Errorf("seal %s: %w", column.table, err)
 		}
 	}
+	return len(pending), nil
+}
+
+// hasPlaintextSecrets reports whether a row still waits for
+// SealPlaintextSecrets, which only a Core start may run.
+func (store *Store) hasPlaintextSecrets(ctx context.Context) (bool, error) {
+	for _, column := range secretColumns {
+		if !column.flagged {
+			continue
+		}
+		var pending bool
+		if err := store.db.QueryRowContext(ctx, fmt.Sprintf(`SELECT EXISTS(SELECT 1 FROM %s WHERE sealed = 0)`, column.table)).Scan(&pending); err != nil {
+			return false, fmt.Errorf("read plaintext %s: %w", column.table, err)
+		}
+		if pending {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // LocalDataStatus counts saved secrets this device cannot decrypt (§5.7).

@@ -750,8 +750,9 @@ CHECK((sealing = 'audit' AND key_id IS NULL AND wrapped_key IS NULL)
 		}},
 		{Version: 45, Name: "sealed_secrets", Statements: []string{
 			// Secret values are sealed under dek_secrets as version ‖ nonce ‖
-			// ciphertext ‖ tag, 29 bytes more than the plaintext. Every write
-			// sets sealed = 1, and the store refuses a row with sealed = 0.
+			// ciphertext ‖ tag, 29 bytes more than the plaintext. Rows copied
+			// from a test build keep sealed = 0 until the store seals them
+			// after migrating; every write sets sealed = 1.
 			// Nothing references either rebuilt table.
 			`CREATE TABLE service_credentials_new (
     service_id TEXT PRIMARY KEY REFERENCES services(id) ON DELETE CASCADE,

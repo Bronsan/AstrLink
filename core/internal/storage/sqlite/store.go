@@ -94,9 +94,9 @@ func WithExistingDatabase() Option {
 
 // WithReadOnly is for offline readers such as `audit show`, which may run
 // beside a serving Core. It implies WithExistingDatabase, and Open changes
-// nothing: no migration, key or token bootstrap, or permission change. A
-// database that needs any of them fails with ErrNeedsCoreStart. Writes
-// through the store fail.
+// nothing: no migration, credential sealing, key or token bootstrap, or
+// permission change. A database that needs any of them fails with
+// ErrNeedsCoreStart. Writes through the store fail.
 func WithReadOnly() Option {
 	return func(options *openOptions) {
 		options.existing = true
@@ -203,6 +203,11 @@ func openReadOnly(ctx context.Context, absolutePath string, settings openOptions
 			return nil, fmt.Errorf("check sqlite schema: %w", err)
 		}
 		store := &Store{db: database, now: time.Now, channelBindingsMu: make(chan struct{}, 1)}
+		if pending, err := store.hasPlaintextSecrets(ctx); err != nil {
+			return nil, err
+		} else if pending {
+			return nil, fmt.Errorf("%w: stored credentials are waiting to be sealed", ErrNeedsCoreStart)
+		}
 		keys, _, err := ensureKeyRing(ctx, database, settings.localKey, store.now(), keyRingReadOnly)
 		if err != nil {
 			return nil, fmt.Errorf("open data keys: %w", err)
@@ -245,11 +250,25 @@ func initialize(ctx context.Context, database *sql.DB, settings openOptions) (*S
 	if len(result.orphaned) > 0 {
 		settings.logf("astrlink storage: saved %s data could not be decrypted on this device and was set aside; stored credentials and captured bodies from before need to be re-entered or restored", strings.Join(result.orphaned, ", "))
 	}
+	sealed, err := store.SealPlaintextSecrets(ctx)
+	if err != nil {
+		keys.clear()
+		return nil, fmt.Errorf("seal stored credentials: %w", err)
+	}
+	if sealed > 0 {
+		settings.logf("astrlink storage: sealed %d stored credential(s) under the local key", sealed)
+	}
+	if result.legacyAuditTable || sealed > 0 {
+		// The data is already protected; only its old copies in free pages
+		// and the WAL remain, so a failed scrub does not stop the start.
+		if err := store.scrubLegacyFile(ctx); err != nil {
+			settings.logf("astrlink storage: file scrub deferred to the next start: %v", err)
+		}
+	}
 	if err := store.loadRawPublicKey(ctx, settings.logf); err != nil {
 		keys.clear()
 		return nil, fmt.Errorf("open raw sealing key: %w", err)
 	}
-	store.sealLegacyPlaintext(ctx, settings.logf)
 	manager, err := accesstoken.NewManager(store)
 	if err != nil {
 		keys.clear()

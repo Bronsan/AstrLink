@@ -1,6 +1,7 @@
 package sqlite
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"errors"
@@ -78,6 +79,9 @@ func (keys *keyRing) openColumn(table, primaryKey string, sealed []byte) ([]byte
 type keyRingResult struct {
 	// orphaned lists kinds whose envelope did not open under this local key.
 	orphaned []string
+	// legacyAuditTable says the database still has the audit_keys table a
+	// test build created, so its file has not been scrubbed yet.
+	legacyAuditTable bool
 }
 
 // keyRingMode says what ensureKeyRing may do with envelopes it cannot use.
@@ -95,7 +99,10 @@ const (
 )
 
 // ensureKeyRing opens or creates the secrets and audit envelopes in one
-// transaction. An envelope that no longer opens — the key file or keychain entry is gone — is renamed and kept for
+// transaction. The first start after a test build adopts its plaintext
+// audit_keys value as dek_audit, so no body is re-encrypted, and removes it
+// only in the transaction that writes its envelope. An envelope that no longer
+// opens — the key file or keychain entry is gone — is renamed and kept for
 // recovery, and a fresh key takes its place (§5.7). In the strict modes such
 // an envelope fails with ErrLocalKeyMismatch and nothing is written.
 func ensureKeyRing(ctx context.Context, database *sql.DB, localKey []byte, now time.Time, mode keyRingMode) (keys *keyRing, result keyRingResult, err error) {
@@ -116,6 +123,15 @@ func ensureKeyRing(ctx context.Context, database *sql.DB, localKey []byte, now t
 	}()
 	stamp := now.UTC().Format(time.RFC3339Nano)
 
+	legacy, legacyTable, err := readLegacyAuditKey(ctx, transaction)
+	if err != nil {
+		return nil, result, err
+	}
+	defer clear(legacy)
+	result.legacyAuditTable = legacyTable
+	if legacy != nil && mode == keyRingReadOnly {
+		return nil, result, fmt.Errorf("%w: a plaintext audit key is waiting to be wrapped", ErrNeedsCoreStart)
+	}
 	for _, kind := range []string{envelope.KindSecrets, envelope.KindAudit} {
 		dek, orphaned, err := openEnvelope(ctx, transaction, localKey, kind, stamp, mode)
 		if err != nil {
@@ -124,19 +140,37 @@ func ensureKeyRing(ctx context.Context, database *sql.DB, localKey []byte, now t
 		if orphaned {
 			result.orphaned = append(result.orphaned, kind)
 		}
-		if dek == nil {
-			if dek, err = envelope.NewKey(); err != nil {
+		switch {
+		case dek == nil:
+			if kind == envelope.KindAudit && legacy != nil {
+				dek = append([]byte(nil), legacy...)
+			} else if dek, err = envelope.NewKey(); err != nil {
 				return nil, result, err
 			}
 			if err := insertEnvelope(ctx, transaction, localKey, dek, kind, kind, stamp); err != nil {
 				clear(dek)
 				return nil, result, err
 			}
+		case kind == envelope.KindAudit && legacy != nil && !bytes.Equal(dek, legacy):
+			// A release that ignored audit_keys already created its own
+			// dek_audit and sealed bodies under it. Keep the test build's key
+			// wrapped for recovery; it cannot join the ring without
+			// re-encrypting bodies.
+			if err := insertEnvelope(ctx, transaction, localKey, legacy, kind, kind+".legacy."+stamp, stamp); err != nil {
+				clear(dek)
+				return nil, result, err
+			}
+			result.orphaned = append(result.orphaned, kind)
 		}
 		if kind == envelope.KindSecrets {
 			keys.ring.Secrets = dek
 		} else {
 			keys.ring.Audit = dek
+		}
+	}
+	if legacy != nil {
+		if _, err := transaction.ExecContext(ctx, `DELETE FROM audit_keys`); err != nil {
+			return nil, result, fmt.Errorf("clear legacy audit key: %w", err)
 		}
 	}
 	if err := transaction.QueryRowContext(ctx, `SELECT
@@ -148,6 +182,31 @@ func ensureKeyRing(ctx context.Context, database *sql.DB, localKey []byte, now t
 		return nil, result, fmt.Errorf("commit key ring: %w", err)
 	}
 	return keys, result, nil
+}
+
+// readLegacyAuditKey returns the plaintext audit key a test build kept in
+// audit_keys, and whether that table is still there. Databases created by a
+// release never have it.
+func readLegacyAuditKey(ctx context.Context, transaction *sql.Tx) (key []byte, table bool, err error) {
+	if err := transaction.QueryRowContext(ctx, `SELECT EXISTS(
+    SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'audit_keys')`).Scan(&table); err != nil {
+		return nil, false, fmt.Errorf("read legacy audit key table: %w", err)
+	}
+	if !table {
+		return nil, false, nil
+	}
+	err = transaction.QueryRowContext(ctx, `SELECT key_bytes FROM audit_keys WHERE id = 1`).Scan(&key)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, true, nil
+	}
+	if err != nil {
+		return nil, true, fmt.Errorf("read legacy audit key: %w", err)
+	}
+	if len(key) != envelope.KeyBytes {
+		clear(key)
+		return nil, true, fmt.Errorf("%w: audit key length", storagecontract.ErrInvalidRecord)
+	}
+	return key, true, nil
 }
 
 // openEnvelope returns the unwrapped key for kind, or nil when there is none.

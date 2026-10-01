@@ -429,6 +429,24 @@ func TestReadOnlyOpenRefusesADatabaseThatNeedsACoreStart(t *testing.T) {
 	}{
 		{"older schema", func(t *testing.T, path string) { writeSchemaFixture(t, path, 42) }, "older"},
 		{"no data keys", func(t *testing.T, path string) { writeSchemaFixture(t, path, math.MaxInt64) }, "has not been created"},
+		{"plaintext secrets", func(t *testing.T, path string) {
+			writeTestBuildFixture(t, path, 42)
+			writeSchemaFixture(t, path, math.MaxInt64)
+		}, "waiting to be sealed"},
+		{"plaintext audit key", func(t *testing.T, path string) {
+			writeSchemaFixture(t, path, math.MaxInt64)
+			database, err := sql.Open(driverName, sqliteFileDSN(path))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer database.Close()
+			if _, err := database.Exec(`CREATE TABLE audit_keys (id INTEGER PRIMARY KEY, key_bytes BLOB NOT NULL, created_at TEXT NOT NULL)`); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := database.Exec(`INSERT INTO audit_keys VALUES (1, ?, '2026-09-20T00:00:00Z')`, testLocalKey(t, 9)); err != nil {
+				t.Fatal(err)
+			}
+		}, "plaintext audit key"},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "astrlink.db")
