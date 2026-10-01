@@ -160,6 +160,10 @@ jobs:
       - name: Stage Core and worker sidecars
         run: bun run sidecar:build
       - name: Build Developer ID signed app and DMG
+        env:
+          # With CI=true Tauri skips the Finder script that applies the DMG
+          # background and icon positions.
+          TAURI_BUNDLER_DMG_IGNORE_CI: "true"
         run: bun run tauri build --ci --bundles app,dmg
       - name: Notarize, staple and verify app and DMG
         run: bun run macos:notarize
