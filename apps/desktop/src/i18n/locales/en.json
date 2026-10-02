@@ -2653,7 +2653,8 @@
     "limitsTitle": "Limitations",
     "limits": {
       "claude": "Only the user-level ~/.claude/settings.json is written. A project’s .claude/settings.json or .claude/settings.local.json wins when it sets the same environment variables. With CLAUDE_CONFIG_DIR set, Claude Code reads another folder; configure it manually instead.",
-      "codex": "Only the user-level ~/.codex/config.toml is written; sign-in details are left alone. With --profile or CODEX_HOME, Codex reads another config; configure it manually instead."
+      "codex": "Only the user-level ~/.codex/config.toml is written; sign-in details are left alone. With --profile or CODEX_HOME, Codex reads another config; configure it manually instead.",
+      "pi": "Only the user-level ~/.pi/agent/models.json and ~/.pi/agent/settings.json are written; sign-in details are left alone. A project’s .pi/settings.json wins when it sets another default model. With PI_CODING_AGENT_DIR set, Pi reads another folder; configure it manually instead."
     },
     "proxy": {
       "blocked": "The system proxy {{proxy}} stops Codex requests before they reach AstrLink, so Codex shows a 502 error. Add localhost, 127.0.0.1, and ::1 to the proxy app’s bypass (exception) list, or set the environment variable NO_PROXY=localhost,127.0.0.1,::1 yourself, then restart Codex. AstrLink does not change these settings.",

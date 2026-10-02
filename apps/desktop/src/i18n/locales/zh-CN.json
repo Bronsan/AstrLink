@@ -2653,7 +2653,8 @@
     "limitsTitle": "使用限制",
     "limits": {
       "claude": "只写入用户级的 ~/.claude/settings.json。项目里的 .claude/settings.json 或 .claude/settings.local.json 设置了相同的环境变量时，以项目为准。设置了 CLAUDE_CONFIG_DIR 时 Claude Code 读取其他目录，请改用手动配置。",
-      "codex": "只写入用户级的 ~/.codex/config.toml，不改动登录信息。用 --profile 启动或设置了 CODEX_HOME 时 Codex 读取其他配置，请改用手动配置。"
+      "codex": "只写入用户级的 ~/.codex/config.toml，不改动登录信息。用 --profile 启动或设置了 CODEX_HOME 时 Codex 读取其他配置，请改用手动配置。",
+      "pi": "只写入用户级的 ~/.pi/agent/models.json 和 ~/.pi/agent/settings.json，不改动登录信息。项目里的 .pi/settings.json 指定了其他默认模型时，以项目为准。设置了 PI_CODING_AGENT_DIR 时 Pi 读取其他目录，请改用手动配置。"
     },
     "proxy": {
       "blocked": "系统代理 {{proxy}} 会拦下 Codex 发往 AstrLink 的请求，Codex 会提示 502 错误。请在代理软件的绕过（例外）列表中加入 localhost、127.0.0.1 和 ::1，或自行设置环境变量 NO_PROXY=localhost,127.0.0.1,::1，然后重启 Codex。AstrLink 不会改动这些设置。",
