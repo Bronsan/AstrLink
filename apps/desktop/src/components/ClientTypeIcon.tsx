@@ -1,20 +1,34 @@
 import {
+  CherryStudioColor,
   ClaudeCodeColor,
   ClineMono,
+  CodeBuddyColor,
   CodexColor,
   CursorMono,
+  DeepSeekColor,
   GeminiColor,
+  GithubCopilotMono,
   GrokMono,
+  KiloCodeMono,
+  KimiMono,
+  MistralColor,
   OpenClawColor,
   OpenCodeMono,
   PiMono,
+  QwenColor,
+  RooCodeMono,
 } from "@/components/brand-icons";
 import { Bot } from "@/components/icons";
 import { cn } from "@/lib/utils";
 import { i18n, useT } from "../i18n";
 import type { ClientType } from "../request-record-model";
 
-const clients = {
+// Clients without a published mark get a monogram so they stay distinct from
+// the unknown-client fallback in icon-only rows.
+const clients: Record<
+  Exclude<ClientType, "unknown">,
+  { name: string; Mark?: typeof CodexColor }
+> = {
   codex: { name: "Codex", Mark: CodexColor },
   claude_code: { name: "Claude Code", Mark: ClaudeCodeColor },
   cursor: { name: "Cursor", Mark: CursorMono },
@@ -24,10 +38,21 @@ const clients = {
   openclaw: { name: "OpenClaw", Mark: OpenClawColor },
   cline: { name: "Cline", Mark: ClineMono },
   pi: { name: "Pi", Mark: PiMono },
-} satisfies Record<
-  Exclude<ClientType, "unknown">,
-  { name: string; Mark: typeof CodexColor }
->;
+  deepseek_harness: { name: "DeepSeek Harness", Mark: DeepSeekColor },
+  codewhale: { name: "Codewhale" },
+  reasonix: { name: "Reasonix" },
+  qwen_code: { name: "Qwen Code", Mark: QwenColor },
+  kimi_code: { name: "Kimi Code", Mark: KimiMono },
+  codebuddy: { name: "CodeBuddy", Mark: CodeBuddyColor },
+  copilot: { name: "GitHub Copilot", Mark: GithubCopilotMono },
+  droid: { name: "Droid" },
+  crush: { name: "Crush" },
+  kilo_code: { name: "Kilo Code", Mark: KiloCodeMono },
+  roo_code: { name: "Roo Code", Mark: RooCodeMono },
+  mistral_vibe: { name: "Mistral Vibe", Mark: MistralColor },
+  zed: { name: "Zed" },
+  cherry_studio: { name: "Cherry Studio", Mark: CherryStudioColor },
+};
 
 /** Product name of a detected client, or the unknown-client label. */
 export function clientTypeName(clientType?: ClientType | null): string {
@@ -80,9 +105,9 @@ export function ClientTypeIcon({
     client: client?.name ?? t("records.unknownClient"),
   });
   const Mark = client?.Mark;
-  // Pi's filled mark reaches the viewBox edges and looks heavier than the
-  // outline marks. Inset the artwork while keeping every client's slot equal.
-  const markSize = clientType === "pi" ? size * 0.8 : size;
+  // Pi's filled mark and the monogram tile reach the viewBox edges and look
+  // heavier than the outline marks. Inset them while keeping every slot equal.
+  const markSize = clientType === "pi" || (client && !Mark) ? size * 0.8 : size;
   return (
     <span
       {...(decorative
@@ -92,7 +117,7 @@ export function ClientTypeIcon({
         // Mono brand marks paint with currentColor and their brand colour is
         // black; muting them would gray out the logo. Only the fallback is muted.
         "inline-flex shrink-0 items-center justify-center",
-        Mark ? "text-foreground" : "text-muted-foreground",
+        client ? "text-foreground" : "text-muted-foreground",
         className,
       )}
       style={{ width: size, height: size }}
@@ -104,6 +129,10 @@ export function ClientTypeIcon({
       >
         {Mark ? (
           <Mark className="size-full" size={markSize} />
+        ) : client ? (
+          <span className="flex size-full items-center justify-center rounded-sm bg-foreground text-micro leading-none font-semibold text-background">
+            {client.name[0]}
+          </span>
         ) : (
           <Bot className="size-full" size={markSize} />
         )}

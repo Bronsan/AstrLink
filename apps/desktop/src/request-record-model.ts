@@ -1,18 +1,6 @@
 import { i18n } from "./i18n";
 
-export type ClientType =
-  | "unknown"
-  | "codex"
-  | "claude_code"
-  | "cursor"
-  | "grok_cli"
-  | "gemini_cli"
-  | "opencode"
-  | "openclaw"
-  | "cline"
-  | "pi";
-
-export const CLIENT_TYPES: readonly ClientType[] = [
+export const CLIENT_TYPES = [
   "unknown",
   "codex",
   "claude_code",
@@ -23,7 +11,23 @@ export const CLIENT_TYPES: readonly ClientType[] = [
   "openclaw",
   "cline",
   "pi",
-];
+  "deepseek_harness",
+  "codewhale",
+  "reasonix",
+  "qwen_code",
+  "kimi_code",
+  "codebuddy",
+  "copilot",
+  "droid",
+  "crush",
+  "kilo_code",
+  "roo_code",
+  "mistral_vibe",
+  "zed",
+  "cherry_studio",
+] as const;
+
+export type ClientType = (typeof CLIENT_TYPES)[number];
 
 export type RequestStatus =
   | "pending"

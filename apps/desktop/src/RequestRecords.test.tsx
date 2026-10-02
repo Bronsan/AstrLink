@@ -496,11 +496,14 @@ describe("RequestRecords", () => {
   };
 
   it.each([
-    ["claude_code", "Claude Code"],
-    ["pi", "Pi"],
+    ["claude_code", "Claude Code", ""],
+    ["pi", "Pi", ""],
+    ["deepseek_harness", "DeepSeek Harness", ""],
+    // Clients without a published mark get a monogram, not the unknown robot.
+    ["droid", "Droid", "D"],
   ] as const)(
     "shows %s beside each session, independently of the model brand",
-    async (clientType, clientName) => {
+    async (clientType, clientName, monogram) => {
       bridgeMocks.listRequestSessions.mockResolvedValue({
         items: [
           sessionFromRecord(firstRecord, { client_type: clientType }),
@@ -529,6 +532,13 @@ describe("RequestRecords", () => {
           .querySelector('[role="img"]')
           ?.classList.contains("text-muted-foreground"),
       ).toBe(true);
+      const mark = rows[0].querySelector('[role="img"]');
+      if (monogram) {
+        expect(mark?.querySelector("svg")).toBeNull();
+        expect(mark?.textContent).toBe(monogram);
+      } else {
+        expect(mark?.querySelector("svg")).not.toBeNull();
+      }
       expect(rows[0].textContent).toContain("gpt-4.1");
     },
   );
