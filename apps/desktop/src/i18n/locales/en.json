@@ -2057,19 +2057,30 @@
     "narrow": "Restore width",
     "widenHint": "Widen: stretch this window in one click so long JSON and headers stop wrapping.",
     "narrowHint": "Restore width: go back to the earlier width and position.",
-    "widenTip": "Too cramped? Widen this window in one click; click again to restore it.",
-    "widenFailed": "Unable to change the window width."
+    "widenFailed": "Unable to change the window width.",
+    "tour": {
+      "help": "Window tour",
+      "progress": "{{current}} / {{total}}",
+      "next": "Next",
+      "back": "Back",
+      "skip": "Skip",
+      "done": "Got it",
+      "widenTitle": "Widen in one click",
+      "widen": "When it feels cramped, click here to stretch the window so long JSON and headers stop wrapping. Click again to return to the earlier width and position.",
+      "findTitle": "Find in content",
+      "find": "Search keys or values; Enter jumps to the next hit and folded parts open on their own. Press {{shortcut}} to come back here any time.",
+      "pinTitle": "Keep on top",
+      "pin": "Float above other windows and hold this call. The next call you pick opens its own window."
+    }
   },
   "find": {
     "label": "Find in content",
-    "open": "Find",
-    "contentPlaceholder": "Find keys or values; Enter for next",
-    "turnsOpen": "Find turns",
+    "contentPlaceholder": "Find keys or values",
     "turnsLabel": "Find turns",
-    "turnsPlaceholder": "Find messages, models, providers or results; Enter for next turn",
+    "turnsPlaceholder": "Find turns: messages, models, results",
     "previous": "Previous (Shift+Enter)",
     "next": "Next (Enter)",
-    "close": "Close find (Esc)",
+    "clear": "Clear (Esc)",
     "none": "No results"
   },
   "dialog": {

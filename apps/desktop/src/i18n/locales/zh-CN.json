@@ -2057,19 +2057,30 @@
     "narrow": "恢复窄窗",
     "widenHint": "宽窗：把这个窗口一键拉宽，长 JSON 和请求头不用再折行。",
     "narrowHint": "恢复窄窗：回到原来的宽度和位置。",
-    "widenTip": "内容太挤？点这里一键变成宽窗，再点一次就恢复。",
-    "widenFailed": "无法调整窗口宽度。"
+    "widenFailed": "无法调整窗口宽度。",
+    "tour": {
+      "help": "窗口导览",
+      "progress": "{{current}} / {{total}}",
+      "next": "下一步",
+      "back": "上一步",
+      "skip": "跳过",
+      "done": "知道了",
+      "widenTitle": "一键变宽",
+      "widen": "内容太挤时点这里，窗口会拉宽，长 JSON 和请求头不再折行；再点一次回到原来的宽度和位置。",
+      "findTitle": "查找内容",
+      "find": "搜键名或值，回车跳到下一处，折叠的部分会自动展开。随时按 {{shortcut}} 回到这里。",
+      "pinTitle": "置顶窗口",
+      "pin": "保持在最前，并固定显示这次调用；之后点别的调用会另开窗口。"
+    }
   },
   "find": {
     "label": "查找内容",
-    "open": "查找",
-    "contentPlaceholder": "查找键名或值，回车跳到下一处",
-    "turnsOpen": "搜索轮次",
+    "contentPlaceholder": "查找键名或值",
     "turnsLabel": "搜索轮次",
-    "turnsPlaceholder": "搜索消息、模型、提供商或结果，回车跳到下一轮",
+    "turnsPlaceholder": "搜索轮次：消息、模型、结果",
     "previous": "上一处（⇧回车）",
     "next": "下一处（回车）",
-    "close": "关闭查找（Esc）",
+    "clear": "清空（Esc）",
     "none": "无结果"
   },
   "dialog": {

@@ -22,9 +22,11 @@ import { useT } from "@/i18n";
 import { cn } from "@/lib/utils";
 
 /**
- * One compact find row: the query, where the reader is among the hits, and
- * the steps between them. Enter moves to the next hit, Shift+Enter to the
- * previous one, and Escape closes the row.
+ * A search box that is always on screen, so find is seen rather than
+ * remembered. A blank box shows its shortcut; once it holds a query it shows
+ * where the reader is among the hits and the steps between them. Enter
+ * moves to the next hit, Shift+Enter to the previous one, and Escape clears
+ * the query, then leaves the box.
  */
 export function FindBar({
   query,
@@ -32,10 +34,12 @@ export function FindBar({
   result,
   active,
   onStep,
-  onClose,
   label,
   placeholder,
+  shortcut,
   inputRef,
+  disabled = false,
+  compact = false,
   className,
 }: {
   query: string;
@@ -45,18 +49,21 @@ export function FindBar({
   /** Zero-based hit in view. */
   active: number;
   onStep: (step: 1 | -1) => void;
-  onClose: () => void;
   label: string;
   placeholder: string;
+  /** Shown in the blank box, such as ⌘F. */
+  shortcut?: string;
   inputRef?: Ref<HTMLInputElement>;
+  disabled?: boolean;
+  /** Fits a 28px header row instead of a toolbar. */
+  compact?: boolean;
   className?: string;
 }) {
   const t = useT();
   const blank = query.trim() === "";
   const count = result?.count ?? 0;
-  const status = blank
-    ? ""
-    : result === null
+  const status =
+    result === null
       ? "…"
       : count === 0
         ? t("find.none")
@@ -68,7 +75,8 @@ export function FindBar({
     } else if (event.key === "Escape") {
       event.preventDefault();
       event.stopPropagation();
-      onClose();
+      if (query) onQueryChange("");
+      else event.currentTarget.blur();
     }
   };
   return (
@@ -85,9 +93,14 @@ export function FindBar({
         />
         <Input
           aria-label={label}
-          autoFocus
-          className="h-6 rounded-sm pr-1.5 pl-7 text-xs"
+          className={cn(
+            "pl-7 text-xs",
+            compact ? "h-6 rounded-sm" : "h-7",
+            blank && shortcut ? "pr-10" : "pr-2",
+            !blank && "border-ring",
+          )}
           data-testid="find-input"
+          disabled={disabled}
           onChange={(event) => onQueryChange(event.currentTarget.value)}
           onKeyDown={onKeyDown}
           placeholder={placeholder}
@@ -95,43 +108,52 @@ export function FindBar({
           spellCheck={false}
           value={query}
         />
+        {blank && shortcut && !disabled ? (
+          <kbd className="pointer-events-none absolute right-1.5 rounded-sm border bg-muted px-1 font-sans text-micro leading-4 text-muted-foreground">
+            {shortcut}
+          </kbd>
+        ) : null}
       </span>
-      <span
-        aria-live="polite"
-        className={cn(
-          "min-w-9 shrink-0 px-1 text-center font-mono text-micro tabular-nums text-muted-foreground",
-          !blank && result?.count === 0 && "text-warning-foreground",
-        )}
-        data-testid="find-count"
-      >
-        {status}
-      </span>
-      <IconButton
-        disabled={count === 0}
-        label={t("find.previous")}
-        onClick={() => onStep(-1)}
-        size="icon-xs"
-        type="button"
-      >
-        <ChevronUp aria-hidden="true" />
-      </IconButton>
-      <IconButton
-        disabled={count === 0}
-        label={t("find.next")}
-        onClick={() => onStep(1)}
-        size="icon-xs"
-        type="button"
-      >
-        <ChevronDown aria-hidden="true" />
-      </IconButton>
-      <IconButton
-        label={t("find.close")}
-        onClick={onClose}
-        size="icon-xs"
-        type="button"
-      >
-        <X aria-hidden="true" />
-      </IconButton>
+      {blank ? null : (
+        <>
+          <span
+            aria-live="polite"
+            className={cn(
+              "min-w-9 shrink-0 px-1 text-center font-mono text-micro tabular-nums text-foreground",
+              result?.count === 0 && "text-warning-foreground",
+            )}
+            data-testid="find-count"
+          >
+            {status}
+          </span>
+          <IconButton
+            disabled={count === 0}
+            label={t("find.previous")}
+            onClick={() => onStep(-1)}
+            size="icon-xs"
+            type="button"
+          >
+            <ChevronUp aria-hidden="true" />
+          </IconButton>
+          <IconButton
+            disabled={count === 0}
+            label={t("find.next")}
+            onClick={() => onStep(1)}
+            size="icon-xs"
+            type="button"
+          >
+            <ChevronDown aria-hidden="true" />
+          </IconButton>
+          <IconButton
+            label={t("find.clear")}
+            onClick={() => onQueryChange("")}
+            size="icon-xs"
+            type="button"
+          >
+            <X aria-hidden="true" />
+          </IconButton>
+        </>
+      )}
     </div>
   );
 }
@@ -150,7 +172,7 @@ export function FindMark({
         "rounded-sm text-inherit",
         active
           ? "bg-primary-fill text-primary-fill-foreground ring-2 ring-tide/40"
-          : "bg-tide/25",
+          : "bg-tide/35",
       )}
       data-find-active={active ? "true" : undefined}
       data-testid="find-mark"

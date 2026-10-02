@@ -520,14 +520,11 @@ describe("RequestTrajectory in a window host", () => {
     expect(calls("req_t1")).toBe(0);
     expect(calls("req_t3")).toBeGreaterThan(0);
 
-    await act(async () => {
-      container
-        .querySelector<HTMLButtonElement>('[data-testid="trajectory-find"]')!
-        .click();
-    });
+    // The search box is always in the list header.
     const input = container.querySelector<HTMLInputElement>(
       '[data-testid="find-input"]',
     )!;
+    expect(input).not.toBeNull();
     await act(async () => {
       Object.getOwnPropertyDescriptor(
         HTMLInputElement.prototype,
@@ -564,7 +561,8 @@ describe("RequestTrajectory in a window host", () => {
         new KeyboardEvent("keydown", { key: "Escape", bubbles: true }),
       );
     });
-    expect(container.querySelector('[data-testid="find-bar"]')).toBeNull();
+    // Escape clears the search and every mark it left.
+    expect(input.value).toBe("");
     expect(container.querySelector("[data-find-stop]")).toBeNull();
     expect(container.querySelector('[data-testid="find-mark"]')).toBeNull();
   });

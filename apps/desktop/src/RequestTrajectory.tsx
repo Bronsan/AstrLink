@@ -15,7 +15,6 @@ import {
   ArrowUp,
   ChevronRight,
   MessageSquare,
-  Search,
 } from "@/components/icons";
 import { FindBar, HighlightedText } from "@/components/FindBar";
 import { IconButton } from "@/components/IconButton";
@@ -469,7 +468,7 @@ export function RequestTrajectory({
     if (target) list.scrollTop = target.offsetTop;
   }, [findStop, findSeq]);
 
-  // ⌘F finds in the list while it is on screen; ⌘G steps once it is open.
+  // ⌘F goes to the search box while the list is on screen; ⌘G steps.
   const findKeys = useRef(find);
   findKeys.current = find;
   useEffect(() => {
@@ -478,11 +477,11 @@ export function RequestTrajectory({
       if (!list || list.getClientRects().length === 0) return;
       if (isFindShortcut(event)) {
         event.preventDefault();
-        findKeys.current.show();
+        findKeys.current.focus();
         return;
       }
       const direction = findStepShortcut(event);
-      if (direction === null || !findKeys.current.open) return;
+      if (direction === null) return;
       event.preventDefault();
       findKeys.current.step(direction);
     };
@@ -574,88 +573,71 @@ export function RequestTrajectory({
       <div
         className={cn(
           ROW_COLUMNS,
-          "h-7 shrink-0 items-center border-b bg-muted/40 px-2 text-micro text-muted-foreground",
+          "h-9 shrink-0 items-center border-b bg-muted/40 px-2 text-micro text-muted-foreground",
         )}
       >
         <span>{t("trajectory.phase")}</span>
         <span className="hidden @min-[760px]/trajectory:block">
           {t("trajectory.time")}
         </span>
-        {find.open ? (
-          // Find takes the event, result and duration headings while open,
-          // so the row keeps its height and the list loses nothing.
+        <span className="flex min-w-0 items-center gap-2">
+          <span className="shrink-0">{t("trajectory.eventList")}</span>
+          <span className="hidden shrink-0 tabular-nums @min-[760px]/trajectory:inline">
+            {t("trajectory.eventCount", {
+              count: rows.filter((row) => row.chip !== "TURN").length,
+            })}
+          </span>
+          {/* Always on screen, so find is seen rather than remembered. */}
           <FindBar
             active={find.active}
-            className="col-span-2 @min-[560px]/trajectory:col-span-3"
+            className="ml-auto min-w-28 flex-1 basis-56 @min-[760px]/trajectory:max-w-96"
+            disabled={rows.length === 0}
             inputRef={find.inputRef}
             label={t("find.turnsLabel")}
-            onClose={find.close}
             onQueryChange={find.setQuery}
             onStep={find.step}
             placeholder={t("find.turnsPlaceholder")}
             query={find.query}
             result={find.result}
+            shortcut={findShortcutLabel()}
           />
-        ) : (
-          <span className="flex min-w-0 items-center gap-2">
-            <span>{t("trajectory.eventList")}</span>
-            <span className="hidden tabular-nums @min-[560px]/trajectory:inline">
-              {t("trajectory.eventCount", {
-                count: rows.filter((row) => row.chip !== "TURN").length,
-              })}
-            </span>
-            <span className="ml-auto flex items-center gap-0.5">
-              <IconButton
-                data-testid="trajectory-find"
-                disabled={rows.length === 0}
-                label={`${t("find.turnsOpen")} (${findShortcutLabel()})`}
-                onClick={find.show}
-                size="icon-xs"
-                type="button"
-              >
-                <Search aria-hidden="true" />
-              </IconButton>
-              <IconButton
-                size="icon-xs"
-                disabled={rows.length === 0}
-                label={t("trajectory.firstCall")}
-                onClick={() => {
-                  const first = rows.find((row) => row.chip !== "TURN");
-                  if (first) {
-                    followSelectionOnStripRef.current = true;
-                    revealRow(first);
-                  }
-                }}
-                type="button"
-              >
-                <ArrowUp aria-hidden="true" />
-              </IconButton>
-              <IconButton
-                size="icon-xs"
-                disabled={rows.length === 0}
-                label={t("trajectory.latestCall")}
-                onClick={() => {
-                  const last = rows[rows.length - 1];
-                  if (last) {
-                    followSelectionOnStripRef.current = true;
-                    revealRow(last);
-                  }
-                }}
-                type="button"
-              >
-                <ArrowDown aria-hidden="true" />
-              </IconButton>
-            </span>
+          <span className="flex shrink-0 items-center gap-0.5">
+            <IconButton
+              size="icon-xs"
+              disabled={rows.length === 0}
+              label={t("trajectory.firstCall")}
+              onClick={() => {
+                const first = rows.find((row) => row.chip !== "TURN");
+                if (first) {
+                  followSelectionOnStripRef.current = true;
+                  revealRow(first);
+                }
+              }}
+              type="button"
+            >
+              <ArrowUp aria-hidden="true" />
+            </IconButton>
+            <IconButton
+              size="icon-xs"
+              disabled={rows.length === 0}
+              label={t("trajectory.latestCall")}
+              onClick={() => {
+                const last = rows[rows.length - 1];
+                if (last) {
+                  followSelectionOnStripRef.current = true;
+                  revealRow(last);
+                }
+              }}
+              type="button"
+            >
+              <ArrowDown aria-hidden="true" />
+            </IconButton>
           </span>
-        )}
-        {find.open ? null : (
-          <>
-            <span className="text-right">{t("trajectory.result")}</span>
-            <span className="hidden text-right @min-[560px]/trajectory:block">
-              {t("records.duration")}
-            </span>
-          </>
-        )}
+        </span>
+        <span className="text-right">{t("trajectory.result")}</span>
+        <span className="hidden text-right @min-[560px]/trajectory:block">
+          {t("records.duration")}
+        </span>
         <span />
       </div>
       <div className="relative flex min-h-0 min-w-0 flex-1">
@@ -767,15 +749,11 @@ function useTrajectoryFind(
   serviceByRequest: Record<string, RequestServiceIdentity>,
   rowById: Map<string, TrajectoryRow>,
 ) {
-  const [open, setOpen] = useState(false);
   const [query, setQueryState] = useState("");
   const [active, setActive] = useState(0);
   const [seq, setSeq] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
-  const matcher = useMemo(
-    () => (open ? findMatcher(query) : null),
-    [open, query],
-  );
+  const matcher = useMemo(() => findMatcher(query), [query]);
   const found = useMemo(
     () =>
       matcher
@@ -805,19 +783,12 @@ function useTrajectoryFind(
     },
     [count],
   );
-  const show = useCallback(() => {
-    if (open) {
-      inputRef.current?.focus();
-      inputRef.current?.select();
-      return;
-    }
-    setOpen(true);
-    setSeq((current) => current + 1);
-  }, [open]);
-  const close = useCallback(() => setOpen(false), []);
+  const focus = useCallback(() => {
+    inputRef.current?.focus();
+    inputRef.current?.select();
+  }, []);
 
   return {
-    open,
     query,
     active: position,
     seq,
@@ -827,8 +798,7 @@ function useTrajectoryFind(
     result: found ? { count, capped: false } : null,
     setQuery,
     step,
-    show,
-    close,
+    focus,
     /** The query to mark in a row, only where the row holds a hit. */
     queryFor: (row: TrajectoryRow) =>
       found?.rows.has(row.id) ? trimmed : undefined,
@@ -1341,8 +1311,9 @@ const TrajectoryRowView = memo(function TrajectoryRowView({
           row.tone === "cancelled" &&
             "bg-warning-wash/50 hover:bg-warning-wash",
           (selected || highlighted) && "bg-accent hover:bg-accent",
-          findStop && "bg-tide-wash hover:bg-tide-wash",
-          findStop === "active" && "ring-1 ring-tide ring-inset",
+          findStop &&
+            "bg-tide-wash after:absolute after:inset-y-0 after:left-0 after:w-0.5 after:bg-tide hover:bg-tide-wash",
+          findStop === "active" && "ring-1 ring-tide ring-inset after:w-1",
           selected &&
             "before:absolute before:inset-y-0 before:left-0 before:w-0.5 before:bg-primary",
         )}

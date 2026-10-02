@@ -11,11 +11,10 @@ import {
   type Ref,
 } from "react";
 
-import { Check, Copy, Search } from "@/components/icons";
+import { Check, Copy } from "@/components/icons";
 import { ActionGroup } from "@/components/ActionGroup";
 import { FindBar } from "@/components/FindBar";
 import { FormMessage } from "@/components/FormMessage";
-import { IconButton } from "@/components/IconButton";
 import { ModelLabel } from "@/components/ModelLabel";
 import { Panel } from "@/components/Panel";
 import { SegmentedControl } from "@/components/SegmentedControl";
@@ -334,6 +333,26 @@ export function CapturePane({
             {view.label}
           </span>
         )}
+        {/* Always on screen, so find is seen rather than remembered. It
+            stays in place over the HTTP view, unavailable, so switching
+            views does not shift the toolbar. */}
+        <div
+          className="min-w-36 flex-1 basis-40"
+          data-tour-target="inspector-find"
+        >
+          <FindBar
+            active={find.active}
+            disabled={!body}
+            inputRef={find.inputRef}
+            label={t("find.label")}
+            onQueryChange={find.setQuery}
+            onStep={find.step}
+            placeholder={t("find.contentPlaceholder")}
+            query={find.query}
+            result={find.result}
+            shortcut={find.shortcut ? findShortcutLabel() : undefined}
+          />
+        </div>
         <ActionGroup className="gap-1">
           {structuredLabel ? (
             <SegmentedControl
@@ -348,18 +367,6 @@ export function CapturePane({
               ]}
               value={mode}
             />
-          ) : null}
-          {body ? (
-            <IconButton
-              aria-pressed={find.open}
-              className={cn(find.open && "bg-accent text-accent-foreground")}
-              data-testid="capture-find"
-              label={`${t("find.open")} (${findShortcutLabel()})`}
-              onClick={() => (find.open ? find.close() : find.show())}
-              type="button"
-            >
-              <Search aria-hidden="true" />
-            </IconButton>
           ) : null}
           <Button
             aria-label={copyButtonLabel(
@@ -382,20 +389,6 @@ export function CapturePane({
           </Button>
         </ActionGroup>
       </div>
-      {find.open && body ? (
-        <FindBar
-          active={find.active}
-          className="shrink-0 border-b px-2 py-1"
-          inputRef={find.inputRef}
-          label={t("find.label")}
-          onClose={find.close}
-          onQueryChange={find.setQuery}
-          onStep={find.step}
-          placeholder={t("find.contentPlaceholder")}
-          query={find.query}
-          result={find.result}
-        />
-      ) : null}
       <div
         className="min-h-0 flex-1 space-y-3 overflow-auto overscroll-contain p-3"
         data-tab-scroller
@@ -428,14 +421,13 @@ export function CapturePane({
 }
 
 /**
- * Find state for one pane. The query survives switching views and closing
- * the row, as a browser's does; the position starts over with each new
- * search. The view searches a deferred copy of the query, so typing into a
- * multi-megabyte body stays responsive.
+ * Find state for one pane. The query survives switching views, as a
+ * browser's does; the position starts over with each new search. The view
+ * searches a deferred copy of the query, so typing into a multi-megabyte
+ * body stays responsive.
  */
 function usePaneFind(available: boolean) {
   const shortcut = useContext(InspectorFindShortcut);
-  const [open, setOpen] = useState(false);
   const [query, setQueryState] = useState("");
   const [active, setActive] = useState(0);
   const [seq, setSeq] = useState(0);
@@ -471,31 +463,22 @@ function usePaneFind(available: boolean) {
     },
     [count],
   );
-  const show = useCallback(() => {
-    if (open) {
-      inputRef.current?.focus();
-      inputRef.current?.select();
-      return;
-    }
-    setOpen(true);
-    setSeq((current) => current + 1);
-  }, [open]);
-  const close = useCallback(() => setOpen(false), []);
 
-  const keys = useRef({ show, step, open });
-  keys.current = { show, step, open };
+  const stepRef = useRef(step);
+  stepRef.current = step;
   useEffect(() => {
     if (!shortcut || !available) return;
     const onKeyDown = (event: KeyboardEvent) => {
       if (isFindShortcut(event)) {
         event.preventDefault();
-        keys.current.show();
+        inputRef.current?.focus();
+        inputRef.current?.select();
         return;
       }
       const direction = findStepShortcut(event);
-      if (direction === null || !keys.current.open) return;
+      if (direction === null) return;
       event.preventDefault();
-      keys.current.step(direction);
+      stepRef.current(direction);
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
@@ -503,14 +486,12 @@ function usePaneFind(available: boolean) {
 
   const request = useMemo<FindRequest | undefined>(
     () =>
-      open && available
-        ? { query: deferredQuery, active, seq, onResult }
-        : undefined,
-    [active, available, deferredQuery, onResult, open, seq],
+      available ? { query: deferredQuery, active, seq, onResult } : undefined,
+    [active, available, deferredQuery, onResult, seq],
   );
 
   return {
-    open: open && available,
+    shortcut,
     query,
     active,
     result: current,
@@ -518,8 +499,6 @@ function usePaneFind(available: boolean) {
     inputRef,
     setQuery,
     step,
-    show,
-    close,
     restart,
   };
 }
