@@ -1,7 +1,15 @@
 import { useWorkspaceSnapshot } from "./workspace-snapshots";
 import { SessionChannelBindings } from "./SessionChannelBindings";
 import { RecoveryChain, RecoveryDetails } from "./components/RecoveryDetails";
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import {
+  memo,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import {
   ChevronDown,
   Copy,
@@ -98,7 +106,6 @@ import type { RoutableService } from "./service-model";
 import {
   requestServiceIdentity,
   type RequestService,
-  type RequestServiceIdentity,
   type RequestServiceMap,
 } from "./request-service-model";
 import {
@@ -125,6 +132,7 @@ import {
   applyQueuedSessions,
   groupSessionsByDate,
   mergeLiveSessions,
+  reuseUnchangedSessions,
   sessionMatchesFilters,
 } from "./session-live-model";
 import { protocolEntryPath } from "./service-presets";
@@ -546,10 +554,18 @@ export function RequestRecords({
     })
       .then((page) => {
         if (listGenerationRef.current !== generation) return;
-        setLive({
-          items: page.items,
-          queued: [],
-          nextCursor: page.next_cursor,
+        // Coming back to the page usually finds the list it left. Keeping
+        // those objects spares every mounted row a second render.
+        setLive((current) => {
+          const items = reuseUnchangedSessions(current.items, page.items);
+          if (
+            items === current.items &&
+            current.queued.length === 0 &&
+            page.next_cursor === current.nextCursor
+          ) {
+            return current;
+          }
+          return { items, queued: [], nextCursor: page.next_cursor };
         });
         setListStatus("ready");
       })
@@ -839,12 +855,14 @@ export function RequestRecords({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [rawProtected]);
 
-  const openDetail = (sessionId: string) => {
+  // Stable, so the memoized list rows skip the page's re-renders.
+  const openDetail = useCallback((sessionId: string) => {
     selectedFocusRef.current = sessionId;
     setSelectedId(sessionId);
     setSelectedTurnId(null);
-    setViewAndRef("detail");
-  };
+    viewRef.current = "detail";
+    setView("detail");
+  }, []);
 
   const returnToMonitor = () => {
     setViewAndRef("monitor");
@@ -1738,6 +1756,31 @@ function RecordLatency({ record }: { record: RequestRecord }) {
   return <>{formatDuration(liveDurationMs(record, nowMs))}</>;
 }
 
+// The shortest row, a model discovery, is about 40px tall.
+const FIRST_FRAME_ROW_PX = 40;
+const ROWS_PER_FRAME = 10;
+
+/**
+ * How many of `total` rows to mount. WebKit spends ~2.5 ms styling and laying
+ * out one session row, so mounting a full page of 50 held the switch to this
+ * page for ~180 ms. The first frame gets what can fit in the window; the rest
+ * follow a chunk per frame. Rows already mounted stay mounted.
+ */
+function useProgressiveRowCount(total: number): number {
+  const [mounted, setMounted] = useState(() =>
+    Math.ceil(window.innerHeight / FIRST_FRAME_ROW_PX),
+  );
+  const shown = Math.min(total, mounted);
+  useEffect(() => {
+    if (shown >= total) return;
+    const frame = window.requestAnimationFrame(() =>
+      setMounted(shown + ROWS_PER_FRAME),
+    );
+    return () => window.cancelAnimationFrame(frame);
+  }, [shown, total]);
+  return shown;
+}
+
 function SessionStream({
   sessions,
   services,
@@ -1752,55 +1795,61 @@ function SessionStream({
   const t = i18n.t.bind(i18n);
   // Only the date buckets need "now", and those turn over once a day.
   const groups = groupSessionsByDate(sessions);
+  let remaining = useProgressiveRowCount(sessions.length);
   return (
     <div className="pb-3" role="feed" aria-label={t("records.sessionFlow")}>
-      {groups.map((group) => (
-        <section className="mt-3 first:mt-0" key={group.key}>
-          <div className="flex items-center gap-2 px-3 pt-4 pb-2 text-xs font-medium text-muted-foreground">
-            <span>{group.label}</span>
-            <Badge className="font-normal tabular-nums" variant="secondary">
-              {t("records.countItems", { count: group.sessions.length })}
-            </Badge>
-          </div>
-          {group.sessions.map((session) =>
-            isModelDiscoveryProtocol(session.input_protocol) ? (
-              <DiscoveryRow
-                key={session.id}
-                onOpen={() => onOpen(session.id)}
-                selected={session.id === selectedId}
-                session={session}
-                service={requestServiceIdentity(session, services)}
-              />
-            ) : (
-              <SessionRow
-                key={session.id}
-                onOpen={() => onOpen(session.id)}
-                selected={session.id === selectedId}
-                service={requestServiceIdentity(session, services)}
-                session={session}
-              />
-            ),
-          )}
-        </section>
-      ))}
+      {groups.map((group) => {
+        const rows = group.sessions.slice(0, remaining);
+        remaining -= rows.length;
+        if (rows.length === 0) return null;
+        return (
+          <section className="mt-3 first:mt-0" key={group.key}>
+            <div className="flex items-center gap-2 px-3 pt-4 pb-2 text-xs font-medium text-muted-foreground">
+              <span>{group.label}</span>
+              <Badge className="font-normal tabular-nums" variant="secondary">
+                {t("records.countItems", { count: group.sessions.length })}
+              </Badge>
+            </div>
+            {rows.map((session) =>
+              isModelDiscoveryProtocol(session.input_protocol) ? (
+                <DiscoveryRow
+                  key={session.id}
+                  onOpen={onOpen}
+                  selected={session.id === selectedId}
+                  services={services}
+                  session={session}
+                />
+              ) : (
+                <SessionRow
+                  key={session.id}
+                  onOpen={onOpen}
+                  selected={session.id === selectedId}
+                  services={services}
+                  session={session}
+                />
+              ),
+            )}
+          </section>
+        );
+      })}
     </div>
   );
 }
 
-function DiscoveryRow({
+const DiscoveryRow = memo(function DiscoveryRow({
   session,
-  service,
+  services,
   selected,
   onOpen,
 }: {
   session: RequestSession;
-  service: RequestServiceIdentity;
+  services: RequestServiceMap;
   selected: boolean;
-  onOpen: () => void;
+  onOpen: (sessionId: string) => void;
 }) {
   const t = useT();
   const nowMs = useLiveClock(session.active_request_starts.length > 0);
-  const last = new Date(session.last_started_at);
+  const service = requestServiceIdentity(session, services);
   return (
     <DataRow
       asChild
@@ -1811,7 +1860,7 @@ function DiscoveryRow({
         className="h-auto w-full rounded-none bg-transparent text-left font-normal whitespace-normal text-foreground hover:bg-muted/60 focus-visible:bg-accent focus-visible:ring-inset aria-[current=true]:bg-accent"
         data-session-id={session.id}
         data-testid="request-session-row"
-        onClick={onOpen}
+        onClick={() => onOpen(session.id)}
         type="button"
         variant="ghost"
       >
@@ -1848,31 +1897,30 @@ function DiscoveryRow({
           dateTime={session.last_started_at}
           title={formatDateTime(session.last_started_at)}
         >
-          {Number.isNaN(last.getTime())
-            ? session.last_started_at
-            : last.toLocaleTimeString(dateTimeLocale(), { hour12: false })}
+          {formatTime(session.last_started_at)}
         </time>
       </Button>
     </DataRow>
   );
-}
+});
 
-function SessionRow({
+const SessionRow = memo(function SessionRow({
   session,
-  service,
+  services,
   selected,
   onOpen,
 }: {
   session: RequestSession;
-  service: RequestServiceIdentity;
+  services: RequestServiceMap;
   selected: boolean;
-  onOpen: () => void;
+  onOpen: (sessionId: string) => void;
 }) {
-  const t = i18n.t.bind(i18n);
+  // Memoized, so it subscribes to the language itself.
+  const t = useT();
   // The elapsed time is interpolated into a translated sentence, so the row is
   // the smallest thing that can repaint it. Only active requests tick.
   const nowMs = useLiveClock(session.active_request_starts.length > 0);
-  const last = new Date(session.last_started_at);
+  const service = requestServiceIdentity(session, services);
   return (
     <DataRow
       asChild
@@ -1883,7 +1931,7 @@ function SessionRow({
         className="h-auto w-full rounded-none bg-transparent text-left font-normal whitespace-normal text-foreground hover:bg-muted/60 focus-visible:bg-accent focus-visible:ring-inset aria-[current=true]:bg-accent"
         data-session-id={session.id}
         data-testid="request-session-row"
-        onClick={onOpen}
+        onClick={() => onOpen(session.id)}
         type="button"
         variant="ghost"
       >
@@ -1944,9 +1992,7 @@ function SessionRow({
             dateTime={session.last_started_at}
             title={formatDateTime(session.last_started_at)}
           >
-            {Number.isNaN(last.getTime())
-              ? session.last_started_at
-              : last.toLocaleTimeString(dateTimeLocale(), { hour12: false })}
+            {formatTime(session.last_started_at)}
           </time>
         </span>
         <ModelLabel
@@ -1959,7 +2005,7 @@ function SessionRow({
       </Button>
     </DataRow>
   );
-}
+});
 
 function RecordDetail({
   serviceNames,
@@ -2986,10 +3032,37 @@ function dateTimeLocale(): string {
   return i18n.language === "zh-CN" ? "zh-CN" : "en";
 }
 
-function formatDateTime(value: string): string {
+// Same output as toLocaleString / toLocaleTimeString with `hour12: false`,
+// which build a new formatter per call; the list formats two times per row.
+const dateTimeFormats = new Map<string, Intl.DateTimeFormat>();
+
+function formatDate(value: string, withDate: boolean): string {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
-  return date.toLocaleString(dateTimeLocale(), { hour12: false });
+  const locale = dateTimeLocale();
+  const key = `${locale}:${withDate}`;
+  let format = dateTimeFormats.get(key);
+  if (!format) {
+    format = new Intl.DateTimeFormat(locale, {
+      ...(withDate
+        ? { year: "numeric", month: "numeric", day: "numeric" }
+        : {}),
+      hour: "numeric",
+      minute: "numeric",
+      second: "numeric",
+      hour12: false,
+    });
+    dateTimeFormats.set(key, format);
+  }
+  return format.format(date);
+}
+
+function formatDateTime(value: string): string {
+  return formatDate(value, true);
+}
+
+function formatTime(value: string): string {
+  return formatDate(value, false);
 }
 
 function formatBytes(bytes: number): string {

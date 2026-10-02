@@ -93,6 +93,30 @@ export function mergeLiveSessions(
   };
 }
 
+/**
+ * The page Core returned, keeping the objects of sessions that did not move.
+ * Returns `previous` itself when the page matches it entirely.
+ */
+export function reuseUnchangedSessions(
+  previous: RequestSession[],
+  incoming: RequestSession[],
+): RequestSession[] {
+  const previousById = new Map(
+    previous.map((session) => [session.id, session]),
+  );
+  let changed = previous.length !== incoming.length;
+  const items = incoming.map((session, index) => {
+    const known = previousById.get(session.id);
+    if (!known || !sameSession(known, session)) {
+      changed = true;
+      return session;
+    }
+    if (previous[index] !== known) changed = true;
+    return known;
+  });
+  return changed ? items : previous;
+}
+
 export function applyQueuedSessions(
   items: RequestSession[],
   queued: RequestSession[],

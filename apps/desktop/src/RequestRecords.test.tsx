@@ -556,6 +556,56 @@ describe("RequestRecords", () => {
     expect(provider?.getAttribute("title")).toContain(service.id);
   });
 
+  it("mounts what fits the window first and the rest of a long list frame by frame", async () => {
+    vi.spyOn(window, "innerHeight", "get").mockReturnValue(400);
+    const frames: FrameRequestCallback[] = [];
+    vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
+      frames.push(callback);
+      return frames.length;
+    });
+    vi.spyOn(window, "cancelAnimationFrame").mockImplementation(() => {});
+    const sessions = Array.from({ length: 36 }, (_, index) => {
+      // Two date groups of 18, newest first, seconds apart within each day
+      // so no time zone splits a group.
+      const startedAt = new Date(
+        Date.parse("2026-07-25T06:00:30Z") -
+          (index % 18) * 1000 -
+          (index < 18 ? 0 : 24 * 60 * 60_000),
+      ).toISOString();
+      return sessionFromRecord({
+        ...firstRecord,
+        id: `req_long_${String(index).padStart(2, "0")}`,
+        session_id: `sess_long_${String(index).padStart(2, "0")}`,
+        started_at: startedAt,
+      });
+    });
+    bridgeMocks.listRequestSessions.mockResolvedValue({
+      items: sessions,
+      next_cursor: null,
+    });
+    await renderRecords();
+    const rowIds = () =>
+      [
+        ...container.querySelectorAll<HTMLElement>(
+          '[data-testid="request-session-row"]',
+        ),
+      ].map((row) => row.dataset.sessionId);
+    const groupCounts = () =>
+      [...container.querySelectorAll('[role="feed"] section')].map(
+        (section) => section.querySelector('[data-slot="badge"]')?.textContent,
+      );
+
+    // 400px fits ten of the shortest rows.
+    expect(rowIds()).toEqual(sessions.slice(0, 10).map((entry) => entry.id));
+    expect(groupCounts()).toEqual(["18 条"]);
+
+    while (frames.length > 0) {
+      await act(async () => frames.shift()?.(performance.now()));
+    }
+    expect(rowIds()).toEqual(sessions.map((entry) => entry.id));
+    expect(groupCounts()).toEqual(["18 条", "18 条"]);
+  });
+
   it("distinguishes pending selection, an unrouted result, exhausted providers and a removed provider", async () => {
     bridgeMocks.listRequestSessions.mockResolvedValue({
       items: [

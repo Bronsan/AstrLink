@@ -1,7 +1,10 @@
 import { describe, expect, it } from "vitest";
 
 import type { RequestSession } from "./request-record-model";
-import { mergeLiveSessions } from "./session-live-model";
+import {
+  mergeLiveSessions,
+  reuseUnchangedSessions,
+} from "./session-live-model";
 
 function session(
   id: string,
@@ -168,5 +171,41 @@ describe("mergeLiveSessions", () => {
     expect(parked.items.map((entry) => entry.id)).toEqual(["sess_a"]);
     expect(parked.queued.map((entry) => entry.id)).toEqual(["sess_b"]);
     expect(parked.added).toBe(1);
+  });
+});
+
+describe("reuseUnchangedSessions", () => {
+  it("returns the previous list when the page matches it", () => {
+    const previous = [session("sess_b"), session("sess_a")];
+    const page = previous.map((entry) => ({ ...entry }));
+    expect(reuseUnchangedSessions(previous, page)).toBe(previous);
+  });
+
+  it("follows the page while keeping the sessions that did not move", () => {
+    const kept = session("sess_a");
+    const moved = session("sess_b");
+    const dropped = session("sess_c");
+    const page = [session("sess_d"), { ...moved, call_count: 2 }, { ...kept }];
+    const items = reuseUnchangedSessions([moved, kept, dropped], page);
+    expect(items.map((entry) => entry.id)).toEqual([
+      "sess_d",
+      "sess_b",
+      "sess_a",
+    ]);
+    expect(items[0]).toBe(page[0]);
+    expect(items[1]).toBe(page[1]);
+    expect(items[2]).toBe(kept);
+  });
+
+  it("returns a new list when only the order changed", () => {
+    const first = session("sess_a");
+    const second = session("sess_b");
+    const items = reuseUnchangedSessions(
+      [first, second],
+      [{ ...second }, { ...first }],
+    );
+    expect(items).toEqual([second, first]);
+    expect(items[0]).toBe(second);
+    expect(items[1]).toBe(first);
   });
 });
