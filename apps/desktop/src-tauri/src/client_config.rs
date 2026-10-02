@@ -1991,13 +1991,14 @@ mod tests {
     fn pi_apply_writes_both_files_and_removes_only_what_it_wrote() {
         let home = unique_home("pi");
         fs::create_dir_all(home.join(".pi/agent")).unwrap();
-        let settings = home.join(".pi/agent/settings.json");
+        let agent = home.join(".pi").join("agent");
+        let settings = agent.join("settings.json");
         fs::write(&settings, "{\n  \"theme\": \"dark\"\n}\n").unwrap();
         assert_eq!(
             write(&home, Client::Pi, &connection(&pi_models()), false).unwrap(),
             ApplyOutcome::Applied
         );
-        let models = home.join(".pi/agent/models.json");
+        let models = agent.join("models.json");
         assert!(fs::read_to_string(&models).unwrap().contains(TOKEN));
         assert!(fs::read_to_string(&settings)
             .unwrap()
