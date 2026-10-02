@@ -509,6 +509,17 @@ describe("RequestRecords", () => {
       expect(rows[1].querySelector('[role="img"]')?.getAttribute("title")).toBe(
         "客户端：未知客户端",
       );
+      // Brand marks keep their own colour; only the unknown fallback is muted.
+      expect(
+        rows[0]
+          .querySelector('[role="img"]')
+          ?.classList.contains("text-foreground"),
+      ).toBe(true);
+      expect(
+        rows[1]
+          .querySelector('[role="img"]')
+          ?.classList.contains("text-muted-foreground"),
+      ).toBe(true);
       expect(rows[0].textContent).toContain("gpt-4.1");
     },
   );

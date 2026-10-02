@@ -82,7 +82,10 @@ export function ClientTypeIcon({
         ? { "aria-hidden": true }
         : { "aria-label": label, role: "img", title: label })}
       className={cn(
-        "inline-flex shrink-0 items-center justify-center text-muted-foreground",
+        // Mono brand marks paint with currentColor and their brand colour is
+        // black; muting them would gray out the logo. Only the fallback is muted.
+        "inline-flex shrink-0 items-center justify-center",
+        Mark ? "text-foreground" : "text-muted-foreground",
         className,
       )}
       style={{ width: size, height: size }}
