@@ -2801,6 +2801,12 @@ export function ServiceManager({
   const egressTargets = subscriptionKind
     ? subscriptionConversionTargets[subscriptionKind]
     : null;
+  // Re-enabling a protocol the preset's upstream serves natively passes it through.
+  const presetUpstreamProtocols = new Set(
+    selectedPreset?.capabilities
+      .filter((capability) => !capability.convert_to)
+      .map((capability) => capability.protocol),
+  );
   const protocolRows = subscriptionKind
     ? descriptors.filter(
         ({ id }) => nativeProtocols.has(id) || supportsLocalConversion(id),
@@ -2852,13 +2858,15 @@ export function ServiceManager({
             );
             const defaultTarget = egressTargets
               ? targets.find((target) => target.enabled)?.id
-              : bestConversionTarget(
-                  descriptor.id,
-                  draft.capabilities
-                    .filter((row) => !row.convert_to)
-                    .map((row) => row.protocol),
-                  conversionEngine,
-                );
+              : presetUpstreamProtocols.has(descriptor.id)
+                ? undefined
+                : bestConversionTarget(
+                    descriptor.id,
+                    draft.capabilities
+                      .filter((row) => !row.convert_to)
+                      .map((row) => row.protocol),
+                    conversionEngine,
+                  );
             const locked =
               native ||
               (egressTargets !== null && !capability && !defaultTarget);
