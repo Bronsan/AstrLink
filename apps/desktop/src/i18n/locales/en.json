@@ -922,6 +922,22 @@
     "reorderKeys": "Drag to reorder; use Arrow Up / Down when focused",
     "orderSaving": "Saving API provider order…",
     "orderFiltered": "Drag to change matching API providers’ global priority; other API providers keep their positions.",
+    "editorTour": {
+      "help": "Section tour",
+      "progress": "{{current}} / {{total}}",
+      "next": "Next",
+      "back": "Back",
+      "skip": "Skip",
+      "done": "Got it",
+      "connection": "Add an API key or sign in to a subscription. AstrLink uses it to reach the upstream for you.",
+      "models": "Only models on this list are routed to this provider. With an empty list, it is never used.",
+      "modelsEmpty": "No models yet. Remember to add them here.",
+      "protocols": "Decides which clients can use this provider. Turn on the matching protocol, and choose Pass through when the upstream supports it natively.",
+      "chatClients": "OpenCode and compatible tools",
+      "supported": "Supported",
+      "notEnabled": "Off",
+      "failure": "Retry or move to the next provider when the upstream fails. It follows Routing by default and rarely needs changes."
+    },
     "orderGuide": {
       "title": "Drag to set provider priority",
       "description": "When multiple providers support a model, those at the top take priority.",

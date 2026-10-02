@@ -48,6 +48,7 @@ import {
 } from "./lib/test-dialog-animations";
 import { ServiceManager } from "./ServiceManager";
 import { PROTOCOL_MODE_GUIDE_KEY } from "./ProtocolModeHelp";
+import { SERVICE_EDITOR_TOUR_KEY } from "./ServiceEditorTour";
 import { SERVICE_ORDER_GUIDE_KEY } from "./ServiceOrderHelp";
 import { SERVICE_LIST_COLUMNS_STORAGE_KEY } from "./service-list-columns";
 import { parseService, type Service } from "./service-model";
@@ -253,6 +254,7 @@ describe("ServiceManager", () => {
     // Existing editor/action tests represent returning users.
     localStorage.setItem(SERVICE_ORDER_GUIDE_KEY, "seen");
     localStorage.setItem(PROTOCOL_MODE_GUIDE_KEY, "seen");
+    localStorage.setItem(SERVICE_EDITOR_TOUR_KEY, "seen");
     localStorage.removeItem(SERVICE_LIST_COLUMNS_STORAGE_KEY);
     bridgeMocks.getRoutingSettings.mockResolvedValue({
       default_failure_policy: defaultFailurePolicy(),

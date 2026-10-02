@@ -29,14 +29,41 @@ const clients = {
   { name: string; Mark: typeof CodexColor }
 >;
 
+/** Decorative marks for a group of clients whose names are shown beside them. */
+export function ClientTypeIcons({
+  clientTypes,
+  className,
+  size = 16,
+}: {
+  clientTypes: readonly ClientType[];
+  className?: string;
+  size?: number;
+}) {
+  return (
+    <span className={cn("flex shrink-0 items-center gap-1", className)}>
+      {clientTypes.map((clientType) => (
+        <ClientTypeIcon
+          clientType={clientType}
+          decorative
+          key={clientType}
+          size={size}
+        />
+      ))}
+    </span>
+  );
+}
+
 /** Named, non-interactive mark suitable for use inside a clickable record row. */
 export function ClientTypeIcon({
   clientType,
   className,
+  decorative = false,
   size = 20,
 }: {
   clientType?: ClientType | null;
   className?: string;
+  /** Hide the mark from assistive technology when its name is shown beside it. */
+  decorative?: boolean;
   size?: number;
 }) {
   const t = useT();
@@ -51,14 +78,14 @@ export function ClientTypeIcon({
   const markSize = clientType === "pi" ? size * 0.8 : size;
   return (
     <span
-      aria-label={label}
+      {...(decorative
+        ? { "aria-hidden": true }
+        : { "aria-label": label, role: "img", title: label })}
       className={cn(
         "inline-flex shrink-0 items-center justify-center text-muted-foreground",
         className,
       )}
-      role="img"
       style={{ width: size, height: size }}
-      title={label}
     >
       <span
         aria-hidden="true"
