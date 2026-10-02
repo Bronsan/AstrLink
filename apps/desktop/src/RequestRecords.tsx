@@ -21,7 +21,7 @@ import {
 } from "@/components/icons";
 
 import { ConfirmDialog as AppConfirmDialog } from "@/components/ConfirmDialog";
-import { ClientTypeIcon } from "@/components/ClientTypeIcon";
+import { ClientTypeIcon, clientTypeName } from "@/components/ClientTypeIcon";
 import { DataRow } from "@/components/DataRow";
 import { EmptyState } from "@/components/EmptyState";
 import { ScrollWorkspace } from "@/components/ScrollWorkspace";
@@ -115,12 +115,14 @@ import {
   type RecordFilters,
 } from "./request-live-model";
 import {
+  CLIENT_TYPES,
   holdsRawPart,
   isModelDiscoveryProtocol,
   statusLabel,
   statusTone,
   type AuditContent,
   type AuditContentPart,
+  type ClientType,
   type RequestRecord,
   type RequestSession,
   type RequestSessionDetail,
@@ -153,6 +155,7 @@ const EMPTY_FILTERS: RecordFilters = {
   status: "",
   serviceId: "",
   protocol: "",
+  clientType: "",
   localAccessTokenIds: [],
 };
 
@@ -450,6 +453,20 @@ export function RequestRecords({
       )
       .sort();
   }, [allRecords, services, kind]);
+  // Only clients that actually sent traffic are worth offering; unknown
+  // traffic is the catch-all, so it trails the named clients.
+  const clientOptions = useMemo(() => {
+    const seen = new Set<ClientType>(
+      allRecords.map((session) => session.client_type ?? "unknown"),
+    );
+    if (filters.clientType) seen.add(filters.clientType);
+    return [
+      ...CLIENT_TYPES.filter(
+        (clientType) => clientType !== "unknown" && seen.has(clientType),
+      ),
+      ...(seen.has("unknown") ? (["unknown"] as const) : []),
+    ];
+  }, [allRecords, filters.clientType]);
 
   useEffect(() => {
     const generation = generationRef.current + 1;
@@ -481,7 +498,8 @@ export function RequestRecords({
         sameTokenSelection &&
         current.status === EMPTY_FILTERS.status &&
         current.serviceId === EMPTY_FILTERS.serviceId &&
-        current.protocol === EMPTY_FILTERS.protocol
+        current.protocol === EMPTY_FILTERS.protocol &&
+        current.clientType === EMPTY_FILTERS.clientType
       ) {
         return current;
       }
@@ -1370,7 +1388,7 @@ export function RequestRecords({
                   </FormMessage>
                 ) : null}
                 <div className="flex w-full min-w-0 flex-wrap items-center gap-2 border-b bg-background py-2">
-                  <div className="grid min-w-0 flex-1 basis-72 grid-cols-2 gap-2 @[760px]:max-w-2xl @[760px]:grid-cols-4">
+                  <div className="grid min-w-0 flex-1 basis-72 grid-cols-3 gap-2 @[680px]:max-w-4xl @[680px]:grid-cols-5">
                     <FilterSelect
                       ariaLabel={t("records.filter", {
                         label: t("records.status"),
@@ -1394,10 +1412,10 @@ export function RequestRecords({
                     />
                     <ServiceSelect
                       ariaLabel={t("records.filter", {
-                        label: t("records.provider"),
+                        label: t("records.providerFilter"),
                       })}
                       className="w-full"
-                      label={t("records.provider")}
+                      label={t("records.providerFilter")}
                       onChange={(serviceId) =>
                         setFilters((current) => ({ ...current, serviceId }))
                       }
@@ -1422,6 +1440,39 @@ export function RequestRecords({
                         })),
                       ]}
                       value={filters.protocol}
+                    />
+                    <FilterSelect
+                      ariaLabel={t("records.filter", {
+                        label: t("records.client"),
+                      })}
+                      className="w-full"
+                      label={t("records.client")}
+                      onChange={(clientType) =>
+                        setFilters((current) => ({
+                          ...current,
+                          clientType: clientType as ClientType | "",
+                        }))
+                      }
+                      options={[
+                        { label: t("common.all"), value: "" },
+                        ...clientOptions.map((clientType) => ({
+                          label: clientTypeName(clientType),
+                          value: clientType,
+                          displayLabel: (
+                            <span className="inline-flex min-w-0 items-center gap-2">
+                              <ClientTypeIcon
+                                clientType={clientType}
+                                decorative
+                                size={16}
+                              />
+                              <span className="truncate">
+                                {clientTypeName(clientType)}
+                              </span>
+                            </span>
+                          ),
+                        })),
+                      ]}
+                      value={filters.clientType}
                     />
                     <MultiFilterSelect
                       allLabel={t("common.all")}
@@ -1448,17 +1499,16 @@ export function RequestRecords({
                       value={filters.localAccessTokenIds}
                     />
                   </div>
-                  <Button
+                  <IconButton
                     className="ml-auto"
                     variant="outline"
                     disabled={!isReady || listStatus === "loading"}
+                    label={t("common.refresh")}
                     onClick={() => manualPollRef.current?.()}
-                    size="sm"
                     type="button"
                   >
                     <RefreshCw aria-hidden="true" />
-                    {t("common.refresh")}
-                  </Button>
+                  </IconButton>
                 </div>
               </>
             }
@@ -1516,6 +1566,7 @@ export function RequestRecords({
                     filters.status ||
                     filters.serviceId ||
                     filters.protocol ||
+                    filters.clientType ||
                     filters.localAccessTokenIds.length ? (
                       <Button
                         variant="outline"

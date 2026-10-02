@@ -11,7 +11,7 @@ import {
 } from "@/components/brand-icons";
 import { Bot } from "@/components/icons";
 import { cn } from "@/lib/utils";
-import { useT } from "../i18n";
+import { i18n, useT } from "../i18n";
 import type { ClientType } from "../request-record-model";
 
 const clients = {
@@ -28,6 +28,13 @@ const clients = {
   Exclude<ClientType, "unknown">,
   { name: string; Mark: typeof CodexColor }
 >;
+
+/** Product name of a detected client, or the unknown-client label. */
+export function clientTypeName(clientType?: ClientType | null): string {
+  return clientType && clientType !== "unknown"
+    ? clients[clientType].name
+    : i18n.t("records.unknownClient");
+}
 
 /** Decorative marks for a group of clients whose names are shown beside them. */
 export function ClientTypeIcons({

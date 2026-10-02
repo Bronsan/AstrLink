@@ -10,6 +10,8 @@ export function sessionMatchesFilters(
     (!filters.status || session.status === filters.status) &&
     (!filters.serviceId || session.service_id === filters.serviceId) &&
     (!filters.protocol || session.input_protocol === filters.protocol) &&
+    (!filters.clientType ||
+      (session.client_type ?? "unknown") === filters.clientType) &&
     (!filters.localAccessTokenIds?.length ||
       (session.local_access_token_id !== null &&
         filters.localAccessTokenIds.includes(session.local_access_token_id)))
@@ -50,6 +52,7 @@ function sameSession(left: RequestSession, right: RequestSession): boolean {
     left.model_redirect?.to === right.model_redirect?.to &&
     (left.reasoning_effort ?? null) === (right.reasoning_effort ?? null) &&
     left.input_protocol === right.input_protocol &&
+    (left.client_type ?? null) === (right.client_type ?? null) &&
     left.service_id === right.service_id &&
     left.local_access_token_id === right.local_access_token_id
   );

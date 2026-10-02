@@ -4,6 +4,7 @@ import type { RequestSession } from "./request-record-model";
 import {
   mergeLiveSessions,
   reuseUnchangedSessions,
+  sessionMatchesFilters,
 } from "./session-live-model";
 
 function session(
@@ -67,6 +68,14 @@ describe("mergeLiveSessions", () => {
       active_request_starts: ["2026-07-25T09:59:01Z"],
     });
     expect(mergeLiveSessions([], [before], [after], true).queued[0]).toBe(
+      after,
+    );
+  });
+
+  it("updates the client mark when only the detected client changes", () => {
+    const before = session("sess_a");
+    const after = session("sess_a", { client_type: "codex" });
+    expect(mergeLiveSessions([before], [], [after], false).items[0]).toBe(
       after,
     );
   });
@@ -207,5 +216,35 @@ describe("reuseUnchangedSessions", () => {
     expect(items).toEqual([second, first]);
     expect(items[0]).toBe(second);
     expect(items[1]).toBe(first);
+  });
+});
+
+describe("sessionMatchesFilters", () => {
+  const filters = {
+    status: "" as const,
+    serviceId: "",
+    protocol: "",
+    clientType: "" as const,
+    localAccessTokenIds: [],
+  };
+
+  it("matches the selected client", () => {
+    const codex = session("sess_a", { client_type: "codex" });
+    expect(
+      sessionMatchesFilters(codex, { ...filters, clientType: "codex" }),
+    ).toBe(true);
+    expect(
+      sessionMatchesFilters(codex, { ...filters, clientType: "claude_code" }),
+    ).toBe(false);
+  });
+
+  it("files sessions without a detected client under unknown", () => {
+    const undetected = session("sess_a");
+    expect(
+      sessionMatchesFilters(undetected, { ...filters, clientType: "unknown" }),
+    ).toBe(true);
+    expect(
+      sessionMatchesFilters(undetected, { ...filters, clientType: "codex" }),
+    ).toBe(false);
   });
 });

@@ -12,6 +12,19 @@ export type ClientType =
   | "cline"
   | "pi";
 
+export const CLIENT_TYPES: readonly ClientType[] = [
+  "unknown",
+  "codex",
+  "claude_code",
+  "cursor",
+  "grok_cli",
+  "gemini_cli",
+  "opencode",
+  "openclaw",
+  "cline",
+  "pi",
+];
+
 export type RequestStatus =
   | "pending"
   | "succeeded"
@@ -810,21 +823,10 @@ function optionalConversionDiagnostics(
 function optionalClientType(value: unknown): { client_type?: ClientType } {
   if (value == null) return {};
   // Future Core labels remain displayable by older desktop builds.
-  const known: readonly string[] = [
-    "unknown",
-    "codex",
-    "claude_code",
-    "cursor",
-    "grok_cli",
-    "gemini_cli",
-    "opencode",
-    "openclaw",
-    "cline",
-    "pi",
-  ];
   return {
     client_type:
-      typeof value === "string" && known.includes(value)
+      typeof value === "string" &&
+      (CLIENT_TYPES as readonly string[]).includes(value)
         ? (value as ClientType)
         : "unknown",
   };

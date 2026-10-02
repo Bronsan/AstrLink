@@ -300,6 +300,15 @@ function buttonContaining(
   return match;
 }
 
+/** Option text as read aloud; decorative marks may carry their own SVG titles. */
+function optionText(option: Element): string | undefined {
+  const copy = option.cloneNode(true) as Element;
+  copy
+    .querySelectorAll('[aria-hidden="true"]')
+    .forEach((node) => node.remove());
+  return copy.textContent?.trim();
+}
+
 async function chooseOption(label: string, option: string): Promise<void> {
   const trigger = document.querySelector<HTMLButtonElement>(
     `button[role="combobox"][aria-label="${label}"]`,
@@ -317,7 +326,7 @@ async function chooseOption(label: string, option: string): Promise<void> {
   });
   const item = [
     ...document.querySelectorAll<HTMLElement>('[role="option"]'),
-  ].find((candidate) => candidate.textContent?.trim() === option);
+  ].find((candidate) => optionText(candidate) === option);
   if (!item) throw new Error(`Missing select option: ${option}`);
   await act(async () => {
     item.click();
@@ -2334,6 +2343,57 @@ describe("RequestRecords", () => {
     expect(
       container.querySelector(`[data-session-id="${firstRecord.id}"]`),
     ).toBeNull();
+  });
+
+  it("offers the clients that sent traffic and filters by them locally", async () => {
+    bridgeMocks.listRequestSessions.mockResolvedValue({
+      items: [
+        sessionFromRecord(firstRecord, { client_type: "codex" }),
+        sessionFromRecord(secondRecord),
+      ],
+      next_cursor: null,
+    });
+    await renderRecords();
+    bridgeMocks.listRequestSessions.mockClear();
+
+    await act(async () => {
+      document
+        .querySelector('button[role="combobox"][aria-label="客户端筛选"]')
+        ?.dispatchEvent(
+          new PointerEvent("pointerdown", {
+            bubbles: true,
+            button: 0,
+            pointerType: "mouse",
+          }),
+        );
+      await Promise.resolve();
+    });
+    expect(
+      [...document.querySelectorAll('[role="option"]')].map(optionText),
+    ).toEqual(["全部", "Codex", "未知客户端"]);
+    await act(async () => {
+      document.dispatchEvent(
+        new KeyboardEvent("keydown", { bubbles: true, key: "Escape" }),
+      );
+      await Promise.resolve();
+    });
+
+    await chooseOption("客户端筛选", "Codex");
+    expect(bridgeMocks.listRequestSessions).not.toHaveBeenCalled();
+    expect(
+      container.querySelector(`[data-session-id="${firstRecord.id}"]`),
+    ).not.toBeNull();
+    expect(
+      container.querySelector(`[data-session-id="${secondRecord.id}"]`),
+    ).toBeNull();
+
+    await chooseOption("客户端筛选", "未知客户端");
+    expect(
+      container.querySelector(`[data-session-id="${firstRecord.id}"]`),
+    ).toBeNull();
+    expect(
+      container.querySelector(`[data-session-id="${secondRecord.id}"]`),
+    ).not.toBeNull();
   });
 
   it("passes the stable cursor when loading earlier records", async () => {
