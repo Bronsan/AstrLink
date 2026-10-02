@@ -180,6 +180,19 @@ describe("flattenJsonTree", () => {
     expect(all.some((row) => row.type === "more")).toBe(false);
     expect(all.filter((row) => row.type === "node")).toHaveLength(252);
   });
+
+  it("closes an empty container on its own row", () => {
+    const root = parseJsonTree('{"output":[],"meta":{},"cut":[').root!;
+    const rows = flattenJsonTree(root, expandAllPaths(root), new Map());
+    expect(rows.map((row) => row.type)).toEqual([
+      "node",
+      "node",
+      "node",
+      "node",
+      "close",
+      "close",
+    ]);
+  });
 });
 
 describe("defaultOpenPaths", () => {

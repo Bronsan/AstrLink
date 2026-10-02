@@ -1841,8 +1841,6 @@
     "responseHeaders": "响应头",
     "streamView": "流内容视图",
     "original": "原文",
-    "events": "事件",
-    "eventsCount": "事件 · {{count}}",
     "invalidJson": "{{count}} 个无效 JSON",
     "incompleteTail": "末尾事件不完整",
     "typeOrContent": "类型或内容",

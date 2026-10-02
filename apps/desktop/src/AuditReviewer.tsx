@@ -35,6 +35,8 @@ import { i18n } from "./i18n";
 import { copyButtonLabel, type CopyFeedback } from "./copy-feedback";
 import {
   JsonTreeCancelledError,
+  detectBase64,
+  jsonKeyText,
   parseJsonTree,
   parseJsonTreeIncremental,
   type JsonNode,
@@ -623,18 +625,14 @@ function StreamInspector({
       <div className="mb-2.5 flex items-center justify-between gap-3 max-[720px]:items-stretch max-[720px]:flex-col">
         <TabsList aria-label={t("audit.streamView")}>
           <ModeTab
+            active={mode === "events"}
+            label={t("audit.formatted")}
+            value="events"
+          />
+          <ModeTab
             active={mode === "raw"}
             label={t("audit.original")}
             value="raw"
-          />
-          <ModeTab
-            active={mode === "events"}
-            label={
-              parseState === "idle"
-                ? t("audit.events")
-                : t("audit.eventsCount", { count: events.length })
-            }
-            value="events"
           />
         </TabsList>
         {parseState !== "idle" ? (
@@ -813,10 +811,12 @@ function EventsView({
 
 function EventCard({ event }: { event: SSEEvent }) {
   const t = i18n.t.bind(i18n);
+  const [open, setOpen] = useState(false);
   return (
     <details
       className="group overflow-hidden rounded-md border bg-card"
       data-testid="audit-event"
+      onToggle={(change) => setOpen(change.currentTarget.open)}
     >
       <summary className="grid cursor-pointer list-none grid-cols-[44px_minmax(0,1fr)_auto_auto] items-center gap-2 px-2.5 py-2 text-xs [&::-webkit-details-marker]:hidden max-[720px]:grid-cols-[36px_minmax(0,1fr)_auto]">
         <span className="text-muted-foreground">#{event.index}</span>
@@ -837,22 +837,28 @@ function EventCard({ event }: { event: SSEEvent }) {
           {t("audit.charCount", { count: event.data.length.toLocaleString() })}
         </small>
       </summary>
-      <pre className="max-h-[440px] overflow-auto border-t bg-muted p-3 font-mono text-xs leading-relaxed whitespace-pre-wrap">
-        {event.json === null
-          ? event.data || t("audit.emptyData")
-          : JSON.stringify(event.json, null, 2)}
-      </pre>
+      {open ? (
+        <EventData
+          className="max-h-[440px] overflow-auto border-t bg-muted/40 p-3"
+          event={event}
+        />
+      ) : null}
     </details>
   );
 }
 
 export type WireViewMode = "structured" | "raw";
 
-/** Label for the structured view of a body, or null when only raw applies. */
+/**
+ * Label for the structured view of a body, or null when only raw applies.
+ * A stream and a JSON document share the name: both lay their JSON out as
+ * the same tree, a stream one event at a time.
+ */
 export function wireStructuredLabel(part: AuditContentPart): string | null {
-  if (isEventStream(part)) return i18n.t("audit.events");
   // Decided without parsing: the host asks on every render.
-  return jsonCandidate(part) ? i18n.t("audit.formatted") : null;
+  return isEventStream(part) || jsonCandidate(part)
+    ? i18n.t("audit.formatted")
+    : null;
 }
 
 /**
@@ -966,17 +972,10 @@ function StreamEventList({
 
   const activeQuery = find ? find.query : query;
   const matcher = useMemo(() => findMatcher(activeQuery), [activeQuery]);
-  // Matched against what the row shows when opened, so an escaped character
-  // in the wire data is found the way it reads.
-  const texts = useMemo(() => events.map(eventBody), [events]);
   const filtered = useMemo(() => {
     if (!matcher) return events;
-    return events.filter(
-      (event, position) =>
-        findMatches(event.type, matcher) ||
-        findMatches(texts[position] ?? "", matcher),
-    );
-  }, [events, matcher, texts]);
+    return events.filter((event) => eventMatches(event, matcher));
+  }, [events, matcher]);
   useEffect(() => setRenderLimit(EVENT_RENDER_BATCH), [activeQuery]);
 
   const onResult = find?.onResult;
@@ -1001,6 +1000,15 @@ function StreamEventList({
   }, [activePosition]);
   const listRef = useRef<HTMLOListElement>(null);
   useFindScroll(listRef, activeEvent, find?.seq ?? 0);
+  // The active event marks its own hits and brings the first into view.
+  const seq = find?.seq ?? 0;
+  const eventFind = useMemo<FindRequest | undefined>(
+    () =>
+      finding
+        ? { query: activeQuery, active: 0, seq, onResult: ignoreFindResult }
+        : undefined,
+    [activeQuery, finding, seq],
+  );
 
   const t = i18n.t.bind(i18n);
   const showStatus =
@@ -1047,6 +1055,7 @@ function StreamEventList({
             <EventRow
               active={event === activeEvent}
               event={event}
+              find={event === activeEvent ? eventFind : undefined}
               key={event.index}
               hitLength={findNeedle(activeQuery).length}
               matcher={finding ? matcher : null}
@@ -1072,11 +1081,84 @@ function StreamEventList({
   );
 }
 
-/** What an opened event shows: its JSON pretty-printed, or the raw data. */
-function eventBody(event: SSEEvent): string {
+function ignoreFindResult() {}
+
+/** Whether find has something to show in an event: its type or its data. */
+function eventMatches(event: SSEEvent, matcher: RegExp): boolean {
+  if (findMatches(event.type, matcher)) return true;
   return event.json === null
-    ? event.data || i18n.t("audit.emptyData")
-    : JSON.stringify(event.json, null, 2);
+    ? findMatches(eventText(event), matcher)
+    : jsonValueMatches(event.json, matcher);
+}
+
+/**
+ * Searched the way the tree shows it: each key and each value on its own,
+ * unescaped, with inline files left out.
+ */
+function jsonValueMatches(value: unknown, matcher: RegExp): boolean {
+  if (Array.isArray(value))
+    return value.some((item) => jsonValueMatches(item, matcher));
+  if (value !== null && typeof value === "object")
+    return Object.entries(value).some(
+      ([key, item]) =>
+        findMatches(jsonKeyText(key), matcher) ||
+        jsonValueMatches(item, matcher),
+    );
+  if (typeof value === "string")
+    return detectBase64(value) === null && findMatches(value, matcher);
+  return findMatches(String(value), matcher);
+}
+
+function eventText(event: SSEEvent): string {
+  return event.data || i18n.t("audit.emptyData");
+}
+
+/**
+ * An opened event's data: the same JSON tree a JSON body gets, or the data
+ * as sent when it is not JSON. Built on opening, so a long stream pays only
+ * for the events someone reads.
+ */
+function EventData({
+  event,
+  find,
+  className,
+}: {
+  event: SSEEvent;
+  find?: FindRequest;
+  className?: string;
+}) {
+  const root = useMemo(
+    () => (event.json === null ? null : parseJsonTree(event.data).root),
+    [event],
+  );
+  if (root)
+    return (
+      <JsonTreeView
+        className={className}
+        find={find}
+        renderText={privacyText}
+        root={root}
+        toolbar={false}
+      />
+    );
+  const text = eventText(event);
+  const matcher = find ? findMatcher(find.query) : null;
+  const hits = matcher ? findOffsets(text, matcher, FIND_HIT_LIMIT) : undefined;
+  return (
+    <pre
+      className={cn(
+        "font-mono text-xs leading-relaxed whitespace-pre-wrap [overflow-wrap:anywhere]",
+        className,
+      )}
+    >
+      {markText(
+        text,
+        hits,
+        findNeedle(find?.query ?? "").length,
+        hits?.[0] ?? null,
+      )}
+    </pre>
+  );
 }
 
 /**
@@ -1086,27 +1168,30 @@ function eventBody(event: SSEEvent): string {
 function EventRow({
   event,
   active = false,
+  find,
   matcher = null,
   hitLength = 0,
 }: {
   event: SSEEvent;
   active?: boolean;
+  /** Marks the hits in the data of the event find is on. */
+  find?: FindRequest;
   matcher?: RegExp | null;
   hitLength?: number;
 }) {
   const t = i18n.t.bind(i18n);
+  const [opened, setOpened] = useState(false);
   const failure = isFailureEvent(event);
-  const body = eventBody(event);
   const preview = eventPreview(event);
   const hits = (text: string) =>
     matcher ? findOffsets(text, matcher, FIND_HIT_LIMIT) : undefined;
-  const bodyHits = active ? hits(body) : undefined;
   return (
     <li>
       <details
         className="group"
         data-find-active={active ? "true" : undefined}
         data-testid="audit-event"
+        onToggle={(change) => setOpened(change.currentTarget.open)}
         open={active || undefined}
       >
         <summary
@@ -1140,9 +1225,13 @@ function EventRow({
             </span>
           ) : null}
         </summary>
-        <pre className="border-t bg-muted/40 px-3 py-2 font-mono text-xs leading-relaxed whitespace-pre-wrap [overflow-wrap:anywhere]">
-          {markText(body, bodyHits, hitLength, bodyHits?.[0] ?? null)}
-        </pre>
+        {active || opened ? (
+          <EventData
+            className="border-t bg-muted/40 px-3 py-2"
+            event={event}
+            find={find}
+          />
+        ) : null}
       </details>
     </li>
   );

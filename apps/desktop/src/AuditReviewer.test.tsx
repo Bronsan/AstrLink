@@ -112,12 +112,62 @@ describe("AuditReviewer sections", () => {
         />,
       );
     });
-    await act(async () => viewButton("事件")!.click());
+    await act(async () => viewButton("格式化")!.click());
     await vi.waitFor(() =>
       expect(
         container.querySelector('[data-testid="audit-event"]')?.textContent,
       ).toContain("Event reply"),
     );
+  });
+
+  it("opens a stream event as the JSON tree and finds into it", async () => {
+    const stream = [
+      'event: response.created\ndata: {"type":"response.created","response":{"id":"resp_1","status":"in_progress"}}',
+      'event: response.output_text.delta\ndata: {"type":"response.output_text.delta","delta":"needle here"}',
+    ]
+      .map((event) => `${event}\n\n`)
+      .join("");
+    const part: AuditContentPart = {
+      content: stream,
+      media_type: "text/event-stream",
+      captured_bytes: stream.length,
+      truncated: false,
+    };
+    await act(async () => {
+      root.render(<AuditWireView mode="structured" part={part} />);
+    });
+    await vi.waitFor(() =>
+      expect(
+        container.querySelectorAll('[data-testid="audit-event"]'),
+      ).toHaveLength(2),
+    );
+    // Closed events build nothing; opening one lays its data out as a tree.
+    expect(container.querySelector('[data-testid="json-tree"]')).toBeNull();
+    const first = container.querySelector<HTMLDetailsElement>(
+      '[data-testid="audit-event"]',
+    )!;
+    await act(async () => {
+      first.open = true;
+      first.dispatchEvent(new Event("toggle"));
+    });
+    expect(
+      first.querySelector('[data-testid="json-tree"]')?.textContent,
+    ).toContain('"status": "in_progress"');
+
+    const onResult = vi.fn();
+    await act(async () => {
+      root.render(
+        <AuditWireView
+          find={{ query: "needle", active: 0, seq: 1, onResult }}
+          mode="structured"
+          part={part}
+        />,
+      );
+    });
+    expect(onResult).toHaveBeenLastCalledWith({ count: 1, capped: false });
+    const mark = container.querySelector('mark[data-find-active="true"]');
+    expect(mark?.textContent).toBe("needle");
+    expect(mark?.closest('[data-testid="json-tree"]')).not.toBeNull();
   });
 
   it("shows an empty-output explanation for lifecycle-only streams", async () => {
@@ -240,7 +290,7 @@ describe("AuditReviewer sections", () => {
     expect(rawText.startsWith("event: response.output_text.delta")).toBe(true);
 
     const eventsTab = [...container.querySelectorAll("button")].find(
-      (button) => button.textContent === "事件",
+      (button) => button.textContent === "格式化",
     );
     expect(eventsTab).toBeDefined();
     await act(async () => {

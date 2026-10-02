@@ -479,6 +479,8 @@ export function flattenJsonTree(
     });
     if (!isOpen || !isJsonContainer(node)) return;
     const total = childCount(node);
+    // An empty container already reads as `[]` or `{}` on its own row.
+    if (total === 0 && node.complete) return;
     const shown = Math.min(total, limits.get(path) ?? JSON_CHILD_BATCH);
     for (let child = 0; child < shown; child += 1) {
       const { key, value } = childAt(node, child);

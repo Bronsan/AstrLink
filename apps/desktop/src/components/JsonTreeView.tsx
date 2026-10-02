@@ -74,6 +74,7 @@ export function JsonTreeView({
   renderText = plainText,
   revealText,
   find,
+  toolbar = true,
   className,
 }: {
   root: JsonNode;
@@ -82,6 +83,8 @@ export function JsonTreeView({
   /** Strings to unfold at first, along with their ancestors. */
   revealText?: (text: string) => boolean;
   find?: FindRequest;
+  /** Expand-all and collapse-all; a small document nested in a list drops them. */
+  toolbar?: boolean;
   className?: string;
 }) {
   const t = useT();
@@ -159,7 +162,7 @@ export function JsonTreeView({
       data-testid="json-tree"
       ref={treeRef}
     >
-      {isJsonContainer(root) ? (
+      {toolbar && isJsonContainer(root) ? (
         <div className="flex flex-wrap items-center gap-1">
           <Button
             onClick={() => setOpen(expandAllPaths(root))}
