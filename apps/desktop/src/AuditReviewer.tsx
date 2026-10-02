@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -14,6 +14,7 @@ import {
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ChevronRight } from "@/components/icons";
 import { EmptyState } from "@/components/EmptyState";
+import { markText, useFindScroll } from "@/components/FindBar";
 import { FormMessage } from "@/components/FormMessage";
 import { JsonTreeView } from "@/components/JsonTreeView";
 import { MarkdownContent } from "@/components/MarkdownContent";
@@ -22,6 +23,14 @@ import { StatusBadge } from "@/components/StatusBadge";
 import { cn } from "@/lib/utils";
 
 import { buildHeadersText } from "./audit-bundle";
+import {
+  FIND_HIT_LIMIT,
+  findMatcher,
+  findMatches,
+  findNeedle,
+  findOffsets,
+  type FindRequest,
+} from "./find-model";
 import { i18n } from "./i18n";
 import { copyButtonLabel, type CopyFeedback } from "./copy-feedback";
 import {
@@ -839,17 +848,20 @@ export function wireStructuredLabel(part: AuditContentPart): string | null {
 
 /**
  * One captured body inside a host that owns the only scroller: stream events
- * as compact rows, JSON as a foldable tree, or the original text.
+ * as compact rows, JSON as a foldable tree, or the original text. `find`
+ * brings its hits into view in whichever of those is showing.
  */
 export function AuditWireView({
   part,
   mode,
   revealPrivacy = false,
+  find,
 }: {
   part: AuditContentPart;
   mode: WireViewMode;
   /** Unfolds the strings that carry privacy placeholders. */
   revealPrivacy?: boolean;
+  find?: FindRequest;
 }) {
   const t = i18n.t.bind(i18n);
   const structured = mode === "structured";
@@ -862,12 +874,13 @@ export function AuditWireView({
         <FormMessage tone="warning">{t("audit.truncatedNote")}</FormMessage>
       ) : null}
       {structured && stream ? (
-        <StreamEventList part={part} />
+        <StreamEventList find={find} part={part} />
       ) : tree?.status === "parsing" ? (
         <JsonParseProgress progress={tree.progress} />
       ) : root ? (
         <JsonTreeView
           className="rounded-lg bg-muted/40 p-3"
+          find={find}
           renderText={privacyText}
           revealText={revealPrivacy ? hasPrivacyHighlight : undefined}
           root={root}
@@ -875,14 +888,25 @@ export function AuditWireView({
       ) : (
         <>
           {tree ? <InvalidJsonBadge /> : null}
-          <RawSegmentView bounded={false} content={part.content} />
+          <RawSegmentView bounded={false} content={part.content} find={find} />
         </>
       )}
     </div>
   );
 }
 
-function StreamEventList({ part }: { part: AuditContentPart }) {
+/**
+ * With `find`, the list narrows to the events that hold the query, as its
+ * own filter does, and steps through them one event at a time: the active
+ * event opens with its hits marked.
+ */
+function StreamEventList({
+  part,
+  find,
+}: {
+  part: AuditContentPart;
+  find?: FindRequest;
+}) {
   const [events, setEvents] = useState<SSEEvent[]>([]);
   const [parseState, setParseState] = useState<
     "parsing" | "ready" | "cancelled" | "error"
@@ -931,16 +955,43 @@ function StreamEventList({ part }: { part: AuditContentPart }) {
     return () => controller.abort();
   }, [part.content, part.truncated]);
 
+  const activeQuery = find ? find.query : query;
+  const matcher = useMemo(() => findMatcher(activeQuery), [activeQuery]);
+  // Matched against what the row shows when opened, so an escaped character
+  // in the wire data is found the way it reads.
+  const texts = useMemo(() => events.map(eventBody), [events]);
   const filtered = useMemo(() => {
-    const normalized = query.trim().toLowerCase();
-    if (!normalized) return events;
+    if (!matcher) return events;
     return events.filter(
-      (event) =>
-        event.type.toLowerCase().includes(normalized) ||
-        event.data.toLowerCase().includes(normalized),
+      (event, position) =>
+        findMatches(event.type, matcher) ||
+        findMatches(texts[position] ?? "", matcher),
     );
-  }, [events, query]);
-  useEffect(() => setRenderLimit(EVENT_RENDER_BATCH), [query]);
+  }, [events, matcher, texts]);
+  useEffect(() => setRenderLimit(EVENT_RENDER_BATCH), [activeQuery]);
+
+  const onResult = find?.onResult;
+  const finding = find !== undefined && matcher !== null;
+  useEffect(() => {
+    if (!finding) return;
+    onResult?.({ count: filtered.length, capped: false });
+  }, [filtered, finding, onResult]);
+  const activePosition = finding
+    ? Math.min(find.active, Math.max(0, filtered.length - 1))
+    : -1;
+  const activeEvent = filtered[activePosition] ?? null;
+  // The active event has to be rendered before it can be opened.
+  useEffect(() => {
+    if (activePosition < 0) return;
+    setRenderLimit((current) =>
+      activePosition < current
+        ? current
+        : Math.ceil((activePosition + 1) / EVENT_RENDER_BATCH) *
+          EVENT_RENDER_BATCH,
+    );
+  }, [activePosition]);
+  const listRef = useRef<HTMLOListElement>(null);
+  useFindScroll(listRef, activeEvent, find?.seq ?? 0);
 
   const t = i18n.t.bind(i18n);
   const showStatus =
@@ -949,7 +1000,7 @@ function StreamEventList({ part }: { part: AuditContentPart }) {
     parseSummary.incompleteLastEvent;
   return (
     <div className="grid gap-2">
-      {events.length > EVENT_FILTER_THRESHOLD ? (
+      {!find && events.length > EVENT_FILTER_THRESHOLD ? (
         <div className="flex items-center gap-2">
           <Input
             aria-label={t("audit.searchEvents")}
@@ -979,9 +1030,18 @@ function StreamEventList({ part }: { part: AuditContentPart }) {
         <p className="text-xs text-muted-foreground">{t("audit.noEvents")}</p>
       ) : null}
       {filtered.length > 0 ? (
-        <ol className="divide-y overflow-hidden rounded-md border">
+        <ol
+          className="divide-y overflow-hidden rounded-md border"
+          ref={listRef}
+        >
           {filtered.slice(0, renderLimit).map((event) => (
-            <EventRow event={event} key={event.index} />
+            <EventRow
+              active={event === activeEvent}
+              event={event}
+              key={event.index}
+              hitLength={findNeedle(activeQuery).length}
+              matcher={finding ? matcher : null}
+            />
           ))}
         </ol>
       ) : null}
@@ -1003,12 +1063,43 @@ function StreamEventList({ part }: { part: AuditContentPart }) {
   );
 }
 
-function EventRow({ event }: { event: SSEEvent }) {
+/** What an opened event shows: its JSON pretty-printed, or the raw data. */
+function eventBody(event: SSEEvent): string {
+  return event.json === null
+    ? event.data || i18n.t("audit.emptyData")
+    : JSON.stringify(event.json, null, 2);
+}
+
+/**
+ * `active` holds the event open while find is on it; moving on lets it
+ * close again, so stepping through hits does not leave a trail of open rows.
+ */
+function EventRow({
+  event,
+  active = false,
+  matcher = null,
+  hitLength = 0,
+}: {
+  event: SSEEvent;
+  active?: boolean;
+  matcher?: RegExp | null;
+  hitLength?: number;
+}) {
   const t = i18n.t.bind(i18n);
   const failure = isFailureEvent(event);
+  const body = eventBody(event);
+  const preview = eventPreview(event);
+  const hits = (text: string) =>
+    matcher ? findOffsets(text, matcher, FIND_HIT_LIMIT) : undefined;
+  const bodyHits = active ? hits(body) : undefined;
   return (
     <li>
-      <details className="group" data-testid="audit-event">
+      <details
+        className="group"
+        data-find-active={active ? "true" : undefined}
+        data-testid="audit-event"
+        open={active || undefined}
+      >
         <summary
           className="flex cursor-pointer list-none items-center gap-2 px-2.5 py-1.5 text-xs hover:bg-muted/50 [&::-webkit-details-marker]:hidden"
           title={event.type}
@@ -1022,7 +1113,7 @@ function EventRow({ event }: { event: SSEEvent }) {
               failure && "text-danger-foreground",
             )}
           >
-            {event.type}
+            {markText(event.type, hits(event.type), hitLength)}
           </code>
           <span
             className={cn(
@@ -1030,7 +1121,7 @@ function EventRow({ event }: { event: SSEEvent }) {
               failure && "text-danger-foreground",
             )}
           >
-            {eventPreview(event)}
+            {markText(preview, hits(preview), hitLength)}
           </span>
           {event.invalidJson || event.incomplete ? (
             <span className="shrink-0 text-micro text-warning-foreground">
@@ -1041,9 +1132,7 @@ function EventRow({ event }: { event: SSEEvent }) {
           ) : null}
         </summary>
         <pre className="border-t bg-muted/40 px-3 py-2 font-mono text-xs leading-relaxed whitespace-pre-wrap [overflow-wrap:anywhere]">
-          {event.json === null
-            ? event.data || t("audit.emptyData")
-            : JSON.stringify(event.json, null, 2)}
+          {markText(body, bodyHits, hitLength, bodyHits?.[0] ?? null)}
         </pre>
       </details>
     </li>
@@ -1237,19 +1326,47 @@ function DocumentInspector({ part }: { part: AuditContentPart }) {
 /**
  * `bounded` caps each segment with its own scroller for hosts that stack
  * several sections; a host that already scrolls one pane turns it off.
+ * `find` searches every segment and loads the one its active hit is in.
  */
 function RawSegmentView({
   content,
   bounded = true,
+  find,
 }: {
   content: string;
   bounded?: boolean;
+  find?: FindRequest;
 }) {
   const totalSegments = Math.max(
     1,
     Math.ceil(content.length / RAW_SEGMENT_SIZE),
   );
   const [visibleSegments, setVisibleSegments] = useState(1);
+  const query = find?.query ?? "";
+  const length = findNeedle(query).length;
+  const matcher = useMemo(() => findMatcher(query), [query]);
+  const hits = useMemo(
+    () => (matcher ? findOffsets(content, matcher, FIND_HIT_LIMIT + 1) : null),
+    [content, matcher],
+  );
+  const onResult = find?.onResult;
+  useEffect(() => {
+    if (!hits) return;
+    onResult?.({
+      count: Math.min(hits.length, FIND_HIT_LIMIT),
+      capped: hits.length > FIND_HIT_LIMIT,
+    });
+  }, [hits, onResult]);
+  const hitCount = Math.min(hits?.length ?? 0, FIND_HIT_LIMIT);
+  const activeHit =
+    hitCount > 0 ? hits![Math.min(find?.active ?? 0, hitCount - 1)]! : null;
+  useEffect(() => {
+    if (activeHit === null) return;
+    const segment = Math.floor(activeHit / RAW_SEGMENT_SIZE) + 1;
+    setVisibleSegments((current) => Math.max(current, segment));
+  }, [activeHit]);
+  const rawRef = useRef<HTMLDivElement>(null);
+  useFindScroll(rawRef, activeHit, find?.seq ?? 0);
   const segments = [];
   for (
     let index = 0;
@@ -1266,7 +1383,7 @@ function RawSegmentView({
   }
   const t = i18n.t.bind(i18n);
   return (
-    <div data-testid="audit-raw">
+    <div data-testid="audit-raw" ref={rawRef}>
       <div className="mb-2 flex items-center justify-between gap-3 text-xs text-muted-foreground max-[720px]:items-start max-[720px]:flex-col">
         <span>
           {t("audit.rawFull", {
@@ -1299,6 +1416,18 @@ function RawSegmentView({
                 : "[overflow-wrap:anywhere]",
             )}
             content={segment.text}
+            hitLength={length}
+            hits={hits
+              ?.slice(0, FIND_HIT_LIMIT)
+              .filter((hit) => hit >= segment.start && hit < segment.end)
+              .map((hit) => hit - segment.start)}
+            activeHit={
+              activeHit !== null &&
+              activeHit >= segment.start &&
+              activeHit < segment.end
+                ? activeHit - segment.start
+                : null
+            }
           />
         </section>
       ))}
@@ -1319,11 +1448,22 @@ function RawSegmentView({
 function HighlightedAuditText({
   content,
   className = "max-h-[520px] overflow-auto rounded-lg bg-muted p-3 font-mono text-xs leading-relaxed whitespace-pre-wrap",
+  hits,
+  hitLength = 0,
+  activeHit = null,
 }: {
   content: string;
   className?: string;
+  /** Find hits, as offsets into `content`. */
+  hits?: number[];
+  hitLength?: number;
+  activeHit?: number | null;
 }) {
-  return <pre className={className}>{privacyText(content)}</pre>;
+  return (
+    <pre className={className}>
+      {markText(content, hits, hitLength, activeHit, privacyText)}
+    </pre>
+  );
 }
 
 /** Text with each privacy placeholder marked so the reviewer can find it. */

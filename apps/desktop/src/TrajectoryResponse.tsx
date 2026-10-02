@@ -1,8 +1,21 @@
-import { useState, type ReactNode, type Ref } from "react";
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useDeferredValue,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+  type Ref,
+} from "react";
 
-import { Check, Copy } from "@/components/icons";
+import { Check, Copy, Search } from "@/components/icons";
 import { ActionGroup } from "@/components/ActionGroup";
+import { FindBar } from "@/components/FindBar";
 import { FormMessage } from "@/components/FormMessage";
+import { IconButton } from "@/components/IconButton";
 import { ModelLabel } from "@/components/ModelLabel";
 import { Panel } from "@/components/Panel";
 import { SegmentedControl } from "@/components/SegmentedControl";
@@ -22,6 +35,14 @@ import {
   type WireViewMode,
 } from "./AuditReviewer";
 import { copyButtonLabel, type CopyFeedback } from "./copy-feedback";
+import {
+  findShortcutLabel,
+  findStepShortcut,
+  isFindShortcut,
+  stepFind,
+  type FindRequest,
+  type FindResult,
+} from "./find-model";
 import { formatExactNumber } from "./format-compact-number";
 import { i18n, useT } from "./i18n";
 import {
@@ -42,6 +63,12 @@ import type { TrajectoryRow } from "./request-trajectory-model";
 // reach its view controls; below that the inspector body scrolls instead. A
 // fixed basis keeps the pane's content from sizing the scrolled section.
 const PANE_CLASS = "flex min-h-60 grow basis-60 flex-col";
+
+/**
+ * True where the inspector owns its window, so ⌘F finds in the body on
+ * screen. Docked over the trajectory list, the list's own find keeps it.
+ */
+export const InspectorFindShortcut = createContext(false);
 
 /**
  * What the client got: the outcome in one line, then the response pane led by
@@ -241,9 +268,10 @@ export type CaptureView =
 
 /**
  * Captured bodies and HTTP metadata in one bounded pane: a view switch when
- * there is more than one, the structured/raw toggle, copy, and the only
- * scroller. Each inspector tab that shows a body uses this frame so the tabs
- * read the same way.
+ * there is more than one, the structured/raw toggle, find, copy, and the
+ * only scroller. Each inspector tab that shows a body uses this frame so the
+ * tabs read the same way. Find goes straight to the place in the body: the
+ * JSON node, the stretch of original text, or the stream event.
  */
 export function CapturePane({
   label,
@@ -273,9 +301,10 @@ export function CapturePane({
   const [value, setValue] = useState(views[0]?.value ?? "");
   const [mode, setMode] = useState<WireViewMode>("structured");
   const view = views.find((item) => item.value === value) ?? views[0];
+  const body = view && "body" in view ? view.body : null;
+  const find = usePaneFind(body !== null);
   if (!view) return null;
   const meta = "meta" in view ? view.meta : null;
-  const body = "body" in view ? view.body : null;
   const hint = ("body" in view && withheldHint(view.withheld)) || missingHint;
   const structuredLabel = body ? wireStructuredLabel(body) : null;
   const viewCopyKey = `${copyKey}:${view.value}`;
@@ -290,7 +319,10 @@ export function CapturePane({
         {views.length > 1 ? (
           <SegmentedControl
             label={viewsLabel}
-            onValueChange={setValue}
+            onValueChange={(next) => {
+              setValue(next);
+              find.restart();
+            }}
             options={views.map((item) => ({
               value: item.value,
               label: item.label,
@@ -306,13 +338,28 @@ export function CapturePane({
           {structuredLabel ? (
             <SegmentedControl
               label={t("audit.contentView")}
-              onValueChange={setMode}
+              onValueChange={(next) => {
+                setMode(next);
+                find.restart();
+              }}
               options={[
                 { value: "structured", label: structuredLabel },
                 { value: "raw", label: t("audit.original") },
               ]}
               value={mode}
             />
+          ) : null}
+          {body ? (
+            <IconButton
+              aria-pressed={find.open}
+              className={cn(find.open && "bg-accent text-accent-foreground")}
+              data-testid="capture-find"
+              label={`${t("find.open")} (${findShortcutLabel()})`}
+              onClick={() => (find.open ? find.close() : find.show())}
+              type="button"
+            >
+              <Search aria-hidden="true" />
+            </IconButton>
           ) : null}
           <Button
             aria-label={copyButtonLabel(
@@ -335,6 +382,20 @@ export function CapturePane({
           </Button>
         </ActionGroup>
       </div>
+      {find.open && body ? (
+        <FindBar
+          active={find.active}
+          className="shrink-0 border-b px-2 py-1"
+          inputRef={find.inputRef}
+          label={t("find.label")}
+          onClose={find.close}
+          onQueryChange={find.setQuery}
+          onStep={find.step}
+          placeholder={t("find.contentPlaceholder")}
+          query={find.query}
+          result={find.result}
+        />
+      ) : null}
       <div
         className="min-h-0 flex-1 space-y-3 overflow-auto overscroll-contain p-3"
         data-tab-scroller
@@ -347,6 +408,7 @@ export function CapturePane({
           <HTTPMetaDetails meta={meta} />
         ) : body ? (
           <AuditWireView
+            find={find.request}
             key={`${view.value}:${mode}`}
             mode={structuredLabel ? mode : "raw"}
             part={body}
@@ -363,6 +425,103 @@ export function CapturePane({
       </div>
     </Panel>
   );
+}
+
+/**
+ * Find state for one pane. The query survives switching views and closing
+ * the row, as a browser's does; the position starts over with each new
+ * search. The view searches a deferred copy of the query, so typing into a
+ * multi-megabyte body stays responsive.
+ */
+function usePaneFind(available: boolean) {
+  const shortcut = useContext(InspectorFindShortcut);
+  const [open, setOpen] = useState(false);
+  const [query, setQueryState] = useState("");
+  const [active, setActive] = useState(0);
+  const [seq, setSeq] = useState(0);
+  // Tagged with the query it answers, so a count never outlives its query.
+  const [result, setResult] = useState<(FindResult & { query: string }) | null>(
+    null,
+  );
+  const deferredQuery = useDeferredValue(query);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const onResult = useCallback(
+    (next: FindResult) => setResult({ ...next, query: deferredQuery }),
+    [deferredQuery],
+  );
+
+  const restart = useCallback(() => {
+    setActive(0);
+    setSeq((current) => current + 1);
+  }, []);
+  const setQuery = useCallback(
+    (next: string) => {
+      setQueryState(next);
+      restart();
+    },
+    [restart],
+  );
+  const current = result?.query === query ? result : null;
+  const count = current?.count ?? 0;
+  const step = useCallback(
+    (direction: 1 | -1) => {
+      if (count === 0) return;
+      setActive((current) => stepFind(current, count, direction));
+      setSeq((current) => current + 1);
+    },
+    [count],
+  );
+  const show = useCallback(() => {
+    if (open) {
+      inputRef.current?.focus();
+      inputRef.current?.select();
+      return;
+    }
+    setOpen(true);
+    setSeq((current) => current + 1);
+  }, [open]);
+  const close = useCallback(() => setOpen(false), []);
+
+  const keys = useRef({ show, step, open });
+  keys.current = { show, step, open };
+  useEffect(() => {
+    if (!shortcut || !available) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (isFindShortcut(event)) {
+        event.preventDefault();
+        keys.current.show();
+        return;
+      }
+      const direction = findStepShortcut(event);
+      if (direction === null || !keys.current.open) return;
+      event.preventDefault();
+      keys.current.step(direction);
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [available, shortcut]);
+
+  const request = useMemo<FindRequest | undefined>(
+    () =>
+      open && available
+        ? { query: deferredQuery, active, seq, onResult }
+        : undefined,
+    [active, available, deferredQuery, onResult, open, seq],
+  );
+
+  return {
+    open: open && available,
+    query,
+    active,
+    result: current,
+    request,
+    inputRef,
+    setQuery,
+    step,
+    show,
+    close,
+    restart,
+  };
 }
 
 type FactLabel = "http" | "duration" | "ttft" | "tokens" | "size";

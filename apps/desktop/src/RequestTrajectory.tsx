@@ -15,7 +15,9 @@ import {
   ArrowUp,
   ChevronRight,
   MessageSquare,
+  Search,
 } from "@/components/icons";
+import { FindBar, HighlightedText } from "@/components/FindBar";
 import { IconButton } from "@/components/IconButton";
 import { ConversationIndicator } from "@/components/ConversationIndicator";
 import { ModelLabel } from "@/components/ModelLabel";
@@ -26,6 +28,13 @@ import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 
 import type { CopyFeedback } from "./copy-feedback";
+import {
+  findMatcher,
+  findShortcutLabel,
+  findStepShortcut,
+  isFindShortcut,
+  stepFind,
+} from "./find-model";
 import { i18n, useT } from "./i18n";
 import { useLiveClock } from "./live-clock";
 import { formatDuration } from "./request-live-model";
@@ -39,6 +48,7 @@ import {
 } from "./request-service-model";
 import {
   extendPendingTimeline,
+  findInTrajectory,
   foldTimelineColumns,
   listScrollForTimeline,
   timelineScrollForList,
@@ -178,9 +188,11 @@ export function RequestTrajectory({
   const [turnOverrides, setTurnOverrides] = useState<
     ReadonlyMap<string, boolean>
   >(() => new Map());
+  const find = useTrajectoryFind(rows, serviceByRequest, rowIndex.byId);
   const listLayout = useMemo(
-    () => trajectoryListLayout(rows, turnOverrides, selectedRowId),
-    [rows, turnOverrides, selectedRowId],
+    () =>
+      trajectoryListLayout(rows, turnOverrides, selectedRowId, find.foundTurn),
+    [rows, turnOverrides, selectedRowId, find.foundTurn],
   );
   const listRows = listLayout.rows;
   const listPositionById = useMemo(
@@ -217,6 +229,19 @@ export function RequestTrajectory({
     setOverlayOpen(true);
     setHighlightedRequestId(null);
   }, [sessionKey]);
+
+  // Find opens the turn it lands on even where the operator folded it; one
+  // folded again after the landing stays folded until find steps back to it.
+  const { foundTurn, seq: findSeq, stop: findStop } = find;
+  useEffect(() => {
+    if (!foundTurn) return;
+    setTurnOverrides((current) => {
+      if (current.get(foundTurn) !== false) return current;
+      const next = new Map(current);
+      next.delete(foundTurn);
+      return next;
+    });
+  }, [foundTurn, findSeq]);
 
   const selectedRow =
     (selectedRowId === null ? undefined : rowIndex.byId.get(selectedRowId)) ??
@@ -427,6 +452,44 @@ export function RequestTrajectory({
     list.scrollTop = top;
   }, [highlightedRequestId, revealNonce]);
 
+  // A find stop goes to the top of the list with its turn open below it. The
+  // strip is left to follow the list, so it shows the same turn.
+  useEffect(() => {
+    const list = listRef.current;
+    if (!list || !findStop || list.clientHeight === 0) return;
+    const position = listPositionById.get(findStop);
+    if (position === undefined) return;
+    if (virtualized) {
+      virtualizer.scrollToIndex(position, { align: "start" });
+      return;
+    }
+    const target = list.querySelector<HTMLElement>(
+      `[data-testid="trajectory-row"][data-row-id="${findStop}"]`,
+    );
+    if (target) list.scrollTop = target.offsetTop;
+  }, [findStop, findSeq]);
+
+  // ⌘F finds in the list while it is on screen; ⌘G steps once it is open.
+  const findKeys = useRef(find);
+  findKeys.current = find;
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      const list = listRef.current;
+      if (!list || list.getClientRects().length === 0) return;
+      if (isFindShortcut(event)) {
+        event.preventDefault();
+        findKeys.current.show();
+        return;
+      }
+      const direction = findStepShortcut(event);
+      if (direction === null || !findKeys.current.open) return;
+      event.preventDefault();
+      findKeys.current.step(direction);
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, []);
+
   useLayoutEffect(() => {
     const list = listRef.current;
     if (!list || !sessionKey) return;
@@ -518,50 +581,81 @@ export function RequestTrajectory({
         <span className="hidden @min-[760px]/trajectory:block">
           {t("trajectory.time")}
         </span>
-        <span className="flex min-w-0 items-center gap-2">
-          <span>{t("trajectory.eventList")}</span>
-          <span className="hidden tabular-nums @min-[560px]/trajectory:inline">
-            {t("trajectory.eventCount", {
-              count: rows.filter((row) => row.chip !== "TURN").length,
-            })}
+        {find.open ? (
+          // Find takes the event, result and duration headings while open,
+          // so the row keeps its height and the list loses nothing.
+          <FindBar
+            active={find.active}
+            className="col-span-2 @min-[560px]/trajectory:col-span-3"
+            inputRef={find.inputRef}
+            label={t("find.turnsLabel")}
+            onClose={find.close}
+            onQueryChange={find.setQuery}
+            onStep={find.step}
+            placeholder={t("find.turnsPlaceholder")}
+            query={find.query}
+            result={find.result}
+          />
+        ) : (
+          <span className="flex min-w-0 items-center gap-2">
+            <span>{t("trajectory.eventList")}</span>
+            <span className="hidden tabular-nums @min-[560px]/trajectory:inline">
+              {t("trajectory.eventCount", {
+                count: rows.filter((row) => row.chip !== "TURN").length,
+              })}
+            </span>
+            <span className="ml-auto flex items-center gap-0.5">
+              <IconButton
+                data-testid="trajectory-find"
+                disabled={rows.length === 0}
+                label={`${t("find.turnsOpen")} (${findShortcutLabel()})`}
+                onClick={find.show}
+                size="icon-xs"
+                type="button"
+              >
+                <Search aria-hidden="true" />
+              </IconButton>
+              <IconButton
+                size="icon-xs"
+                disabled={rows.length === 0}
+                label={t("trajectory.firstCall")}
+                onClick={() => {
+                  const first = rows.find((row) => row.chip !== "TURN");
+                  if (first) {
+                    followSelectionOnStripRef.current = true;
+                    revealRow(first);
+                  }
+                }}
+                type="button"
+              >
+                <ArrowUp aria-hidden="true" />
+              </IconButton>
+              <IconButton
+                size="icon-xs"
+                disabled={rows.length === 0}
+                label={t("trajectory.latestCall")}
+                onClick={() => {
+                  const last = rows[rows.length - 1];
+                  if (last) {
+                    followSelectionOnStripRef.current = true;
+                    revealRow(last);
+                  }
+                }}
+                type="button"
+              >
+                <ArrowDown aria-hidden="true" />
+              </IconButton>
+            </span>
           </span>
-          <span className="ml-auto flex items-center gap-0.5">
-            <IconButton
-              size="icon-xs"
-              disabled={rows.length === 0}
-              label={t("trajectory.firstCall")}
-              onClick={() => {
-                const first = rows.find((row) => row.chip !== "TURN");
-                if (first) {
-                  followSelectionOnStripRef.current = true;
-                  revealRow(first);
-                }
-              }}
-              type="button"
-            >
-              <ArrowUp aria-hidden="true" />
-            </IconButton>
-            <IconButton
-              size="icon-xs"
-              disabled={rows.length === 0}
-              label={t("trajectory.latestCall")}
-              onClick={() => {
-                const last = rows[rows.length - 1];
-                if (last) {
-                  followSelectionOnStripRef.current = true;
-                  revealRow(last);
-                }
-              }}
-              type="button"
-            >
-              <ArrowDown aria-hidden="true" />
-            </IconButton>
-          </span>
-        </span>
-        <span className="text-right">{t("trajectory.result")}</span>
-        <span className="hidden text-right @min-[560px]/trajectory:block">
-          {t("records.duration")}
-        </span>
+        )}
+        {find.open ? null : (
+          <>
+            <span className="text-right">{t("trajectory.result")}</span>
+            <span className="hidden text-right @min-[560px]/trajectory:block">
+              {t("records.duration")}
+            </span>
+          </>
+        )}
         <span />
       </div>
       <div className="relative flex min-h-0 min-w-0 flex-1">
@@ -583,6 +677,8 @@ export function RequestTrajectory({
                   <TrajectoryRowView
                     key={item.key}
                     expanded={turnExpanded(listRows[item.index]!)}
+                    findQuery={find.queryFor(listRows[item.index]!)}
+                    findStop={find.stopState(listRows[item.index]!)}
                     highlighted={chainHighlighted(
                       listRows[item.index]!,
                       highlightedRequestId,
@@ -602,6 +698,8 @@ export function RequestTrajectory({
                   <TrajectoryRowView
                     key={row.id}
                     expanded={turnExpanded(row)}
+                    findQuery={find.queryFor(row)}
+                    findStop={find.stopState(row)}
                     highlighted={chainHighlighted(
                       row,
                       highlightedRequestId,
@@ -655,6 +753,100 @@ export function RequestTrajectory({
       </div>
     </div>
   );
+}
+
+type FindStopState = "stop" | "active";
+
+/**
+ * Find over the whole conversation, landing on turns. The query and the
+ * position live here; the list reads which turn to open and scroll to, and
+ * which rows to mark.
+ */
+function useTrajectoryFind(
+  rows: TrajectoryRow[],
+  serviceByRequest: Record<string, RequestServiceIdentity>,
+  rowById: Map<string, TrajectoryRow>,
+) {
+  const [open, setOpen] = useState(false);
+  const [query, setQueryState] = useState("");
+  const [active, setActive] = useState(0);
+  const [seq, setSeq] = useState(0);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const matcher = useMemo(
+    () => (open ? findMatcher(query) : null),
+    [open, query],
+  );
+  const found = useMemo(
+    () =>
+      matcher
+        ? findInTrajectory(rows, matcher, (row) =>
+            rowFindTexts(row, serviceByRequest[row.requestId]),
+          )
+        : null,
+    [matcher, rows, serviceByRequest],
+  );
+  const count = found?.stops.length ?? 0;
+  const position = Math.min(active, Math.max(0, count - 1));
+  const stop = count > 0 ? found!.stops[position]! : null;
+  const foundTurn = stop && rowById.get(stop)?.chip === "TURN" ? stop : null;
+  const stops = useMemo(() => new Set(found?.stops), [found]);
+  const trimmed = query.trim();
+
+  const setQuery = useCallback((next: string) => {
+    setQueryState(next);
+    setActive(0);
+    setSeq((current) => current + 1);
+  }, []);
+  const step = useCallback(
+    (direction: 1 | -1) => {
+      if (count === 0) return;
+      setActive((current) => stepFind(current, count, direction));
+      setSeq((current) => current + 1);
+    },
+    [count],
+  );
+  const show = useCallback(() => {
+    if (open) {
+      inputRef.current?.focus();
+      inputRef.current?.select();
+      return;
+    }
+    setOpen(true);
+    setSeq((current) => current + 1);
+  }, [open]);
+  const close = useCallback(() => setOpen(false), []);
+
+  return {
+    open,
+    query,
+    active: position,
+    seq,
+    stop,
+    foundTurn,
+    inputRef,
+    result: found ? { count, capped: false } : null,
+    setQuery,
+    step,
+    show,
+    close,
+    /** The query to mark in a row, only where the row holds a hit. */
+    queryFor: (row: TrajectoryRow) =>
+      found?.rows.has(row.id) ? trimmed : undefined,
+    stopState: (row: TrajectoryRow): FindStopState | undefined =>
+      row.id === stop ? "active" : stops.has(row.id) ? "stop" : undefined,
+  };
+}
+
+/** What a row reads as in the list, which is what find matches. */
+function rowFindTexts(
+  row: TrajectoryRow,
+  service: RequestServiceIdentity | undefined,
+): string[] {
+  const texts = [row.summary, row.result];
+  if (service && (row.chip === "UPSTREAM" || row.chip === "RETRY")) {
+    texts.push(service.name);
+  }
+  return texts;
 }
 
 function measureTimelineColumns(scroller: HTMLElement): TrajectoryCallColumn[] {
@@ -1085,6 +1277,8 @@ const TrajectoryRowView = memo(function TrajectoryRowView({
   selected,
   highlighted,
   expanded,
+  findQuery,
+  findStop,
   position,
   offsetPx,
   measureRef,
@@ -1097,6 +1291,10 @@ const TrajectoryRowView = memo(function TrajectoryRowView({
   highlighted: boolean;
   /** Set only on a turn header: whether its calls are listed below it. */
   expanded?: boolean;
+  /** The find query, set only where this row's own text holds it. */
+  findQuery?: string;
+  /** Set where find lands on this row: one of its stops, or the active one. */
+  findStop?: FindStopState;
   position: number;
   /** Set only while the list is windowed, where rows are placed by transform. */
   offsetPx?: number;
@@ -1143,10 +1341,13 @@ const TrajectoryRowView = memo(function TrajectoryRowView({
           row.tone === "cancelled" &&
             "bg-warning-wash/50 hover:bg-warning-wash",
           (selected || highlighted) && "bg-accent hover:bg-accent",
+          findStop && "bg-tide-wash hover:bg-tide-wash",
+          findStop === "active" && "ring-1 ring-tide ring-inset",
           selected &&
             "before:absolute before:inset-y-0 before:left-0 before:w-0.5 before:bg-primary",
         )}
         data-chip={row.chip}
+        data-find-stop={findStop}
         data-highlighted={highlighted ? "true" : undefined}
         data-request-id={row.requestId}
         data-row-id={row.id}
@@ -1204,8 +1405,13 @@ const TrajectoryRowView = memo(function TrajectoryRowView({
             />
           ) : (
             <span className="truncate">
-              {summary ||
-                (row.chip === "RESULT" ? t("trajectory.clientResponse") : "")}
+              <HighlightedText
+                query={findQuery}
+                text={
+                  summary ||
+                  (row.chip === "RESULT" ? t("trajectory.clientResponse") : "")
+                }
+              />
             </span>
           )}
           {row.conversationContinued ? (
@@ -1234,7 +1440,9 @@ const TrajectoryRowView = memo(function TrajectoryRowView({
               }
             />
           ) : null}
-          <span className="truncate">{row.result}</span>
+          <span className="truncate">
+            <HighlightedText query={findQuery} text={row.result} />
+          </span>
         </span>
         <span
           className="hidden truncate text-right font-mono text-micro tabular-nums text-muted-foreground @min-[560px]/trajectory:block"

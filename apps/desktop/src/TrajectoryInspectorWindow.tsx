@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { UnlistenFn } from "@tauri-apps/api/event";
 
-import { Pin } from "@/components/icons";
+import { ActionHint } from "@/components/ActionHint";
+import { FoldHorizontal, Pin, UnfoldHorizontal } from "@/components/icons";
 import { Button } from "@/components/ui/button";
 import {
   Tooltip,
@@ -27,6 +28,7 @@ import { TrajectoryInspector } from "./TrajectoryInspector";
 import {
   listenInspectorSelection,
   setTrajectoryInspectorPinned,
+  setTrajectoryInspectorWide,
   trajectoryInspectorState,
   type TrajectoryInspectorSelection,
 } from "./trajectory-inspector-window";
@@ -49,12 +51,18 @@ import { WindowChromeAccessory } from "./WindowChrome";
  * The unlock is shared with the main window: this one can open it for the
  * parts on screen and watches it, so raw parts go when the unlock ends —
  * pinned or not — and locked parts fill in after one, wherever it opened.
+ *
+ * The window opens narrow beside the list; the widen toggle beside the pin
+ * stretches it for long bodies and puts it back, and ⌘F finds in the body.
  */
 export function TrajectoryInspectorWindow() {
   const t = i18n.t.bind(i18n);
   const [selection, setSelection] =
     useState<TrajectoryInspectorSelection | null>(null);
   const [pinned, setPinned] = useState(false);
+  const [wide, setWide] = useState(false);
+  // Bumped on every width change, so each one replays the edge flash.
+  const [stretch, setStretch] = useState(0);
   const pinnedRef = useRef(false);
   const copyFeedback = useCopyFeedback();
 
@@ -78,6 +86,7 @@ export function TrajectoryInspectorWindow() {
         return trajectoryInspectorState().then((state) => {
           if (!active) return;
           setPinned(state.pinned);
+          setWide(state.wide ?? false);
           if (state.selection) setSelection(state.selection);
         });
       })
@@ -102,6 +111,23 @@ export function TrajectoryInspectorWindow() {
         console.error("AstrLink inspector window cannot change its pin", error);
       });
   }, []);
+
+  const toggleWide = useCallback((next: boolean) => {
+    setWide(next);
+    setStretch((count) => count + 1);
+    dismissWidenTip();
+    void setTrajectoryInspectorWide(next)
+      .then(setWide)
+      .catch((error: unknown) => {
+        setWide(!next);
+        notify.error(i18n.t("trajectory.widenFailed"));
+        console.error(
+          "AstrLink inspector window cannot change its width",
+          error,
+        );
+      });
+  }, []);
+  const widenTip = useWidenTip(selection !== null && !wide);
 
   const [rawCheck, setRawCheck] = useState(0);
   const audit = useRequestAudit(
@@ -142,8 +168,23 @@ export function TrajectoryInspectorWindow() {
     <main className="flex h-dvh min-h-0 flex-col overflow-hidden pt-[var(--window-chrome-height)]">
       {selection ? (
         <WindowChromeAccessory>
+          <WidenToggle
+            onDismissTip={widenTip.dismiss}
+            onToggle={toggleWide}
+            tip={widenTip.open}
+            wide={wide}
+          />
           <PinToggle onToggle={togglePin} pinned={pinned} />
         </WindowChromeAccessory>
+      ) : null}
+      {stretch > 0 ? (
+        // Rests invisible; the animation alone draws it, once per change.
+        <span
+          aria-hidden="true"
+          className="window-edge-flash pointer-events-none fixed inset-0 z-50 rounded-lg ring-2 ring-tide ring-inset"
+          data-testid="trajectory-inspector-edge-flash"
+          key={stretch}
+        />
       ) : null}
       {selection ? (
         <TrajectoryInspector
@@ -155,6 +196,7 @@ export function TrajectoryInspectorWindow() {
           auditError={audit.error}
           auditLoading={audit.loading}
           copyFeedback={copyFeedback}
+          findShortcut
           onUnlockRaw={unlockRaw}
           pinned={pinned}
           record={selection.record}
@@ -231,6 +273,117 @@ function PinToggle({
         </TooltipContent>
       </Tooltip>
     </TooltipProvider>
+  );
+}
+
+const WIDEN_TIP_STORAGE_KEY = "astrlink.inspector.widenTip.v1";
+/** Below this the inspector reads as the narrow window it opens as. */
+const WIDEN_TIP_MAX_WIDTH = 720;
+/** Lets the call load first, so the tip does not land on an empty window. */
+const WIDEN_TIP_DELAY_MS = 1200;
+
+function widenTipSeen(): boolean {
+  try {
+    return localStorage.getItem(WIDEN_TIP_STORAGE_KEY) === "seen";
+  } catch {
+    // Storage can be unavailable in a WebView; then the tip shows once per window.
+    return false;
+  }
+}
+
+function dismissWidenTip(): void {
+  try {
+    localStorage.setItem(WIDEN_TIP_STORAGE_KEY, "seen");
+  } catch {
+    // Storage can be unavailable in a WebView; the tip still closes.
+  }
+}
+
+/**
+ * Points out the widen toggle once, the first time a narrow inspector shows
+ * a call. Using the toggle or closing the tip retires it for good.
+ */
+function useWidenTip(ready: boolean) {
+  const [open, setOpen] = useState(false);
+  const [retired, setRetired] = useState(widenTipSeen);
+  useEffect(() => {
+    if (!ready || retired) return;
+    const timer = window.setTimeout(() => {
+      if (window.innerWidth < WIDEN_TIP_MAX_WIDTH && !widenTipSeen()) {
+        setOpen(true);
+      }
+    }, WIDEN_TIP_DELAY_MS);
+    return () => window.clearTimeout(timer);
+  }, [ready, retired]);
+  // Widening answers the tip, so it goes with the narrow window.
+  useEffect(() => {
+    if (!ready && open) {
+      setOpen(false);
+      setRetired(true);
+    }
+  }, [open, ready]);
+  const dismiss = useCallback(() => {
+    dismissWidenTip();
+    setOpen(false);
+    setRetired(true);
+  }, []);
+  return { open: open && ready, dismiss };
+}
+
+/**
+ * Stretches the window for long bodies and puts it back. The arrows point
+ * the way the window is about to go: out while narrow, in while wide. While
+ * the tip is up a ripple runs out of the button, so the eye finds it in the
+ * title bar.
+ */
+function WidenToggle({
+  wide,
+  tip,
+  onToggle,
+  onDismissTip,
+}: {
+  wide: boolean;
+  tip: boolean;
+  onToggle: (next: boolean) => void;
+  onDismissTip: () => void;
+}) {
+  const t = i18n.t.bind(i18n);
+  const Icon = wide ? FoldHorizontal : UnfoldHorizontal;
+  return (
+    <ActionHint
+      dismissLabel={t("common.close")}
+      message={t("trajectory.widenTip")}
+      onDismiss={onDismissTip}
+      open={tip}
+      side="bottom"
+    >
+      <TooltipProvider delayDuration={300}>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Button
+              aria-label={wide ? t("trajectory.narrow") : t("trajectory.widen")}
+              aria-pressed={wide}
+              className={cn(
+                wide
+                  ? "bg-accent text-accent-foreground hover:bg-accent/70"
+                  : "text-muted-foreground hover:bg-foreground/8 hover:text-foreground",
+                tip && "hint-ripple text-foreground",
+              )}
+              data-testid="trajectory-inspector-widen"
+              onClick={() => onToggle(!wide)}
+              size="icon-xs"
+              type="button"
+              variant="ghost"
+            >
+              <Icon className="size-3.5" />
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent className="max-w-60" side="bottom" sideOffset={6}>
+            {wide ? t("trajectory.narrowHint") : t("trajectory.widenHint")}
+          </TooltipContent>
+        </Tooltip>
+      </TooltipProvider>
+    </ActionHint>
   );
 }
 

@@ -1,7 +1,23 @@
-import { memo, useCallback, useMemo, useState, type ReactNode } from "react";
+import {
+  memo,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 
+import { markText, useFindScroll } from "@/components/FindBar";
 import { ChevronRight } from "@/components/icons";
 import { Button } from "@/components/ui/button";
+import {
+  FIND_HIT_LIMIT,
+  findMatcher,
+  findNeedle,
+  findOffsets,
+  type FindRequest,
+} from "@/find-model";
 import { useT } from "@/i18n";
 import {
   JSON_CHILD_BATCH,
@@ -15,9 +31,14 @@ import {
   flattenJsonTree,
   isFoldableString,
   isJsonContainer,
+  jsonKeyText,
+  revealJsonHit,
+  searchJsonTree,
   stringPreview,
   type JsonContainerNode,
   type JsonNode,
+  type JsonSearchHit,
+  type JsonSearchResult,
   type JsonTreeRow,
 } from "@/json-tree-model";
 import { cn } from "@/lib/utils";
@@ -26,15 +47,27 @@ type RenderText = (text: string) => ReactNode;
 
 const STRING_PREVIEW_CHARS = 96;
 
+/** The hits that show in one row, and how to find more in its previews. */
+interface RowHits {
+  key: number[];
+  value: number[];
+  matcher: RegExp;
+  length: number;
+}
+
 /**
  * A JSON document as a foldable tree. Only open containers render, long
  * strings and inline files fold to one line, and long arrays page in
  * batches, so a large request body stays cheap to show and easy to scan.
+ *
+ * `find` searches the whole document, folded parts included, and unfolds
+ * and pages just enough of it to put the active hit on screen.
  */
 export function JsonTreeView({
   root,
   renderText = plainText,
   revealText,
+  find,
   className,
 }: {
   root: JsonNode;
@@ -42,6 +75,7 @@ export function JsonTreeView({
   renderText?: RenderText;
   /** Strings to unfold at first, along with their ancestors. */
   revealText?: (text: string) => boolean;
+  find?: FindRequest;
   className?: string;
 }) {
   const t = useT();
@@ -74,8 +108,51 @@ export function JsonTreeView({
     }));
   }, []);
 
+  const query = find?.query ?? "";
+  const matcher = useMemo(() => findMatcher(query), [query]);
+  const length = findNeedle(query).length;
+  const search = useMemo(
+    () => (matcher ? searchJsonTree(root, matcher, FIND_HIT_LIMIT) : null),
+    [matcher, root],
+  );
+  const hitsByPath = useMemo(
+    () => (search && matcher ? rowHits(search, matcher, length) : null),
+    [length, matcher, search],
+  );
+  const onResult = find?.onResult;
+  useEffect(() => {
+    if (!search) return;
+    onResult?.({ count: search.hits.length, capped: search.capped });
+  }, [onResult, search]);
+  const hitCount = search?.hits.length ?? 0;
+  const activeHit =
+    hitCount > 0
+      ? search!.hits[Math.min(find?.active ?? 0, hitCount - 1)]!
+      : null;
+  const seq = find?.seq ?? 0;
+  useEffect(() => {
+    if (!activeHit) return;
+    setView((current) => {
+      const next = revealJsonHit(
+        activeHit,
+        length,
+        current.open,
+        current.limits,
+      );
+      return next.open === current.open && next.limits === current.limits
+        ? current
+        : { ...current, ...next };
+    });
+  }, [activeHit, length, seq]);
+  const treeRef = useRef<HTMLDivElement>(null);
+  useFindScroll(treeRef, activeHit, seq);
+
   return (
-    <div className={cn("grid gap-1", className)} data-testid="json-tree">
+    <div
+      className={cn("grid gap-1", className)}
+      data-testid="json-tree"
+      ref={treeRef}
+    >
       {isJsonContainer(root) ? (
         <div className="flex flex-wrap items-center gap-1">
           <Button
@@ -99,6 +176,12 @@ export function JsonTreeView({
       <div className="min-w-0 font-mono text-xs leading-5">
         {rows.map((row) => (
           <JsonRow
+            active={
+              row.type === "node" && activeHit?.path === row.path
+                ? activeHit
+                : undefined
+            }
+            hits={row.type === "node" ? hitsByPath?.get(row.path) : undefined}
             key={`${row.type}:${row.path}`}
             onLimit={setLimit}
             onToggle={toggle}
@@ -109,6 +192,24 @@ export function JsonTreeView({
       </div>
     </div>
   );
+}
+
+/** Hits grouped by the row that shows them, for marking while rendering. */
+function rowHits(
+  search: JsonSearchResult,
+  matcher: RegExp,
+  length: number,
+): Map<string, RowHits> {
+  const byPath = new Map<string, RowHits>();
+  for (const hit of search.hits) {
+    let entry = byPath.get(hit.path);
+    if (!entry) {
+      entry = { key: [], value: [], matcher, length };
+      byPath.set(hit.path, entry);
+    }
+    entry[hit.field].push(hit.offset);
+  }
+  return byPath;
 }
 
 interface TreeViewState {
@@ -132,6 +233,10 @@ function initialView(
 interface JsonRowProps {
   row: JsonTreeRow;
   renderText: RenderText;
+  /** Find hits in this row, if any. */
+  hits?: RowHits;
+  /** The hit in view, when it is in this row. */
+  active?: JsonSearchHit;
   onToggle: (path: string) => void;
   onLimit: (path: string, limit: number) => void;
 }
@@ -139,6 +244,8 @@ interface JsonRowProps {
 const JsonRow = memo(function JsonRow({
   row,
   renderText,
+  hits,
+  active,
   onToggle,
   onLimit,
 }: JsonRowProps) {
@@ -195,6 +302,9 @@ const JsonRow = memo(function JsonRow({
   const label =
     row.name ??
     (row.index !== null ? `[${row.index}]` : t("audit.jsonTree.root"));
+  const length = hits?.length ?? 0;
+  const activeKey = active?.field === "key" ? active.offset : null;
+  const activeValue = active?.field === "value" ? active.offset : null;
 
   return (
     <div className="flex items-start" data-path={row.path} style={indent}>
@@ -222,15 +332,26 @@ const JsonRow = memo(function JsonRow({
       <div className="min-w-0 flex-1 py-px [overflow-wrap:anywhere]">
         {row.name !== null ? (
           <>
-            <span className="text-foreground">{JSON.stringify(row.name)}</span>
+            <span className="text-foreground">
+              "{markText(jsonKeyText(row.name), hits?.key, length, activeKey)}"
+            </span>
             <span className="text-muted-foreground">: </span>
           </>
         ) : row.index !== null ? (
           <span className="text-muted-foreground">{row.index}: </span>
         ) : null}
-        <NodeValue node={node} open={row.open} renderText={renderText} />
+        <NodeValue
+          activeOffset={activeValue}
+          hits={hits}
+          node={node}
+          open={row.open}
+          renderText={renderText}
+        />
         {node.kind === "string" && row.open ? (
           <StringBody
+            activeOffset={activeValue}
+            hitLength={length}
+            hits={hits?.value}
             onLimit={(limit) => onLimit(row.path, limit)}
             renderText={renderText}
             shown={row.shownChars}
@@ -246,12 +367,17 @@ function NodeValue({
   node,
   open,
   renderText,
+  hits,
+  activeOffset,
 }: {
   node: JsonNode;
   open: boolean;
   renderText: RenderText;
+  hits?: RowHits;
+  activeOffset: number | null;
 }) {
   const t = useT();
+  const length = hits?.length ?? 0;
   switch (node.kind) {
     case "object":
     case "array": {
@@ -280,20 +406,34 @@ function NodeValue({
       if (!isFoldableString(node.text)) {
         return (
           <span className="text-success-foreground">
-            "{renderText(node.text)}
+            "
+            {markText(node.text, hits?.value, length, activeOffset, renderText)}
             {node.complete ? '"' : <CutMarker innermost />}
           </span>
         );
       }
       const base64 = detectBase64(node.text);
+      const preview = base64
+        ? stringPreview(node.text, 32)
+        : stringPreview(node.text, STRING_PREVIEW_CHARS);
       return (
         <>
           {open ? null : (
             <span className="text-success-foreground">
               "
               {base64
-                ? stringPreview(node.text, 32)
-                : renderText(stringPreview(node.text, STRING_PREVIEW_CHARS))}
+                ? preview
+                : markText(
+                    preview,
+                    // The preview folds newlines and clips, so hits are
+                    // found in it again rather than mapped from the text.
+                    hits && hits.value.length > 0
+                      ? findOffsets(preview, hits.matcher)
+                      : undefined,
+                    length,
+                    null,
+                    renderText,
+                  )}
               "
             </span>
           )}
@@ -311,7 +451,11 @@ function NodeValue({
       );
     }
     default:
-      return <span className="text-violet-foreground">{node.text}</span>;
+      return (
+        <span className="text-violet-foreground">
+          {markText(node.text, hits?.value, length, activeOffset)}
+        </span>
+      );
   }
 }
 
@@ -320,11 +464,17 @@ function StringBody({
   text,
   shown,
   renderText,
+  hits,
+  hitLength,
+  activeOffset,
   onLimit,
 }: {
   text: string;
   shown: number;
   renderText: RenderText;
+  hits?: number[];
+  hitLength: number;
+  activeOffset: number | null;
   onLimit: (limit: number) => void;
 }) {
   const t = useT();
@@ -332,7 +482,13 @@ function StringBody({
   return (
     <div className="my-0.5 grid gap-1 rounded-sm bg-card px-2 py-1">
       <div className="whitespace-pre-wrap text-success-foreground">
-        {renderText(remaining > 0 ? text.slice(0, shown) : text)}
+        {markText(
+          remaining > 0 ? text.slice(0, shown) : text,
+          hits,
+          hitLength,
+          activeOffset,
+          renderText,
+        )}
       </div>
       {remaining > 0 ? (
         <Button
@@ -384,6 +540,8 @@ function plainText(text: string): ReactNode {
 function sameRowProps(prev: JsonRowProps, next: JsonRowProps): boolean {
   if (
     prev.renderText !== next.renderText ||
+    prev.hits !== next.hits ||
+    prev.active !== next.active ||
     prev.onToggle !== next.onToggle ||
     prev.onLimit !== next.onLimit
   )

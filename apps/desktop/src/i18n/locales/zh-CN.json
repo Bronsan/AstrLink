@@ -2052,7 +2052,25 @@
     "pinHint": "置顶窗口：保持在最前，并固定显示这次调用；之后点别的调用会另开窗口。",
     "unpinHint": "取消置顶：窗口回到普通层级，重新跟随轨迹列表。",
     "pinFailed": "无法切换置顶状态。",
-    "continuation": "对话延续：会话粘性"
+    "continuation": "对话延续：会话粘性",
+    "widen": "变成宽窗",
+    "narrow": "恢复窄窗",
+    "widenHint": "宽窗：把这个窗口一键拉宽，长 JSON 和请求头不用再折行。",
+    "narrowHint": "恢复窄窗：回到原来的宽度和位置。",
+    "widenTip": "内容太挤？点这里一键变成宽窗，再点一次就恢复。",
+    "widenFailed": "无法调整窗口宽度。"
+  },
+  "find": {
+    "label": "查找内容",
+    "open": "查找",
+    "contentPlaceholder": "查找键名或值，回车跳到下一处",
+    "turnsOpen": "搜索轮次",
+    "turnsLabel": "搜索轮次",
+    "turnsPlaceholder": "搜索消息、模型、提供商或结果，回车跳到下一轮",
+    "previous": "上一处（⇧回车）",
+    "next": "下一处（回车）",
+    "close": "关闭查找（Esc）",
+    "none": "无结果"
   },
   "dialog": {
     "close": "关闭"

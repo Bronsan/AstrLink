@@ -535,6 +535,172 @@ describe("TrajectoryInspectorWindow", () => {
     expect(body().textContent).toContain("Content-Type");
   });
 
+  it("finds in the client body with ⌘F and steps between the hits", async () => {
+    const content = JSON.stringify({
+      model: "gpt-4.1",
+      input: [{ text: "ping" }, { text: "PING again" }],
+    });
+    bridgeMocks.getRequestAuditContent.mockResolvedValue({
+      ...auditContent,
+      request_body: {
+        content,
+        media_type: "application/json",
+        captured_bytes: content.length,
+        truncated: false,
+      },
+    });
+    hostState.current = {
+      selection: { record, row: laterRow },
+      pinned: false,
+    };
+    const scrolled = vi
+      .spyOn(Element.prototype, "scrollIntoView")
+      .mockImplementation(() => {});
+    await render();
+
+    const body = () =>
+      container.querySelector<HTMLElement>(
+        '[data-testid="inspector-client-body"]',
+      )!;
+    expect(container.querySelector('[data-testid="find-bar"]')).toBeNull();
+
+    await act(async () => {
+      window.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "f", metaKey: true }),
+      );
+    });
+    const input = container.querySelector<HTMLInputElement>(
+      '[data-testid="find-input"]',
+    )!;
+    expect(input).not.toBeNull();
+    expect(
+      container
+        .querySelector('[data-testid="capture-find"]')
+        ?.getAttribute("aria-pressed"),
+    ).toBe("true");
+
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(
+        HTMLInputElement.prototype,
+        "value",
+      )!.set!.call(input, "ping");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await flush();
+
+    const count = () =>
+      container.querySelector('[data-testid="find-count"]')?.textContent;
+    const activeHit = () =>
+      body().querySelector('mark[data-find-active="true"]');
+    expect(count()).toBe("1/2");
+    expect(activeHit()?.textContent).toBe("ping");
+    expect(scrolled).toHaveBeenCalled();
+
+    await act(async () => {
+      input.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Enter", bubbles: true }),
+      );
+    });
+    expect(count()).toBe("2/2");
+    expect(activeHit()?.textContent).toBe("PING");
+
+    // The original text is searched too, from the same bar.
+    const raw = [...container.querySelectorAll("button")].find(
+      (button) => button.textContent === "原文",
+    )!;
+    await act(async () => raw.click());
+    await flush();
+    expect(body().querySelector('[data-testid="audit-raw"]')).not.toBeNull();
+    expect(count()).toBe("1/2");
+    expect(activeHit()?.textContent).toBe("ping");
+
+    await act(async () => {
+      input.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Escape", bubbles: true }),
+      );
+    });
+    expect(container.querySelector('[data-testid="find-bar"]')).toBeNull();
+    expect(body().querySelector('[data-testid="find-mark"]')).toBeNull();
+    scrolled.mockRestore();
+  });
+
+  it("widens the window from its title bar and narrows it back", async () => {
+    hostMocks.invoke.mockImplementation(
+      async (command: string, args?: Record<string, unknown>) => {
+        if (command === "trajectory_inspector_state") return hostState.current;
+        if (command === "set_trajectory_inspector_wide") return args?.wide;
+        return undefined;
+      },
+    );
+    await render();
+    await act(async () => {
+      pushSelection({ row, record });
+    });
+    await flush();
+
+    const widen = () =>
+      container.querySelector<HTMLButtonElement>(
+        '[data-testid="trajectory-inspector-widen"]',
+      )!;
+    expect(widen().getAttribute("aria-label")).toBe("变成宽窗");
+    expect(widen().getAttribute("aria-pressed")).toBe("false");
+    expect(
+      container.querySelector(
+        '[data-testid="trajectory-inspector-edge-flash"]',
+      ),
+    ).toBeNull();
+
+    await act(async () => widen().click());
+    await flush();
+
+    expect(hostMocks.invoke).toHaveBeenCalledWith(
+      "set_trajectory_inspector_wide",
+      { wide: true },
+    );
+    expect(widen().getAttribute("aria-pressed")).toBe("true");
+    expect(widen().getAttribute("aria-label")).toBe("恢复窄窗");
+    // The edges flash while the native frame stretches.
+    expect(
+      container.querySelector(
+        '[data-testid="trajectory-inspector-edge-flash"]',
+      ),
+    ).not.toBeNull();
+
+    await act(async () => widen().click());
+    await flush();
+
+    expect(hostMocks.invoke).toHaveBeenLastCalledWith(
+      "set_trajectory_inspector_wide",
+      { wide: false },
+    );
+    expect(widen().getAttribute("aria-pressed")).toBe("false");
+  });
+
+  it("restores a widened window and admits a width the host refused", async () => {
+    hostState.current = {
+      selection: { record, row },
+      pinned: false,
+      wide: true,
+    };
+    hostMocks.invoke.mockImplementation(async (command: string) => {
+      if (command === "trajectory_inspector_state") return hostState.current;
+      throw new Error("a full-screen inspector window cannot change its width");
+    });
+    await render();
+
+    const widen = () =>
+      container.querySelector<HTMLButtonElement>(
+        '[data-testid="trajectory-inspector-widen"]',
+      )!;
+    // A dev reload keeps the toggle in step with the window the host widened.
+    expect(widen().getAttribute("aria-pressed")).toBe("true");
+
+    await act(async () => widen().click());
+    await flush();
+
+    expect(widen().getAttribute("aria-pressed")).toBe("true");
+  });
+
   it("never asks itself to open another inspector window", () => {
     expect(isTrajectoryInspectorWindow()).toBe(true);
     expect(detachedInspectorEnabled()).toBe(false);

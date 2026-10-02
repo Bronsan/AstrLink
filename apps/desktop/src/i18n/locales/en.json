@@ -2052,7 +2052,25 @@
     "pinHint": "Keep on top: float above other windows and hold this call. The next call you pick opens its own window.",
     "unpinHint": "Release: return to a normal window that follows the trajectory list again.",
     "pinFailed": "Unable to change the pin.",
-    "continuation": "Conversation continuation: session stickiness"
+    "continuation": "Conversation continuation: session stickiness",
+    "widen": "Widen window",
+    "narrow": "Restore width",
+    "widenHint": "Widen: stretch this window in one click so long JSON and headers stop wrapping.",
+    "narrowHint": "Restore width: go back to the earlier width and position.",
+    "widenTip": "Too cramped? Widen this window in one click; click again to restore it.",
+    "widenFailed": "Unable to change the window width."
+  },
+  "find": {
+    "label": "Find in content",
+    "open": "Find",
+    "contentPlaceholder": "Find keys or values; Enter for next",
+    "turnsOpen": "Find turns",
+    "turnsLabel": "Find turns",
+    "turnsPlaceholder": "Find messages, models, providers or results; Enter for next turn",
+    "previous": "Previous (Shift+Enter)",
+    "next": "Next (Enter)",
+    "close": "Close find (Esc)",
+    "none": "No results"
   },
   "dialog": {
     "close": "Close"
