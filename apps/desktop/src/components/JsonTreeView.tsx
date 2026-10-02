@@ -47,6 +47,12 @@ type RenderText = (text: string) => ReactNode;
 
 const STRING_PREVIEW_CHARS = 96;
 
+// One indent step per depth, each carrying a hairline under the centre of
+// the 22px fold toggle above it, so an open container's line runs from its
+// toggle straight down to its closing bracket.
+const GUIDE_LINE =
+  "transparent calc(0.6875rem - 0.5px), var(--color-input) calc(0.6875rem - 0.5px), var(--color-input) calc(0.6875rem + 0.5px), transparent calc(0.6875rem + 0.5px)";
+
 /** The hits that show in one row, and how to find more in its previews. */
 interface RowHits {
   key: number[];
@@ -250,13 +256,15 @@ const JsonRow = memo(function JsonRow({
   onLimit,
 }: JsonRowProps) {
   const t = useT();
-  const indent = { paddingInlineStart: `${row.depth}rem` };
+  const guides = <IndentGuides depth={row.depth} />;
 
   if (row.type === "more") {
     return (
-      <div className="flex items-center gap-2 py-0.5" style={indent}>
+      <div className="flex items-center">
+        {guides}
         <span aria-hidden="true" className="size-5.5 shrink-0" />
         <Button
+          className="my-0.5 mr-2"
           onClick={() => onLimit(row.path, row.shown + JSON_CHILD_BATCH)}
           size="xs"
           type="button"
@@ -278,19 +286,21 @@ const JsonRow = memo(function JsonRow({
 
   if (row.type === "close") {
     return (
-      <div className="flex items-start" style={indent}>
-        <span aria-hidden="true" className="size-5.5 shrink-0" />
-        <span className="py-px text-muted-foreground">
-          {row.node.complete ? (
-            row.node.kind === "object" ? (
-              "}"
-            ) : (
-              "]"
-            )
-          ) : (
-            <CutMarker innermost={cutsHere(row.node)} />
-          )}
-        </span>
+      <div className="flex items-start">
+        {guides}
+        {/* Under the toggle that opened it, where its guide line ends. */}
+        {row.node.complete ? (
+          <span className="flex h-5.5 w-5.5 shrink-0 items-center justify-center text-muted-foreground">
+            {row.node.kind === "object" ? "}" : "]"}
+          </span>
+        ) : (
+          <>
+            <span aria-hidden="true" className="size-5.5 shrink-0" />
+            <span className="py-px">
+              <CutMarker innermost={cutsHere(row.node)} />
+            </span>
+          </>
+        )}
       </div>
     );
   }
@@ -307,7 +317,8 @@ const JsonRow = memo(function JsonRow({
   const activeValue = active?.field === "value" ? active.offset : null;
 
   return (
-    <div className="flex items-start" data-path={row.path} style={indent}>
+    <div className="flex items-start" data-path={row.path}>
+      {guides}
       {foldable ? (
         <Button
           aria-expanded={row.open}
@@ -504,6 +515,21 @@ function StringBody({
         </Button>
       ) : null}
     </div>
+  );
+}
+
+function IndentGuides({ depth }: { depth: number }) {
+  if (depth === 0) return null;
+  return (
+    <span
+      aria-hidden="true"
+      className="shrink-0 self-stretch bg-repeat-x"
+      style={{
+        width: `${depth}rem`,
+        backgroundImage: `linear-gradient(to right, ${GUIDE_LINE})`,
+        backgroundSize: "1rem 100%",
+      }}
+    />
   );
 }
 

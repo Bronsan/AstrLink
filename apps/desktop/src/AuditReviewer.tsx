@@ -137,6 +137,7 @@ export function AuditResultSection({
   const copyText = outputs
     .map((output) => [output.name, output.text].filter(Boolean).join("\n"))
     .join("\n\n");
+  const structuredLabel = wireStructuredLabel(part);
   return (
     <ResponseViewer
       content={copyText}
@@ -146,6 +147,14 @@ export function AuditResultSection({
       label={t("trajectory.clientResponse")}
       rawView={<RawSegmentView bounded={false} content={part.content} />}
       rawHint={t("audit.clientWireHint")}
+      structured={
+        structuredLabel
+          ? {
+              label: structuredLabel,
+              view: <AuditWireView mode="structured" part={part} />,
+            }
+          : undefined
+      }
       previewContent={
         <div className="space-y-3" data-testid="audit-result-preview">
           {lead}

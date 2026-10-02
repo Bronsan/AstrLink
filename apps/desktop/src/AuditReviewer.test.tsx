@@ -74,6 +74,52 @@ describe("AuditReviewer sections", () => {
     ).toBe(content);
   });
 
+  it("lays the client response out as a JSON tree or stream events beside the original", async () => {
+    const json = '{"choices":[{"message":{"content":"Tree reply"}}]}';
+    const viewButton = (label: string) =>
+      [...container.querySelectorAll("button")].find(
+        (button) => button.textContent === label,
+      );
+    await act(async () => {
+      root.render(
+        <AuditResultSection
+          part={{
+            content: json,
+            media_type: "application/json",
+            captured_bytes: json.length,
+            truncated: false,
+          }}
+        />,
+      );
+    });
+    await act(async () => viewButton("格式化")!.click());
+    const tree = container.querySelector('[data-testid="json-tree"]');
+    expect(tree?.textContent).toContain('"content": "Tree reply"');
+    expect(container.querySelector('[data-testid="audit-raw"]')).toBeNull();
+
+    const stream =
+      'data: {"type":"response.output_text.delta","delta":"Event reply"}\n\n';
+    await act(async () => {
+      root.render(
+        <AuditResultSection
+          key="stream"
+          part={{
+            content: stream,
+            media_type: "text/event-stream",
+            captured_bytes: stream.length,
+            truncated: false,
+          }}
+        />,
+      );
+    });
+    await act(async () => viewButton("事件")!.click());
+    await vi.waitFor(() =>
+      expect(
+        container.querySelector('[data-testid="audit-event"]')?.textContent,
+      ).toContain("Event reply"),
+    );
+  });
+
   it("shows an empty-output explanation for lifecycle-only streams", async () => {
     const content =
       'data: {"type":"response.created","response":{"output":[]}}\n\n';
