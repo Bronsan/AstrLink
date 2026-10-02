@@ -183,13 +183,11 @@ jobs:
         if: ${{ !cancelled() }}
         run: cargo deny --locked --manifest-path apps/desktop/src-tauri/Cargo.toml check advisories bans sources
 
+  # The suite runs in Node with stubbed platforms, so one OS is enough here;
+  # the package workflows still run it on every release platform.
   frontend:
-    name: Frontend (${{ matrix.os }})
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-24.04, ubuntu-22.04, macos-latest, windows-latest]
-    runs-on: ${{ matrix.os }}
+    name: Frontend
+    runs-on: ubuntu-24.04
     defaults:
       run:
         working-directory: apps/desktop
