@@ -47,12 +47,6 @@ type RenderText = (text: string) => ReactNode;
 
 const STRING_PREVIEW_CHARS = 96;
 
-// One indent step per depth, each carrying a hairline under the centre of
-// the 22px fold toggle above it, so an open container's line runs from its
-// toggle straight down to its closing bracket.
-const GUIDE_LINE =
-  "transparent calc(0.6875rem - 0.5px), var(--color-input) calc(0.6875rem - 0.5px), var(--color-input) calc(0.6875rem + 0.5px), transparent calc(0.6875rem + 0.5px)";
-
 /** The hits that show in one row, and how to find more in its previews. */
 interface RowHits {
   key: number[];
@@ -521,18 +515,19 @@ function StringBody({
   );
 }
 
+// One indent step per depth, each carrying a hairline under the centre of
+// the 22px fold toggle above it, so an open container's line runs from its
+// toggle straight down to its closing bracket.
 function IndentGuides({ depth }: { depth: number }) {
   if (depth === 0) return null;
   return (
-    <span
-      aria-hidden="true"
-      className="shrink-0 self-stretch bg-repeat-x"
-      style={{
-        width: `${depth}rem`,
-        backgroundImage: `linear-gradient(to right, ${GUIDE_LINE})`,
-        backgroundSize: "1rem 100%",
-      }}
-    />
+    <span aria-hidden="true" className="flex shrink-0 self-stretch">
+      {Array.from({ length: depth }, (_, step) => (
+        <span className="relative w-4 shrink-0" key={step}>
+          <span className="absolute inset-y-0 left-[calc(0.6875rem-0.5px)] w-px bg-input" />
+        </span>
+      ))}
+    </span>
   );
 }
 
