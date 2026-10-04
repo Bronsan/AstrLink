@@ -400,6 +400,7 @@ describe("request-record IPC contract", () => {
       http_status: 200,
       latency_ms: 120,
       first_token_ms: null,
+      first_answer_ms: null,
       usage: {
         input_tokens: 10,
         output_tokens: 20,
@@ -419,6 +420,7 @@ describe("request-record IPC contract", () => {
     expect(parseRequestRecord(nullOptionalRecord)).toEqual({
       ...nullOptionalRecord,
       first_token_ms: null,
+      first_answer_ms: null,
       reasoning_effort: null,
       parent_request_id: null,
       attempt_index: 1,
@@ -539,6 +541,7 @@ describe("request-record IPC contract", () => {
         {
           ...nullOptionalRecord,
           first_token_ms: null,
+          first_answer_ms: null,
           reasoning_effort: null,
           parent_request_id: null,
           attempt_index: 1,
@@ -862,6 +865,16 @@ it("parses performance samples and rejects invalid timing and rates", () => {
   expect(() =>
     parseRequestRecord({ ...fullRecord, first_token_ms: -1 }),
   ).toThrow("first_token_ms");
+  expect(
+    parseRequestRecord({
+      ...fullRecord,
+      first_token_ms: 400,
+      first_answer_ms: 2600,
+    }).first_answer_ms,
+  ).toBe(2600);
+  expect(() =>
+    parseRequestRecord({ ...fullRecord, first_answer_ms: 1.5 }),
+  ).toThrow("first_answer_ms");
 });
 
 describe("client attribution", () => {

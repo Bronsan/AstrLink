@@ -233,6 +233,8 @@ export interface RequestRecord {
   http_status: number | null;
   latency_ms: number | null;
   first_token_ms?: number | null;
+  /** First non-reasoning output; minus first_token_ms is the thinking time. */
+  first_answer_ms?: number | null;
   usage: RequestUsage | null;
   error: RequestErrorSummary | null;
   audit: RequestAuditSummary;
@@ -903,6 +905,11 @@ function parseRequestRecordAt(value: unknown, path: string): RequestRecord {
     first_token_ms: optionalPerformanceNumber(
       record.first_token_ms,
       `${path}.first_token_ms`,
+      true,
+    ),
+    first_answer_ms: optionalPerformanceNumber(
+      record.first_answer_ms,
+      `${path}.first_answer_ms`,
       true,
     ),
     usage: parseUsage(record.usage, `${path}.usage`),

@@ -56,6 +56,7 @@ vi.mock("./response-preview-model", async (importOriginal) => {
 import type { AuditSettings } from "./audit-settings-model";
 import type { RawSealingState } from "./raw-sealing-model";
 import { RequestRecords } from "./RequestRecords";
+import { WorkspaceSnapshotProvider } from "./workspace-snapshots";
 import {
   displayRequestStatus,
   emptyTrajectoryFields,
@@ -309,6 +310,32 @@ function optionText(option: Element): string | undefined {
   return copy.textContent?.trim();
 }
 
+/** Opens a dropdown menu by its trigger label and returns the named item. */
+async function menuItem(
+  triggerLabel: string,
+  itemText: string,
+): Promise<HTMLElement> {
+  const trigger = document.querySelector<HTMLButtonElement>(
+    `button[aria-label="${triggerLabel}"]`,
+  );
+  if (!trigger) throw new Error(`Missing menu trigger: ${triggerLabel}`);
+  await act(async () => {
+    trigger.dispatchEvent(
+      new PointerEvent("pointerdown", {
+        bubbles: true,
+        button: 0,
+        pointerType: "mouse",
+      }),
+    );
+    await Promise.resolve();
+  });
+  const item = [
+    ...document.querySelectorAll<HTMLElement>('[role="menuitem"]'),
+  ].find((candidate) => candidate.textContent?.trim() === itemText);
+  if (!item) throw new Error(`Missing menu item: ${itemText}`);
+  return item;
+}
+
 async function chooseOption(label: string, option: string): Promise<void> {
   const trigger = document.querySelector<HTMLButtonElement>(
     `button[role="combobox"][aria-label="${label}"]`,
@@ -477,6 +504,7 @@ describe("RequestRecords", () => {
     container.remove();
   });
 
+  // These tests read the trace; the conversation default has its own test.
   const renderRecords = async (session = "session-1", services = [service]) => {
     await act(async () => {
       reactRoot.render(
@@ -484,6 +512,7 @@ describe("RequestRecords", () => {
           accessTokens={[]}
           accessTokensReady
           coreSessionKey={session}
+          initialDetailTab="trajectory"
           services={services}
           isReady
         />,
@@ -713,11 +742,11 @@ describe("RequestRecords", () => {
     });
     await act(async () => await Promise.resolve());
     const duration = () =>
-      [...container.querySelectorAll("dt")].find(
+      [...document.querySelectorAll("dt")].find(
         (node) => node.textContent === i18n.t("records.modelDuration"),
       )?.nextElementSibling?.textContent;
     expect(duration()).toBe("3.6 s");
-    const stats = container.querySelector(
+    const stats = document.querySelector(
       '[data-testid="session-performance"]',
     )!;
     expect(stats.textContent).toContain("≈ 19.8 s");
@@ -906,10 +935,10 @@ describe("RequestRecords", () => {
     });
     await act(async () => await Promise.resolve());
 
-    const copyButton = exactButton("复制诊断信息");
-    expect(copyButton.title).toContain("不含请求/响应正文");
+    const copyItem = await menuItem("更多操作", "复制诊断信息");
+    expect(copyItem.title).toContain("不含请求/响应正文");
     await act(async () => {
-      copyButton.click();
+      copyItem.click();
       await Promise.resolve();
     });
     await act(async () => await Promise.resolve());
@@ -1028,8 +1057,9 @@ describe("RequestRecords", () => {
       ),
     ).toBeNull();
 
+    const copyItem = await menuItem("更多操作", "复制诊断信息");
     await act(async () => {
-      exactButton("复制诊断信息").click();
+      copyItem.click();
       await Promise.resolve();
     });
     await act(async () => await Promise.resolve());
@@ -2605,6 +2635,70 @@ describe("RequestRecords", () => {
     });
     await act(async () => await Promise.resolve());
     expect(bridgeMocks.getRequestAuditContent).toHaveBeenCalledTimes(1);
+  });
+
+  it("opens on the conversation and remembers a switch to the trace", async () => {
+    const openSession = async (record: RequestRecord) => {
+      await act(async () => {
+        (
+          container.querySelector(
+            `[data-session-id="${record.session_id ?? record.id}"]`,
+          ) as HTMLButtonElement
+        ).click();
+        await Promise.resolve();
+      });
+      await flush();
+    };
+    await act(async () => {
+      reactRoot.render(
+        <WorkspaceSnapshotProvider sessionKey="session-1">
+          <RequestRecords
+            accessTokens={[]}
+            accessTokensReady
+            coreSessionKey="session-1"
+            services={[service]}
+            isReady
+          />
+        </WorkspaceSnapshotProvider>,
+      );
+      await Promise.resolve();
+    });
+    await flush();
+    await openSession(firstRecord);
+    const tabs = [
+      ...container.querySelectorAll<HTMLButtonElement>(
+        `[aria-label="${i18n.t("records.sections")}"] [role="tab"]`,
+      ),
+    ].map((tab) => tab.textContent?.trim());
+    expect(tabs.slice(0, 2)).toEqual(["对话", "追踪"]);
+    expect(
+      container.querySelector('[data-testid="request-conversation"]'),
+    ).not.toBeNull();
+    expect(
+      container.querySelector('[data-testid="conversation-outline-toggle"]'),
+    ).not.toBeNull();
+    expect(
+      container.querySelector('[data-testid="trajectory-list"]'),
+    ).toBeNull();
+    await act(async () => {
+      exactButton("追踪").click();
+      await Promise.resolve();
+    });
+    await flush();
+    expect(
+      container.querySelector('[data-testid="trajectory-list"]'),
+    ).not.toBeNull();
+    await act(async () => {
+      buttonContaining("实时监控").click();
+      await Promise.resolve();
+    });
+    await openSession(secondRecord);
+    expect(
+      container.querySelector('[data-testid="trajectory-list"]'),
+    ).not.toBeNull();
+    expect(
+      container.querySelector('[data-testid="request-conversation"]'),
+    ).toBeNull();
   });
 
   it("shows a friendly message for records without http metadata", async () => {

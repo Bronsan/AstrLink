@@ -12,8 +12,10 @@ import {
 } from "react";
 import {
   ChevronDown,
+  ChevronUp,
   Copy,
   SlidersHorizontal as ListFilter,
+  Menu as Ellipsis,
   MessageSquare,
   RefreshCw,
   SlidersHorizontal as Settings2,
@@ -30,7 +32,6 @@ import { ServiceSelect } from "@/components/ServiceSelect";
 import { FormMessage } from "@/components/FormMessage";
 import { MultiFilterSelect } from "@/components/MultiFilterSelect";
 import { HelpPopover } from "@/components/HelpPopover";
-import { Metric as SummaryMetric, MetricGroup } from "@/components/Metric";
 import { IconButton } from "@/components/IconButton";
 import { ModelLabel } from "@/components/ModelLabel";
 import { RequestServiceLabel } from "@/components/RequestServiceLabel";
@@ -85,6 +86,7 @@ import {
   updateAuditSettings,
 } from "./bridge";
 import { copyButtonLabel, useCopyFeedback } from "./copy-feedback";
+import { formatCompactNumber } from "./format-compact-number";
 import { i18n, useT } from "./i18n";
 import { useLiveClock } from "./live-clock";
 import { notify } from "./notify";
@@ -116,6 +118,7 @@ import {
 } from "./request-live-model";
 import {
   CLIENT_TYPES,
+  displayRequestStatus,
   holdsRawPart,
   isModelDiscoveryProtocol,
   statusLabel,
@@ -129,6 +132,7 @@ import {
   type RequestSessionKind,
   type SessionStatus,
 } from "./request-record-model";
+import { RequestConversation } from "./RequestConversation";
 import { RequestTrajectory } from "./RequestTrajectory";
 import {
   applyQueuedSessions,
@@ -161,7 +165,26 @@ const EMPTY_FILTERS: RecordFilters = {
 
 type RecordsView = "monitor" | "detail";
 type RecordsKind = RequestSessionKind | "all";
-type DetailTab = "trajectory" | "content" | "audit" | "binding";
+type DetailTab =
+  | "conversation"
+  | "trajectory"
+  | "content"
+  | "audit"
+  | "binding";
+// Copies started from a menu lose their button when it closes, so their
+// outcome is announced beside the actions instead.
+const MENU_COPY_KEYS: ReadonlySet<string> = new Set([
+  "bundle-meta",
+  "skill-diagnostic",
+  "session-id",
+]);
+const DETAIL_TABS: readonly DetailTab[] = [
+  "conversation",
+  "trajectory",
+  "content",
+  "audit",
+  "binding",
+];
 type PendingConfirm =
   | { kind: "audit-risk"; patch: AuditSettingsPatch }
   | { kind: "delete"; requestId: string }
@@ -184,6 +207,17 @@ function auditContentBytes(content: AuditContent): number {
 }
 
 /** Everything the list row shows, so the detail only reloads when it moved. */
+/** The session beside `id` in the list: -1 is newer, 1 is older. */
+function neighborSession(
+  items: RequestSession[],
+  id: string | null,
+  direction: -1 | 1,
+): RequestSession | null {
+  const index = id === null ? -1 : items.findIndex((item) => item.id === id);
+  if (index < 0) return null;
+  return items[index + direction] ?? null;
+}
+
 function sessionSummaryKey(session: RequestSession): string {
   return [
     session.id,
@@ -245,6 +279,7 @@ export function RequestRecords({
   accessTokens,
   accessTokensReady,
   coreSessionKey,
+  initialDetailTab = "conversation",
   initialLocalAccessTokenId,
   isReady,
   services,
@@ -252,6 +287,8 @@ export function RequestRecords({
   accessTokens: AccessTokenSummary[];
   accessTokensReady: boolean;
   coreSessionKey: string | null;
+  /** The reading tab a session opens on until the operator picks one. */
+  initialDetailTab?: "conversation" | "trajectory";
   initialLocalAccessTokenId?: string;
   isReady: boolean;
   services: (RoutableService & RequestService)[];
@@ -1610,8 +1647,19 @@ export function RequestRecords({
             auditLoading={auditLoading}
             auditSettings={settings}
             deleting={deleting}
+            initialTab={initialDetailTab}
+            newerAvailable={
+              neighborSession(visibleItems, selectedId, -1) !== null
+            }
+            olderAvailable={
+              neighborSession(visibleItems, selectedId, 1) !== null
+            }
             onBack={returnToMonitor}
             onClearDecrypted={clearDecrypted}
+            onNavigate={(direction) => {
+              const next = neighborSession(visibleItems, selectedId, direction);
+              if (next) openDetail(next.id);
+            }}
             onDelete={() =>
               setPendingConfirm({ kind: "delete", requestId: selected.id })
             }
@@ -1740,64 +1788,6 @@ export function RequestRecords({
 function SessionDuration({ session }: { session: RequestSession }) {
   const nowMs = useLiveClock(session.active_request_starts.length > 0);
   return <>{formatDuration(sessionRuntimeMs(session, nowMs))}</>;
-}
-
-function SessionPerformance({ session }: { session: RequestSession }) {
-  const t = useT();
-  return (
-    <MetricGroup
-      aria-label={t("records.performanceStats")}
-      className="shrink-0 border-b"
-      data-testid="session-performance"
-    >
-      <SummaryMetric
-        size="compact"
-        label={
-          <span className="flex items-center gap-1">
-            {t("records.modelDuration")}
-            <HelpPopover label={t("records.performanceStats")}>
-              <div className="space-y-2">
-                <p>{t("records.modelDurationHint")}</p>
-                <p>{t("records.toolDurationHint")}</p>
-                <p>{t("records.averageTTFTHint")}</p>
-                <p>{t("records.outputSpeedHint")}</p>
-                <p>{t("records.performanceMissingHint")}</p>
-              </div>
-            </HelpPopover>
-          </span>
-        }
-        value={<SessionDuration session={session} />}
-      />
-      <SummaryMetric
-        size="compact"
-        label={t("records.toolDuration")}
-        title={t("records.toolDurationHint")}
-        value={
-          session.tool_duration_ms == null
-            ? "—"
-            : `≈ ${formatDuration(session.tool_duration_ms)}`
-        }
-      />
-      <SummaryMetric
-        size="compact"
-        label={t("records.averageTTFT")}
-        value={
-          session.average_ttft_ms == null
-            ? "—"
-            : formatDuration(session.average_ttft_ms)
-        }
-      />
-      <SummaryMetric
-        size="compact"
-        label={t("records.outputSpeed")}
-        value={
-          session.output_tokens_per_second == null
-            ? "—"
-            : `${session.output_tokens_per_second.toFixed(1)} tok/s`
-        }
-      />
-    </MetricGroup>
-  );
 }
 
 function RecordLatency({ record }: { record: RequestRecord }) {
@@ -2071,8 +2061,12 @@ function RecordDetail({
   auditSettings,
   deleting,
   rawSealing,
+  initialTab,
+  newerAvailable,
+  olderAvailable,
   onBack,
   onDelete,
+  onNavigate,
   onClearDecrypted,
   onLockRaw,
   onSelectTurn,
@@ -2091,8 +2085,12 @@ function RecordDetail({
   auditSettings: AuditSettings | null;
   deleting: boolean;
   rawSealing: RawSealingState | null;
+  initialTab: "conversation" | "trajectory";
+  newerAvailable: boolean;
+  olderAvailable: boolean;
   onBack: () => void;
   onDelete: () => void;
+  onNavigate: (direction: -1 | 1) => void;
   onClearDecrypted: () => void;
   onLockRaw: () => void;
   onSelectTurn: (requestId: string) => void;
@@ -2102,7 +2100,28 @@ function RecordDetail({
   const t = useT();
   const copyFeedback = useCopyFeedback();
   const [bundleSize, setBundleSize] = useState<number | null>(null);
-  const [detailTab, setDetailTab] = useState<DetailTab>("trajectory");
+  // The tab the operator reads conversations in is a habit, not a property
+  // of one session, so it is remembered across sessions and page visits.
+  const [rememberedTab, setRememberedTab] = useWorkspaceSnapshot<DetailTab>(
+    "request-detail-tab",
+    initialTab,
+    "desktop",
+  );
+  const discovery = isModelDiscoveryProtocol(session.input_protocol);
+  const defaultTab: DetailTab =
+    rememberedTab === "conversation" && discovery
+      ? "trajectory"
+      : rememberedTab;
+  const [detailTab, setDetailTabState] = useState<DetailTab>(defaultTab);
+  const setDetailTab = (tab: DetailTab) => {
+    setDetailTabState(tab);
+    if (tab === "conversation" || tab === "trajectory") setRememberedTab(tab);
+  };
+  const [outlineOpen, setOutlineOpen] = useWorkspaceSnapshot(
+    "request-conversation-outline",
+    true,
+    "desktop",
+  );
   const [childrenByRoot, setChildrenByRoot] = useState<
     Record<string, RequestRecord[]>
   >({});
@@ -2116,7 +2135,8 @@ function RecordDetail({
   const upstreamResponsePart = auditContent?.upstream_response_content ?? null;
 
   useEffect(() => {
-    setDetailTab("trajectory");
+    setDetailTabState(defaultTab);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [session.id]);
 
   // One request per root that retried, so this must not re-run on a new `turns`
@@ -2162,6 +2182,27 @@ function RecordDetail({
       cancelled = true;
     };
   }, [childRoots]);
+
+  // Failures and tokens across the whole conversation, retries included,
+  // for the one-line summary under the title.
+  const everyRecord = useMemo(
+    () => [...turns, ...Object.values(childrenByRoot).flat()],
+    [turns, childrenByRoot],
+  );
+  const failedCalls = everyRecord.filter((item) => {
+    const status = displayRequestStatus(item.status, item.http_status);
+    return status === "failed" || status === "blocked";
+  }).length;
+  const sessionTokens = everyRecord.reduce<{
+    input: number;
+    output: number;
+  } | null>((sum, item) => {
+    if (!item.usage) return sum;
+    return {
+      input: (sum?.input ?? 0) + item.usage.input_tokens,
+      output: (sum?.output ?? 0) + item.usage.output_tokens,
+    };
+  }, null);
 
   const exportEnvironment = useExportEnvironment(auditSettings);
   // The same diagnosis context for copy and export: a record alone cannot
@@ -2230,63 +2271,76 @@ function RecordDetail({
         titleId="request-detail-heading"
         titlePrefix={<ClientTypeIcon clientType={record.client_type} />}
         titleSuffix={
-          <StatusBadge
-            className="shrink-0"
-            data-testid="record-status"
-            tone={statusTone(session.status)}
-          >
-            {statusLabel(session.status)}
-            {session.status === "pending" ? (
-              <span className="ml-1.5 tabular-nums">
-                <SessionDuration session={session} />
-              </span>
+          <>
+            <StatusBadge
+              className="shrink-0"
+              data-testid="record-status"
+              tone={statusTone(session.status)}
+            >
+              {statusLabel(session.status)}
+              {session.status === "pending" ? (
+                <span className="ml-1.5 tabular-nums">
+                  <SessionDuration session={session} />
+                </span>
+              ) : null}
+            </StatusBadge>
+            <span aria-hidden="true" className="text-border">
+              ·
+            </span>
+            <RequestServiceLabel
+              className="max-w-64 text-xs"
+              labelClassName="sr-only"
+              service={requestServiceIdentity(record, services)}
+            />
+            {!discovery && session.requested_model ? (
+              <>
+                <span aria-hidden="true" className="text-border">
+                  ·
+                </span>
+                <ModelLabel
+                  className="max-w-56 text-xs"
+                  model={session.requested_model}
+                  reasoningEffort={session.reasoning_effort}
+                  redirectedTo={session.model_redirect?.to}
+                />
+              </>
             ) : null}
-          </StatusBadge>
+          </>
         }
         actionsClassName="flex-wrap justify-end gap-1.5"
         actions={
           <>
-            {copyFeedback.activeKey === "bundle-meta" ? (
+            {copyFeedback.activeKey !== null &&
+            MENU_COPY_KEYS.has(copyFeedback.activeKey) ? (
               <span className="text-micro text-muted-foreground" role="status">
-                {copyButtonLabel(copyFeedback, "bundle-meta")}
+                {copyButtonLabel(copyFeedback, copyFeedback.activeKey)}
               </span>
             ) : null}
             <IconButton
-              className="text-danger-foreground hover:bg-danger-wash hover:text-danger-foreground"
-              disabled={deleting || record.status === "pending"}
-              label={
-                record.status === "pending"
-                  ? t("records.deletePending")
-                  : deleting
-                    ? t("records.deleting")
-                    : t("common.delete")
-              }
-              onClick={onDelete}
+              data-testid="newer-session"
+              disabled={!newerAvailable}
+              label={t("records.newerSession")}
+              onClick={() => onNavigate(-1)}
               type="button"
             >
-              <Trash2 aria-hidden="true" />
+              <ChevronUp aria-hidden="true" />
             </IconButton>
-            <Button
-              data-testid="copy-skill-diagnostic"
-              onClick={copySkillDiagnostic}
-              size="sm"
-              title={t("records.copySkillDiagnosticHint")}
+            <IconButton
+              data-testid="older-session"
+              disabled={!olderAvailable}
+              label={t("records.olderSession")}
+              onClick={() => onNavigate(1)}
               type="button"
-              variant="outline"
             >
-              <Copy aria-hidden="true" />
-              {copyButtonLabel(
-                copyFeedback,
-                "skill-diagnostic",
-                t("records.copySkillDiagnostic"),
-              )}
-            </Button>
+              <ChevronDown aria-hidden="true" />
+            </IconButton>
             <div className="inline-flex">
               <Button
                 className="rounded-r-none"
                 onClick={() => copyBundle(true)}
                 size="sm"
                 type="button"
+                variant="outline"
               >
                 <Copy aria-hidden="true" />
                 {copyButtonLabel(
@@ -2304,9 +2358,10 @@ function RecordDetail({
                 <DropdownMenuTrigger asChild>
                   <Button
                     aria-label={t("records.copyExportOptions")}
-                    className="rounded-l-none border-l border-primary-foreground/20 px-1.5"
+                    className="-ml-px rounded-l-none px-1.5"
                     size="sm"
                     type="button"
+                    variant="outline"
                   >
                     <ChevronDown aria-hidden="true" />
                   </Button>
@@ -2330,17 +2385,79 @@ function RecordDetail({
                 </DropdownMenuContent>
               </DropdownMenu>
             </div>
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button
+                  aria-label={t("records.moreActions")}
+                  data-testid="record-more-actions"
+                  size="icon-sm"
+                  type="button"
+                  variant="outline"
+                >
+                  <Ellipsis aria-hidden="true" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end">
+                <DropdownMenuItem
+                  data-testid="copy-skill-diagnostic"
+                  onSelect={copySkillDiagnostic}
+                  title={t("records.copySkillDiagnosticHint")}
+                >
+                  <Copy aria-hidden="true" />
+                  {copyButtonLabel(
+                    copyFeedback,
+                    "skill-diagnostic",
+                    t("records.copySkillDiagnostic"),
+                  )}
+                </DropdownMenuItem>
+                <DropdownMenuItem
+                  onSelect={() => copyFeedback.copy("session-id", session.id)}
+                >
+                  <Copy aria-hidden="true" />
+                  {copyButtonLabel(
+                    copyFeedback,
+                    "session-id",
+                    t("records.copySessionId"),
+                  )}
+                </DropdownMenuItem>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem
+                  disabled={deleting || record.status === "pending"}
+                  onSelect={onDelete}
+                  variant="destructive"
+                >
+                  <Trash2 aria-hidden="true" />
+                  {record.status === "pending"
+                    ? t("records.deletePending")
+                    : deleting
+                      ? t("records.deleting")
+                      : t("common.delete")}
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
           </>
         }
       />
 
       <Tabs
         className="flex min-h-0 min-w-0 flex-1 flex-col gap-0"
-        onValueChange={(value) => setDetailTab(value as DetailTab)}
+        onValueChange={(value) => {
+          if (DETAIL_TABS.includes(value as DetailTab)) {
+            setDetailTab(value as DetailTab);
+          }
+        }}
         value={detailTab}
       >
         <div className="flex shrink-0 flex-wrap items-center justify-between gap-x-4 gap-y-2 border-b py-1.5">
           <TabsList aria-label={t("records.sections")} className="h-8">
+            {!discovery && (
+              <TabsTrigger
+                onClick={() => setDetailTab("conversation")}
+                value="conversation"
+              >
+                {t("conversation.tab")}
+              </TabsTrigger>
+            )}
             <TabsTrigger
               onClick={() => setDetailTab("trajectory")}
               value="trajectory"
@@ -2365,41 +2482,127 @@ function RecordDetail({
               {t("records.tabAudit")}
             </TabsTrigger>
           </TabsList>
-          <dl className="flex min-w-0 flex-wrap items-center gap-x-4 gap-y-1 text-micro text-muted-foreground">
-            <div className="flex min-w-0 max-w-64 items-center gap-1.5">
-              <dt className="sr-only">{t("records.provider")}</dt>
-              <dd className="min-w-0 text-foreground">
-                <RequestServiceLabel
-                  service={requestServiceIdentity(record, services)}
-                />
-              </dd>
-            </div>
-            {isModelDiscoveryProtocol(session.input_protocol) && (
+          <dl
+            data-testid="session-performance"
+            className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-micro text-muted-foreground [&>div+div]:before:mr-2 [&>div+div]:before:text-border [&>div+div]:before:content-['·']"
+          >
+            {detailTab === "conversation" ? (
+              <div className="flex items-center">
+                <dt className="sr-only">{t("conversation.outline")}</dt>
+                <dd>
+                  <Button
+                    aria-pressed={outlineOpen}
+                    className={cn(
+                      "h-6 px-1.5 text-micro text-muted-foreground",
+                      outlineOpen && "bg-accent text-accent-foreground",
+                    )}
+                    data-testid="conversation-outline-toggle"
+                    onClick={() => setOutlineOpen((current) => !current)}
+                    size="xs"
+                    type="button"
+                    variant="ghost"
+                  >
+                    {t("conversation.outline")}
+                  </Button>
+                </dd>
+              </div>
+            ) : null}
+            {discovery ? (
               <div className="flex items-center gap-1.5">
                 <dt>{t("records.duration")}</dt>
                 <dd className="font-medium tabular-nums text-foreground">
                   <SessionDuration session={session} />
                 </dd>
               </div>
-            )}
-            <div className="flex items-center gap-1.5">
-              <dt>{t("records.turns")}</dt>
-              <dd className="font-medium tabular-nums text-foreground">
-                {session.turn_count}
+            ) : null}
+            <div className="flex items-center">
+              <dt className="sr-only">{t("records.turns")}</dt>
+              <dd className="tabular-nums text-foreground">
+                {t("records.turnsCount", { count: session.turn_count })}
               </dd>
             </div>
-            <div className="flex items-center gap-1.5">
-              <dt>{t("records.calls")}</dt>
-              <dd className="font-medium tabular-nums text-foreground">
-                {session.call_count}
+            <div className="flex items-center">
+              <dt className="sr-only">{t("records.calls")}</dt>
+              <dd className="tabular-nums text-foreground">
+                {t("conversation.calls", { count: session.call_count })}
               </dd>
             </div>
+            {failedCalls > 0 ? (
+              <div className="flex items-center">
+                <dt className="sr-only">{t("status.failed")}</dt>
+                <dd
+                  className="tabular-nums text-danger-foreground"
+                  data-testid="session-failed-calls"
+                >
+                  {t("conversation.failures", { count: failedCalls })}
+                </dd>
+              </div>
+            ) : null}
+            {sessionTokens ? (
+              <div className="flex items-center">
+                <dt className="sr-only">{t("records.totalTokens")}</dt>
+                <dd
+                  className="tabular-nums text-foreground"
+                  title={`${t("records.inputTokens")} ${sessionTokens.input.toLocaleString()} · ${t("records.outputTokens")} ${sessionTokens.output.toLocaleString()}`}
+                >
+                  {t("conversation.tokens", {
+                    input: formatCompactNumber(sessionTokens.input),
+                    output: formatCompactNumber(sessionTokens.output),
+                  })}
+                </dd>
+              </div>
+            ) : null}
+            {!discovery ? (
+              <>
+                <div className="flex items-center gap-1.5">
+                  <dt>{t("records.modelDuration")}</dt>
+                  <dd className="tabular-nums text-foreground">
+                    <SessionDuration session={session} />
+                  </dd>
+                </div>
+                <div
+                  className="flex items-center gap-1.5"
+                  title={t("records.toolDurationHint")}
+                >
+                  <dt>{t("records.toolDuration")}</dt>
+                  <dd className="tabular-nums text-foreground">
+                    {session.tool_duration_ms == null
+                      ? "\u2014"
+                      : `\u2248 ${formatDuration(session.tool_duration_ms)}`}
+                  </dd>
+                </div>
+                <div
+                  className="flex items-center gap-1.5"
+                  title={t("records.averageTTFT")}
+                >
+                  <dt>{t("records.ttft")}</dt>
+                  <dd className="tabular-nums text-foreground">
+                    {session.average_ttft_ms == null
+                      ? "\u2014"
+                      : formatDuration(session.average_ttft_ms)}
+                  </dd>
+                </div>
+                <div className="flex items-center gap-1">
+                  <dt className="sr-only">{t("records.outputSpeed")}</dt>
+                  <dd className="tabular-nums text-foreground">
+                    {session.output_tokens_per_second == null
+                      ? "\u2014 tok/s"
+                      : `${session.output_tokens_per_second.toFixed(1)} tok/s`}
+                  </dd>
+                  <HelpPopover label={t("records.performanceStats")}>
+                    <div className="space-y-2">
+                      <p>{t("records.modelDurationHint")}</p>
+                      <p>{t("records.toolDurationHint")}</p>
+                      <p>{t("records.averageTTFTHint")}</p>
+                      <p>{t("records.outputSpeedHint")}</p>
+                      <p>{t("records.performanceMissingHint")}</p>
+                    </div>
+                  </HelpPopover>
+                </div>
+              </>
+            ) : null}
           </dl>
         </div>
-
-        {!isModelDiscoveryProtocol(session.input_protocol) && (
-          <SessionPerformance session={session} />
-        )}
 
         <TabsContent
           className="mt-0 flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden"
@@ -2415,6 +2618,29 @@ function RecordDetail({
             }}
           />
         </TabsContent>
+
+        {!discovery && (
+          <TabsContent
+            className="mt-0 flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden"
+            value="conversation"
+          >
+            <RequestConversation
+              auditContent={auditContent}
+              auditError={auditError}
+              auditLoading={auditLoading}
+              childrenByRoot={childrenByRoot}
+              copyFeedback={copyFeedback}
+              onSelectRequest={onSelectTurn}
+              onUnlockRaw={onUnlockRaw}
+              outlineOpen={outlineOpen}
+              rawSealing={rawSealing}
+              selectedRequestId={record.id}
+              services={services}
+              session={session}
+              turns={turns}
+            />
+          </TabsContent>
+        )}
 
         <TabsContent
           className="mt-0 flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden"

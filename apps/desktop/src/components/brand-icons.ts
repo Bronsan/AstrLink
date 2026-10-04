@@ -24,7 +24,6 @@ export { default as KimiMono } from "@lobehub/icons/es/Kimi/components/Mono";
 export { default as MetaColor } from "@lobehub/icons/es/Meta/components/Color";
 export { default as MinimaxColor } from "@lobehub/icons/es/Minimax/components/Color";
 export { default as MistralColor } from "@lobehub/icons/es/Mistral/components/Color";
-export { default as MoonshotMono } from "@lobehub/icons/es/Moonshot/components/Mono";
 export { default as OpenAIMono } from "@lobehub/icons/es/OpenAI/components/Mono";
 export { default as OpenCodeMono } from "@lobehub/icons/es/OpenCode/components/Mono";
 export { default as OpenClawColor } from "@lobehub/icons/es/OpenClaw/components/Color";
@@ -34,5 +33,4 @@ export { default as RooCodeMono } from "@lobehub/icons/es/RooCode/components/Mon
 export { default as StepfunMono } from "@lobehub/icons/es/Stepfun/components/Mono";
 export { default as WenxinColor } from "@lobehub/icons/es/Wenxin/components/Color";
 export { default as XiaomiMiMoMono } from "@lobehub/icons/es/XiaomiMiMo/components/Mono";
-export { default as ZAIMono } from "@lobehub/icons/es/ZAI/components/Mono";
 export { default as ZhipuColor } from "@lobehub/icons/es/Zhipu/components/Color";

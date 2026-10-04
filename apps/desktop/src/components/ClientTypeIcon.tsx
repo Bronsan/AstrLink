@@ -3,53 +3,48 @@ import {
   ClaudeCodeColor,
   ClineMono,
   CodeBuddyColor,
-  CodexColor,
   CursorMono,
-  DeepSeekColor,
-  GeminiColor,
   GithubCopilotMono,
-  GrokMono,
   KiloCodeMono,
-  KimiMono,
-  MistralColor,
   OpenClawColor,
-  OpenCodeMono,
   PiMono,
-  QwenColor,
   RooCodeMono,
 } from "@/components/brand-icons";
 import { Bot } from "@/components/icons";
+import { vendorMarks } from "@/components/vendor-marks";
 import { cn } from "@/lib/utils";
 import { i18n, useT } from "../i18n";
 import type { ClientType } from "../request-record-model";
 
-// Clients without a published mark get a monogram so they stay distinct from
-// the unknown-client fallback in icon-only rows.
+// Clients named after a vendor draw that vendor's mark from `vendorMarks` so
+// they match the vendor's models and provider kinds. Clients without a
+// published mark get a monogram so they stay distinct from the unknown-client
+// fallback in icon-only rows.
 const clients: Record<
   Exclude<ClientType, "unknown">,
-  { name: string; Mark?: typeof CodexColor }
+  { name: string; Mark?: typeof CursorMono }
 > = {
-  codex: { name: "Codex", Mark: CodexColor },
+  codex: { name: "Codex", Mark: vendorMarks.codex },
   claude_code: { name: "Claude Code", Mark: ClaudeCodeColor },
   cursor: { name: "Cursor", Mark: CursorMono },
-  grok_cli: { name: "Grok CLI", Mark: GrokMono },
-  gemini_cli: { name: "Gemini CLI", Mark: GeminiColor },
-  opencode: { name: "OpenCode", Mark: OpenCodeMono },
+  grok_cli: { name: "Grok CLI", Mark: vendorMarks.grok },
+  gemini_cli: { name: "Gemini CLI", Mark: vendorMarks.gemini },
+  opencode: { name: "OpenCode", Mark: vendorMarks.opencode },
   openclaw: { name: "OpenClaw", Mark: OpenClawColor },
   cline: { name: "Cline", Mark: ClineMono },
   pi: { name: "Pi", Mark: PiMono },
-  deepseek_harness: { name: "DeepSeek Harness", Mark: DeepSeekColor },
+  deepseek_harness: { name: "DeepSeek Harness", Mark: vendorMarks.deepseek },
   codewhale: { name: "Codewhale" },
   reasonix: { name: "Reasonix" },
-  qwen_code: { name: "Qwen Code", Mark: QwenColor },
-  kimi_code: { name: "Kimi Code", Mark: KimiMono },
+  qwen_code: { name: "Qwen Code", Mark: vendorMarks.qwen },
+  kimi_code: { name: "Kimi Code", Mark: vendorMarks.kimi },
   codebuddy: { name: "CodeBuddy", Mark: CodeBuddyColor },
   copilot: { name: "GitHub Copilot", Mark: GithubCopilotMono },
   droid: { name: "Droid" },
   crush: { name: "Crush" },
   kilo_code: { name: "Kilo Code", Mark: KiloCodeMono },
   roo_code: { name: "Roo Code", Mark: RooCodeMono },
-  mistral_vibe: { name: "Mistral Vibe", Mark: MistralColor },
+  mistral_vibe: { name: "Mistral Vibe", Mark: vendorMarks.mistral },
   zed: { name: "Zed" },
   cherry_studio: { name: "Cherry Studio", Mark: CherryStudioColor },
 };
