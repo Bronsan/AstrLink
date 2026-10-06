@@ -313,14 +313,15 @@ describe("RequestConversation", () => {
     );
     expect(process?.textContent).toContain("4 次调用");
     expect(process?.textContent).toContain("Read ×1 · Grep ×1 · Bash ×1");
-    // Only the last call streamed: 50 tokens after a 1.2 s first token.
+    // Only the last call streamed, so it alone sets TTFT. Output speed covers
+    // all four calls: 200 tokens over 40 s.
     expect(
       process?.querySelector('[data-testid="conversation-ttft"]')?.textContent,
     ).toBe("TTFT 1.2 s");
     expect(
       process?.querySelector('[data-testid="conversation-output-speed"]')
         ?.textContent,
-    ).toBe("5.7 tok/s");
+    ).toBe("5.0 tok/s");
     // Markdown rendering loads lazily; the reply arrives rich once it has.
     await vi.waitFor(() => {
       expect(

@@ -541,24 +541,23 @@ function usageOf(records: RequestRecord[]): TokenUsage | null {
   return any ? { input, output } : null;
 }
 
-// Output that arrives in one burst after the first token leaves a near-zero
-// window that turns a handful of tokens into thousands of tok/s, so generation
-// time is floored the way the session totals floor it.
-const MIN_GENERATION_MS = 500;
-
+// Output speed divides by the whole call duration, TTFT included, the way the
+// session totals do: non-streaming calls have no first token, and streamed
+// output can arrive in one burst after it.
 function performanceOf(records: RequestRecord[]) {
   let ttftSum = 0;
   let ttftCount = 0;
   let output = 0;
-  let generationMs = 0;
+  let durationMs = 0;
   for (const record of records) {
-    const first = record.first_token_ms;
-    if (!record.streaming || first == null) continue;
-    ttftSum += first;
-    ttftCount += 1;
+    if (record.streaming && record.first_token_ms != null) {
+      ttftSum += record.first_token_ms;
+      ttftCount += 1;
+    }
     const usage = record.usage;
     if (
       record.latency_ms === null ||
+      record.latency_ms <= 0 ||
       !usage ||
       usage.billing_incomplete ||
       usage.output_tokens <= 0
@@ -566,12 +565,11 @@ function performanceOf(records: RequestRecord[]) {
       continue;
     }
     output += usage.output_tokens;
-    generationMs += Math.max(record.latency_ms - first, MIN_GENERATION_MS);
+    durationMs += record.latency_ms;
   }
   return {
     ttftMs: ttftCount > 0 ? ttftSum / ttftCount : null,
-    outputTokensPerSecond:
-      generationMs > 0 ? (output * 1000) / generationMs : null,
+    outputTokensPerSecond: durationMs > 0 ? (output * 1000) / durationMs : null,
   };
 }
 

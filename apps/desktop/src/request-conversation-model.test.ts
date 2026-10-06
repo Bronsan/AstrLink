@@ -579,7 +579,7 @@ describe("conversationTurns", () => {
     expect(calls[3].durationMs).toBe(9000);
   });
 
-  it("measures TTFT and output speed over the turn's streamed calls the way the session does", () => {
+  it("measures TTFT over streamed calls and output speed over whole call durations the way the session does", () => {
     const streamed = (
       overrides: Partial<RequestRecord>,
       ttft: number,
@@ -595,7 +595,7 @@ describe("conversationTurns", () => {
         3000,
         7000,
       ),
-      // Not streamed: no first token to measure.
+      // Not streamed: no first token, but its output speed still counts.
       record({ id: "req_3", streaming: false }),
       // The stream ended before usage was final, so only its TTFT counts.
       streamed(
@@ -611,7 +611,7 @@ describe("conversationTurns", () => {
         4000,
         9000,
       ),
-      // Output in one burst: generation is floored at half a second.
+      // Output in one burst still divides by the whole call.
       streamed(
         {
           id: "req_5",
@@ -635,12 +635,19 @@ describe("conversationTurns", () => {
       (built) => built.stats,
     );
     expect(stats.ttftMs).toBe(2200);
-    // (50 + 100 + 20) tokens over (8 + 4 + 0.5) seconds.
-    expect(stats.outputTokensPerSecond).toBeCloseTo(13.6);
+    // (50 + 100 + 50 + 20) tokens over (10 + 7 + 10 + 1.2) seconds.
+    expect(stats.outputTokensPerSecond).toBeCloseTo(220 / 28.2);
 
-    const [plain] = conversationTurns([first, second], {}, new Map());
+    const [plain] = conversationTurns(
+      [
+        record({ id: "req_6", streaming: false }),
+        record({ id: "req_7", streaming: false, latency_ms: 0 }),
+      ],
+      {},
+      new Map(),
+    );
     expect(plain.stats.ttftMs).toBeNull();
-    expect(plain.stats.outputTokensPerSecond).toBeNull();
+    expect(plain.stats.outputTokensPerSecond).toBe(5);
   });
 });
 
