@@ -999,11 +999,16 @@ export async function getPrivacyModelCatalog(): Promise<PrivacyModelCatalog> {
   );
 }
 
-/** Newest compatible releases of catalog models, pinned to their commits. */
-export async function getPrivacyModelReleases(): Promise<PrivacyModelCatalog> {
+/**
+ * Newest compatible releases of catalog models, pinned to their commits.
+ * `refresh` skips Core's hour-long cache; only an operator's refresh sets it.
+ */
+export async function getPrivacyModelReleases(
+  refresh = false,
+): Promise<PrivacyModelCatalog> {
   requireNativeBridge();
   return parsePrivacyModelCatalog(
-    await invoke<unknown>("get_privacy_model_releases"),
+    await invoke<unknown>("get_privacy_model_releases", { refresh }),
   );
 }
 

@@ -75,6 +75,11 @@ describe("performance detail popover", () => {
     }));
     await render("service");
     expect(bridge.getUsageSummary).not.toHaveBeenCalled();
+    // The values are the trigger; no separate period row or icon button.
+    const triggers = host.querySelectorAll("button");
+    expect(triggers).toHaveLength(1);
+    expect(triggers[0].textContent).toContain("25.0%");
+    expect(triggers[0].textContent).toContain("40.0 tok/s");
     await open();
     expect(bridge.getUsageSummary).toHaveBeenCalledTimes(3);
     const dialog = document.querySelector('[role="dialog"]')!;

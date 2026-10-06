@@ -15,6 +15,25 @@ import {
   TableRow,
 } from "./ui/table";
 
+/** Output speed with its unit; a missing value stays a bare placeholder. */
+export function TokensPerSecond({
+  value,
+  placeholder,
+}: {
+  value?: number | null;
+  placeholder: string;
+}) {
+  if (value == null) return placeholder;
+  return (
+    <>
+      {value.toFixed(1)}{" "}
+      <span className="text-micro font-normal text-muted-foreground">
+        tok/s
+      </span>
+    </>
+  );
+}
+
 export function UsagePerformanceDetails({
   target,
   open,
@@ -113,9 +132,10 @@ export function UsagePerformanceDetails({
                 </TableCell>
                 <TableCell className="pr-0 text-right">
                   <div className="font-semibold">
-                    {performance?.output_tokens_per_second == null
-                      ? placeholder
-                      : performance.output_tokens_per_second.toFixed(1)}
+                    <TokensPerSecond
+                      value={performance?.output_tokens_per_second}
+                      placeholder={placeholder}
+                    />
                   </div>
                   <div className="mt-1 whitespace-normal text-micro text-muted-foreground">
                     {status === "ready"

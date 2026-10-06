@@ -1464,6 +1464,20 @@
     "checkAndInstall": "Check and install",
     "updateAvailableHint": "Version {{version}} available",
     "updateTo": "Update to v{{version}}",
+    "updateDownloadedHint": "Version {{version}} downloaded",
+    "switchTo": "Switch to v{{version}}",
+    "modelUpdate": {
+      "available": {
+        "title": "Privacy model update",
+        "notification": "{{name}} v{{version}} is available. Update it under Safety policy → Models.",
+        "action": "Update"
+      },
+      "ready": {
+        "title": "Privacy model update downloaded",
+        "notification": "{{name}} v{{version}} is downloaded. Switch to it under Safety policy → Models.",
+        "action": "Switch"
+      }
+    },
     "localImport": "Local import",
     "officialCatalog": "Official catalog",
     "communityCatalog": "Community catalog",
@@ -1491,6 +1505,7 @@
     "orgModel": "org/model",
     "revision": "Model revision",
     "revisionPlaceholder": "main, a tag, or a commit",
+    "shortRevision": "revision {{revision}}",
     "checkCompat": "Check compatibility",
     "customVersion": "Custom model version",
     "installCustom": "Install custom model",

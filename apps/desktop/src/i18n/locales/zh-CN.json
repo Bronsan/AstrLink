@@ -1464,6 +1464,20 @@
     "checkAndInstall": "检查并安装",
     "updateAvailableHint": "有新版本 v{{version}}",
     "updateTo": "更新到 v{{version}}",
+    "updateDownloadedHint": "新版本 v{{version}} 已下载",
+    "switchTo": "切换到 v{{version}}",
+    "modelUpdate": {
+      "available": {
+        "title": "隐私模型有新版本",
+        "notification": "{{name}} v{{version}} 已发布，可以在「安全 → 模型」中更新。",
+        "action": "去更新"
+      },
+      "ready": {
+        "title": "隐私模型新版本已下载",
+        "notification": "{{name}} v{{version}} 已下载，可以在「安全 → 模型」中切换。",
+        "action": "去切换"
+      }
+    },
     "localImport": "本地导入",
     "officialCatalog": "官方目录",
     "communityCatalog": "社区目录",
@@ -1491,6 +1505,7 @@
     "orgModel": "组织/模型",
     "revision": "模型 Revision",
     "revisionPlaceholder": "main、标签或 commit",
+    "shortRevision": "版本 {{revision}}",
     "checkCompat": "检查兼容性",
     "customVersion": "自定义模型版本",
     "installCustom": "安装自定义模型",

@@ -1822,9 +1822,19 @@ impl CoreManager {
         parse_privacy_model_catalog(&body)
     }
 
-    pub async fn get_privacy_model_releases(&self) -> Result<serde_json::Value, String> {
+    /// `refresh` asks Core to skip its hour-long release cache and query the
+    /// Hub now. Only operator-initiated refreshes set it.
+    pub async fn get_privacy_model_releases(
+        &self,
+        refresh: bool,
+    ) -> Result<serde_json::Value, String> {
+        let path = if refresh {
+            format!("{PRIVACY_MODEL_RELEASES_PATH}?refresh=1")
+        } else {
+            PRIVACY_MODEL_RELEASES_PATH.to_string()
+        };
         let (_, body) = self
-            .authenticated_control(Method::GET, PRIVACY_MODEL_RELEASES_PATH, None, None)
+            .authenticated_control(Method::GET, &path, None, None)
             .await?;
         parse_privacy_model_catalog(&body)
     }
@@ -5882,6 +5892,13 @@ mod tests {
         );
         assert_eq!(
             control_request_timeout(&Method::GET, PRIVACY_MODEL_RELEASES_PATH),
+            PRIVACY_MODEL_METADATA_TIMEOUT
+        );
+        assert_eq!(
+            control_request_timeout(
+                &Method::GET,
+                &format!("{PRIVACY_MODEL_RELEASES_PATH}?refresh=1")
+            ),
             PRIVACY_MODEL_METADATA_TIMEOUT
         );
         assert_eq!(

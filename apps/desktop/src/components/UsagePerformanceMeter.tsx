@@ -1,8 +1,11 @@
-import { useEffect, useId, useState } from "react";
+import { type ReactNode, useEffect, useId, useState } from "react";
 import { useT } from "../i18n";
 import type { ServicePerformance, UsageStatus } from "../usage-range";
 import type { PerformanceTarget } from "../use-performance-details";
-import { UsagePerformanceDetails } from "./UsagePerformanceDetails";
+import {
+  TokensPerSecond,
+  UsagePerformanceDetails,
+} from "./UsagePerformanceDetails";
 import { Activity } from "./icons";
 import { DataField } from "./DataRow";
 import { Button } from "./ui/button";
@@ -34,25 +37,13 @@ export function UsagePerformanceMeter({
     if (!ready) setOpen(false);
   }, [ready]);
   const titleId = useId();
+  const valuesId = useId();
   const cache = performance?.cache_hit_rate;
   const speed = performance?.output_tokens_per_second;
   const placeholder = status === "loading" ? "…" : "—";
-  const details = (
+  const details = (trigger: ReactNode) => (
     <Popover open={open && ready} onOpenChange={setOpen}>
-      <PopoverTrigger asChild>
-        <Button
-          aria-label={t("services.performanceDetailsFor", {
-            name: target.name,
-          })}
-          className={layout !== "fields" ? "justify-end" : undefined}
-          disabled={!ready}
-          size="icon-xs"
-          variant="ghost"
-          type="button"
-        >
-          <Activity aria-hidden="true" className="text-muted-foreground" />
-        </Button>
-      </PopoverTrigger>
+      <PopoverTrigger asChild>{trigger}</PopoverTrigger>
       <PopoverContent align="end" className="w-96" aria-labelledby={titleId}>
         <UsagePerformanceDetails
           target={target}
@@ -63,6 +54,9 @@ export function UsagePerformanceMeter({
       </PopoverContent>
     </Popover>
   );
+  const detailsLabel = t("services.performanceDetailsFor", {
+    name: target.name,
+  });
   if (layout === "fields") {
     return (
       <div
@@ -86,8 +80,23 @@ export function UsagePerformanceMeter({
           label="TPS"
           value={
             <span className="inline-flex items-center gap-1 font-semibold">
-              {speed == null ? placeholder : speed.toFixed(1)}
-              {details}
+              <span>
+                <TokensPerSecond value={speed} placeholder={placeholder} />
+              </span>
+              {details(
+                <Button
+                  aria-label={detailsLabel}
+                  disabled={!ready}
+                  size="icon-xs"
+                  variant="ghost"
+                  type="button"
+                >
+                  <Activity
+                    aria-hidden="true"
+                    className="text-muted-foreground"
+                  />
+                </Button>,
+              )}
             </span>
           }
         />
@@ -99,44 +108,54 @@ export function UsagePerformanceMeter({
       </div>
     );
   }
-  return (
-    <div
+  // The two values open the details themselves, like the billing amount next
+  // to them; the range selector above the list already names the period.
+  return details(
+    <Button
+      aria-describedby={valuesId}
+      aria-label={detailsLabel}
       className={cn(
-        "grid gap-1 text-xs tabular-nums",
-        layout === "service" &&
-          "flex flex-wrap items-center gap-x-3 @[640px]/service-list:grid @[640px]/service-list:gap-x-1",
+        "h-auto w-full justify-start px-0 text-left text-xs font-normal tabular-nums",
+        layout === "service" && "w-fit @[640px]/service-list:w-full",
       )}
       data-testid={testId}
+      disabled={!ready}
+      size="xs"
+      variant="ghost"
+      type="button"
     >
-      <div className="flex items-center justify-between gap-2">
-        <span className="text-muted-foreground">
-          {t("services.cacheUtilization")}
-        </span>
-        <span>
-          {cache == null ? placeholder : `${(cache * 100).toFixed(1)}%`}
-        </span>
-      </div>
-      <div className="flex items-center justify-between gap-2">
-        <span className="text-muted-foreground">TPS</span>
-        <span>{speed == null ? placeholder : speed.toFixed(1)}</span>
-      </div>
-      <div
+      <span
         className={cn(
-          "flex items-center justify-between gap-2 text-micro text-muted-foreground",
-          layout === "service" && "ml-auto @[640px]/service-list:ml-0",
+          "grid w-full gap-1",
+          layout === "service" &&
+            "flex flex-wrap items-center gap-x-3 @[640px]/service-list:grid @[640px]/service-list:gap-x-1",
         )}
+        id={valuesId}
       >
-        <span
-          className={cn(
-            layout === "service" &&
-              status !== "error" &&
-              "sr-only @[640px]/service-list:not-sr-only",
-          )}
-        >
-          {status === "error" ? t("services.performanceError") : periodLabel}
-        </span>
-        {details}
-      </div>
-    </div>
+        <span className="sr-only">{periodLabel}</span>
+        {status === "error" ? (
+          <span className="text-muted-foreground">
+            {t("services.performanceError")}
+          </span>
+        ) : (
+          <>
+            <span className="flex items-center justify-between gap-2">
+              <span className="text-muted-foreground">
+                {t("services.cacheUtilization")}
+              </span>
+              <span>
+                {cache == null ? placeholder : `${(cache * 100).toFixed(1)}%`}
+              </span>
+            </span>
+            <span className="flex items-center justify-between gap-2">
+              <span className="text-muted-foreground">TPS</span>
+              <span>
+                <TokensPerSecond value={speed} placeholder={placeholder} />
+              </span>
+            </span>
+          </>
+        )}
+      </span>
+    </Button>,
   );
 }

@@ -727,6 +727,38 @@ describe("SafetyPolicy", () => {
       expect(container.textContent).not.toContain("更新到");
     });
 
+    it("tells apart Guard installs by release in detection", async () => {
+      bridgeMocks.getPrivacyModelReleases.mockRejectedValueOnce(
+        new Error("offline"),
+      );
+      const pinned = installedGuard();
+      const unknown = {
+        ...installedGuard(),
+        id: customInstallationID,
+        revision: "2".repeat(40),
+      };
+      bridgeMocks.getPrivacyPolicy.mockResolvedValueOnce(
+        policyRecord({ detector: "local_model", local_model_id: pinned.id }),
+      );
+      bridgeMocks.listPrivacyModelInstallations.mockResolvedValueOnce({
+        items: [pinned, unknown],
+      });
+      await renderPolicy();
+
+      const trigger = container.querySelector<HTMLButtonElement>(
+        "#privacy-detector-local-model",
+      )!;
+      expect(trigger.closest("label")?.textContent).toContain(
+        "AstrLink Guard · CPU INT8 · v0.1.0",
+      );
+      await act(async () => trigger.click());
+      const choice = (id: string) =>
+        document.querySelector(`label[for="privacy-model-choice-${id}"]`)
+          ?.textContent;
+      expect(choice(pinned.id)).toContain("CPU INT8 · v0.1.0 · 当前模型");
+      expect(choice(unknown.id)).toContain("CPU INT8 · 版本 22222222");
+    });
+
     it("offers a newer tag and installs it by commit", async () => {
       bridgeMocks.getPrivacyModelReleases.mockResolvedValueOnce({
         items: [release],
@@ -785,6 +817,64 @@ describe("SafetyPolicy", () => {
       expect(container.textContent).toContain("CPU INT8 · int8 · v0.2.0");
       expect(container.textContent).not.toContain("有新版本");
       expect(bridgeMocks.updatePrivacyPolicy).not.toHaveBeenCalled();
+    });
+
+    it("forces a fresh release check when the operator refreshes", async () => {
+      await renderPolicy();
+      expect(bridgeMocks.getPrivacyModelReleases).toHaveBeenCalledWith(false);
+      bridgeMocks.getPrivacyModelReleases.mockClear();
+      await act(async () => button("刷新").click());
+      await flush();
+      expect(bridgeMocks.getPrivacyModelReleases).toHaveBeenCalledOnce();
+      expect(bridgeMocks.getPrivacyModelReleases).toHaveBeenCalledWith(true);
+    });
+
+    it("offers the switch once the newer tag is installed", async () => {
+      const pinned = installedGuard();
+      const downloaded = {
+        ...installedGuard(),
+        id: "model_cccccccccccccccccccccccccccccccc",
+        revision: releaseRevision,
+      };
+      const running = (id: string) =>
+        policyRecord({
+          enabled: true,
+          detector: "local_model",
+          local_model_id: id,
+        });
+      bridgeMocks.getPrivacyModelReleases.mockResolvedValue({
+        items: [release],
+      });
+      bridgeMocks.getPrivacyPolicy.mockResolvedValue(running(pinned.id));
+      bridgeMocks.listPrivacyModelInstallations.mockResolvedValue({
+        items: [pinned, downloaded],
+      });
+      await renderPolicy();
+      await openModels();
+      const switchButtons = () =>
+        [...document.querySelectorAll("button")].filter(
+          (candidate) => candidate.textContent?.trim() === "切换到 v0.2.0",
+        );
+
+      expect(container.textContent).toContain("新版本 v0.2.0 已下载");
+      expect(container.textContent).not.toContain("有新版本");
+      expect(button("查看已就绪")).toBeTruthy();
+      expect(switchButtons()).toHaveLength(1);
+      // Only the row of the policy's model offers the switch.
+      await act(async () => button("已安装 2").click());
+      expect(switchButtons()).toHaveLength(1);
+
+      bridgeMocks.updatePrivacyPolicy.mockResolvedValueOnce(
+        running(downloaded.id),
+      );
+      await act(async () => switchButtons()[0].click());
+      await act(async () => button("确认用于策略").click());
+      expect(bridgeMocks.updatePrivacyPolicy).toHaveBeenCalledWith(etag, {
+        detector: "local_model",
+        local_model_id: downloaded.id,
+      });
+      expect(switchButtons()).toHaveLength(0);
+      expect(container.textContent).not.toContain("新版本 v0.2.0 已下载");
     });
   });
 
