@@ -1133,6 +1133,64 @@ describe("RequestRecords", () => {
     expect(bridgeMocks.listRequestRecordChildren).not.toHaveBeenCalled();
   });
 
+  // Opening a session hid the list at once and drew the detail only when it
+  // arrived, so the whole workspace flashed blank on every click.
+  it("keeps the list on screen until the session detail arrives", async () => {
+    const detail = deferred<ReturnType<typeof sessionDetail>>();
+    bridgeMocks.getRequestSession.mockReturnValue(detail.promise);
+    await renderRecords();
+    const list = container.querySelector(
+      '[aria-labelledby="request-records-heading"]',
+    )!;
+    const row = container.querySelector<HTMLButtonElement>(
+      `[data-session-id="${firstRecord.id}"]`,
+    )!;
+
+    await act(async () => {
+      row.click();
+      await Promise.resolve();
+    });
+    expect(list.hasAttribute("hidden")).toBe(false);
+    expect(row.getAttribute("aria-current")).toBe("true");
+    expect(
+      container.querySelector('[data-testid="session-performance"]'),
+    ).toBeNull();
+
+    await act(async () => {
+      detail.resolve(sessionDetail(firstRecord));
+      await Promise.resolve();
+    });
+    await flush();
+    expect(list.hasAttribute("hidden")).toBe(true);
+    expect(
+      container.querySelector('[data-testid="session-performance"]'),
+    ).not.toBeNull();
+    // Opening fetched the detail; selecting it did not fetch it again.
+    expect(bridgeMocks.getRequestSession).toHaveBeenCalledTimes(1);
+  });
+
+  it("stays on the list and says so when a session detail cannot be read", async () => {
+    bridgeMocks.getRequestSession.mockRejectedValue(
+      new Error("control plane offline"),
+    );
+    await renderRecords();
+    const list = container.querySelector(
+      '[aria-labelledby="request-records-heading"]',
+    )!;
+    const row = container.querySelector<HTMLButtonElement>(
+      `[data-session-id="${firstRecord.id}"]`,
+    )!;
+
+    await act(async () => {
+      row.click();
+      await Promise.resolve();
+    });
+    await flush();
+    expect(list.hasAttribute("hidden")).toBe(false);
+    expect(row.getAttribute("aria-current")).toBeNull();
+    expect(notifyMocks.error).toHaveBeenCalledWith("control plane offline");
+  });
+
   // A 95-turn conversation is roughly 1400 phase rows. Mounting them all is
   // what made the trajectory tab unusable, so past a threshold the list is
   // windowed and only a screenful plus overscan reaches the DOM.
