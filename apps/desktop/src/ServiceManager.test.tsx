@@ -2863,6 +2863,46 @@ describe("ServiceManager", () => {
     }
   });
 
+  it("lists only a custom coding plan address", async () => {
+    const plan = (id: string, baseURL: string): Service => ({
+      ...gatewayService,
+      id,
+      name: id,
+      kind: "minimax_coding",
+      http: {
+        base_url: baseURL,
+        auth: { scheme: "bearer" },
+        credential_ref: `local://service/${id}`,
+      },
+    });
+    await act(async () => {
+      root.render(
+        <ServiceManager
+          catalogError={null}
+          catalogStatus="ready"
+          isReady
+          onDirtyChange={() => {}}
+          onRefresh={() => {}}
+          onServiceRemoved={() => {}}
+          onServiceSaved={() => {}}
+          onViewChange={() => {}}
+          protocols={[]}
+          services={[
+            plan("service_minimax_site", "https://api.minimax.io/v1"),
+            plan("service_minimax_proxy", "https://proxy.example/minimax"),
+            gatewayService,
+          ]}
+          view={{ kind: "list" }}
+        />,
+      );
+    });
+
+    const text = container.textContent;
+    expect(text).not.toContain("https://api.minimax.io/v1");
+    expect(text).toContain("https://proxy.example/minimax");
+    expect(text).toContain("https://gateway.example/v1");
+  });
+
   it("creates a Codex service through the unified add form and targets its OAuth", async () => {
     bridgeMocks.createService.mockResolvedValue({
       service: codexService,

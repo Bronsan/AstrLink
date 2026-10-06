@@ -403,6 +403,28 @@ function subscriptionOauthLabel(kind: ServiceKind): string {
   return i18n.t("services.openaiCodexOauth");
 }
 
+/**
+ * The line under a provider's name in the list. A coding plan on one of its
+ * vendor's own sites gets none: that address says nothing beyond the kind, so
+ * only a custom one is worth the space.
+ */
+function serviceListDetail(service: Service): string | null {
+  if (!service.http) {
+    const hint = service.subscription?.account_hint;
+    return hint
+      ? subscriptionAccountLabel(service.kind, hint)
+      : subscriptionOauthLabel(service.kind);
+  }
+  const baseURL = service.http.base_url;
+  const kind = service.kind as HTTPServicePresetID;
+  if (
+    codingPlanPresetIDs.includes(kind) &&
+    serviceSiteForBaseURL(httpServicePreset(kind), baseURL) !== null
+  )
+    return null;
+  return baseURL || null;
+}
+
 function subscriptionAccountLabel(kind: ServiceKind, hint: string): string {
   if (kind === "antigravity_subscription")
     return i18n.t("services.googleAccount", { hint });
@@ -2243,6 +2265,7 @@ export function ServiceManager({
                     const tone = serviceDot(service, now);
                     const risk = activeServiceRisk(service, now);
                     const statusLabel = serviceStatusLabel(service, now);
+                    const detail = serviceListDetail(service);
                     return (
                       <ServiceListRow
                         key={service.id}
@@ -2317,21 +2340,14 @@ export function ServiceManager({
                                   />
                                 ) : null}
                               </div>
-                              <span
-                                className="block truncate text-xs text-text-secondary"
-                                title={
-                                  service.http?.base_url ??
-                                  subscription?.account_hint
-                                }
-                              >
-                                {service.http?.base_url ??
-                                  (subscription?.account_hint
-                                    ? subscriptionAccountLabel(
-                                        service.kind,
-                                        subscription.account_hint,
-                                      )
-                                    : subscriptionOauthLabel(service.kind))}
-                              </span>
+                              {detail ? (
+                                <span
+                                  className="block truncate text-xs text-text-secondary"
+                                  title={detail}
+                                >
+                                  {detail}
+                                </span>
+                              ) : null}
                             </div>
                           </div>
                         }
@@ -3544,10 +3560,7 @@ export function ServiceManager({
       />
       {draft.kind === "custom" ? (
         <Panel className="@[760px]:col-span-2" data-testid="service-advanced">
-          <details
-            className="group/advanced min-w-0"
-            open={advancedOpen}
-          >
+          <details className="group/advanced min-w-0" open={advancedOpen}>
             <summary
               className="flex cursor-pointer list-none items-center gap-2 p-4 text-sm font-semibold transition-colors hover:text-foreground focus-visible:outline-2 focus-visible:outline-ring [&::-webkit-details-marker]:hidden"
               onClick={(event) => {
