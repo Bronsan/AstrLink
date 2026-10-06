@@ -5,6 +5,7 @@ import {
   memo,
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -218,6 +219,18 @@ function neighborSession(
   return items[index + direction] ?? null;
 }
 
+function sessionRow(
+  scroller: HTMLElement | null,
+  sessionId: string,
+): HTMLButtonElement | null {
+  const escaped =
+    typeof CSS !== "undefined" && typeof CSS.escape === "function"
+      ? CSS.escape(sessionId)
+      : sessionId.replace(/["\\]/g, "\\$&");
+  const row = scroller?.querySelector(`[data-session-id="${escaped}"]`);
+  return row instanceof HTMLButtonElement ? row : null;
+}
+
 function sessionSummaryKey(session: RequestSession): string {
   return [
     session.id,
@@ -381,6 +394,9 @@ export function RequestRecords({
   const atTopRef = useRef(true);
   const viewRef = useRef<RecordsView>("monitor");
   const monitorScrollRef = useRef<HTMLDivElement | null>(null);
+  // The list's offset when a session opened. WKWebView drops the offset of a
+  // size container hidden with display: none, so the list restores its own.
+  const monitorScrollTopRef = useRef<number | null>(null);
   const selectedFocusRef = useRef<string | null>(null);
   const openGenerationRef = useRef(0);
   const selectedIdRef = useRef(selectedId);
@@ -525,6 +541,7 @@ export function RequestRecords({
     pollInFlightRef.current = false;
     atTopRef.current = true;
     viewRef.current = "monitor";
+    monitorScrollTopRef.current = null;
     openGenerationRef.current += 1;
     setOpeningId(null);
     setView("monitor");
@@ -605,6 +622,7 @@ export function RequestRecords({
     pollInFlightRef.current = false;
     pollFailureRef.current = 0;
     atTopRef.current = true;
+    monitorScrollTopRef.current = null;
     if (monitorScrollRef.current) monitorScrollRef.current.scrollTop = 0;
     if (!isReady) setLive({ items: [], queued: [], nextCursor: null });
     setLoadingMore(false);
@@ -929,6 +947,9 @@ export function RequestRecords({
   const openDetail = useCallback((sessionId: string) => {
     const generation = ++openGenerationRef.current;
     const show = (turnId: string | null) => {
+      if (viewRef.current === "monitor") {
+        monitorScrollTopRef.current = monitorScrollRef.current?.scrollTop ?? 0;
+      }
       selectedFocusRef.current = sessionId;
       setOpeningId(null);
       setSelectedId(sessionId);
@@ -958,6 +979,26 @@ export function RequestRecords({
     );
   }, []);
 
+  // Before paint, so going back never flashes the top of the list.
+  useLayoutEffect(() => {
+    const scroller = monitorScrollRef.current;
+    const top = monitorScrollTopRef.current;
+    if (view !== "monitor" || !scroller || top === null) return;
+    monitorScrollTopRef.current = null;
+    scroller.scrollTop = top;
+    // Paging through sessions in the detail can leave the last one read
+    // outside the restored view.
+    const requestId = selectedFocusRef.current;
+    const row = requestId ? sessionRow(scroller, requestId) : null;
+    if (!row) return;
+    const port = scroller.getBoundingClientRect();
+    const box = row.getBoundingClientRect();
+    if (box.top < port.top) scroller.scrollTop += box.top - port.top;
+    else if (box.bottom > port.bottom) {
+      scroller.scrollTop += box.bottom - port.bottom;
+    }
+  }, [view]);
+
   const returnToMonitor = () => {
     openGenerationRef.current += 1;
     setOpeningId(null);
@@ -965,16 +1006,9 @@ export function RequestRecords({
     window.requestAnimationFrame(() => {
       const requestId = selectedFocusRef.current;
       if (!requestId) return;
-      const escaped =
-        typeof CSS !== "undefined" && typeof CSS.escape === "function"
-          ? CSS.escape(requestId)
-          : requestId.replace(/["\\]/g, "\\$&");
-      const target = monitorScrollRef.current?.querySelector(
-        `[data-session-id="${escaped}"]`,
-      );
-      if (target instanceof HTMLButtonElement) {
-        target.focus({ preventScroll: true });
-      }
+      sessionRow(monitorScrollRef.current, requestId)?.focus({
+        preventScroll: true,
+      });
     });
   };
 

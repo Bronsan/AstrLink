@@ -2958,6 +2958,8 @@ describe("RequestRecords", () => {
         ) as HTMLButtonElement
       ).click();
     });
+    // WKWebView drops the offset while display: none hides the list.
+    scroller.scrollTop = 0;
     await act(async () => buttonContaining("实时监控").click());
 
     expect(
@@ -2968,6 +2970,47 @@ describe("RequestRecords", () => {
       firstRecord.id,
     );
     expect(requestAnimationFrame).toHaveBeenCalled();
+  });
+
+  it("brings the last session read back into view on return", async () => {
+    await renderRecords();
+    const scroller = container.querySelector(
+      '[data-testid="request-records-scroll"]',
+    );
+    if (!(scroller instanceof HTMLDivElement)) {
+      throw new Error("Missing monitor scroller");
+    }
+    scroller.scrollTop = 40;
+    scroller.dispatchEvent(new Event("scroll", { bubbles: true }));
+
+    await act(async () => {
+      (
+        container.querySelector(
+          `[data-session-id="${secondRecord.id}"]`,
+        ) as HTMLButtonElement
+      ).click();
+    });
+    await act(async () =>
+      (
+        document.querySelector(
+          'button[aria-label="更早的会话"]',
+        ) as HTMLButtonElement
+      ).click(),
+    );
+    // The older session sits 30px below the restored view.
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(
+      function getBoundingClientRect(this: HTMLElement) {
+        if (this === scroller) return new DOMRect(0, 0, 800, 200);
+        if (this.dataset.sessionId === firstRecord.id) {
+          return new DOMRect(0, 180, 800, 50);
+        }
+        return new DOMRect();
+      },
+    );
+    scroller.scrollTop = 0;
+    await act(async () => buttonContaining("实时监控").click());
+
+    expect(scroller.scrollTop).toBe(70);
   });
 
   it("saves MiB inputs as bytes without changing body capture", async () => {

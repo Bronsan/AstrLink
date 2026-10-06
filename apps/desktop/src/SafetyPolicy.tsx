@@ -112,6 +112,7 @@ import {
 import { PageHeader } from "./PageHeader";
 import { RawPasswordEntry } from "./RawSealingControls";
 import {
+  privacyDryRunError,
   privacyModelOperationError,
   type PrivacyModelOperationError,
 } from "./privacy-model-errors";
@@ -552,6 +553,34 @@ interface LabelMappingDialogProps {
   onCancel: () => void;
   onChange: (label: string, kind: CanonicalPrivacyKind | null) => void;
   onConfirm: () => void;
+}
+
+/** An error with its technical details one click away. */
+function OperationErrorMessage({
+  className,
+  error,
+}: {
+  className?: string;
+  error: string | PrivacyModelOperationError;
+}) {
+  const t = useT();
+  return (
+    <FormMessage
+      className={cn("flex items-center gap-2", className)}
+      tone="error"
+    >
+      <span className="min-w-0 flex-1">
+        {typeof error === "string" ? error : error.message}
+      </span>
+      {typeof error !== "string" && error.details ? (
+        <HelpPopover label={t("safety.modelErrorDetails")}>
+          <pre className="max-h-48 overflow-auto whitespace-pre-wrap break-all font-mono text-xs">
+            {error.details}
+          </pre>
+        </HelpPopover>
+      ) : null}
+    </FormMessage>
+  );
 }
 
 function LabelMappingDialog({
@@ -1177,7 +1206,9 @@ export function SafetyPolicy({
     useState<PrivacyDryRunProtocol>("openai.chat");
   const [dryRunSample, setDryRunSample] = useState(defaultDryRunSample);
   const [dryRunBusy, setDryRunBusy] = useState(false);
-  const [dryRunError, setDryRunError] = useState<string | null>(null);
+  const [dryRunError, setDryRunError] = useState<
+    string | PrivacyModelOperationError | null
+  >(null);
   const [dryRunResult, setDryRunResult] =
     useState<CompletedPrivacyDryRun | null>(null);
   const [minConfidenceDraft, setMinConfidenceDraft] = useState(
@@ -1881,6 +1912,10 @@ export function SafetyPolicy({
       setDryRunError(t("safety.dryRunModelNotReady"));
       return;
     }
+    if (record.policy.detector === "local_model" && !record.policy.enabled) {
+      setDryRunError(t("safety.dryRunNeedsProtection"));
+      return;
+    }
     const generation = generationRef.current;
     const request = dryRunRequestRef.current + 1;
     dryRunRequestRef.current = request;
@@ -1922,8 +1957,7 @@ export function SafetyPolicy({
         return;
       }
       setDryRunResult(null);
-      const message = messageOf(caught, t("safety.dryRunFailed"));
-      setDryRunError(message);
+      setDryRunError(privacyDryRunError(caught));
     } finally {
       if (
         generationRef.current === generation &&
@@ -2592,21 +2626,7 @@ export function SafetyPolicy({
       />
 
       {error ? (
-        <FormMessage
-          className="mb-2.5 flex shrink-0 items-center gap-2"
-          tone="error"
-        >
-          <span className="min-w-0 flex-1">
-            {typeof error === "string" ? error : error.message}
-          </span>
-          {typeof error !== "string" && error.details ? (
-            <HelpPopover label={t("safety.modelErrorDetails")}>
-              <pre className="max-h-48 overflow-auto whitespace-pre-wrap break-all font-mono text-xs">
-                {error.details}
-              </pre>
-            </HelpPopover>
-          ) : null}
-        </FormMessage>
+        <OperationErrorMessage className="mb-2.5" error={error} />
       ) : null}
 
       {status === "loading" && record === null ? (
@@ -3586,7 +3606,7 @@ export function SafetyPolicy({
                           dryRunSample.trim() === "" ||
                           dryRunSampleOverLimit ||
                           (policy.detector === "local_model" &&
-                            !selectedModelReady)
+                            (!selectedModelReady || !policy.enabled))
                         }
                         onClick={() => void runDryRun()}
                         size="sm"
@@ -3723,7 +3743,7 @@ export function SafetyPolicy({
                   data-testid="dry-run-output-scroll"
                 >
                   {dryRunError ? (
-                    <FormMessage tone="error">{dryRunError}</FormMessage>
+                    <OperationErrorMessage error={dryRunError} />
                   ) : null}
                   {dryRunBusy ? (
                     <EmptyState
@@ -3738,7 +3758,7 @@ export function SafetyPolicy({
                       sample={dryRunSample}
                       onLocate={locateDryRunSpan}
                     />
-                  ) : (
+                  ) : dryRunError ? null : (
                     <EmptyState
                       className="flex-1 border-0"
                       title={t(
@@ -3752,7 +3772,10 @@ export function SafetyPolicy({
                           : policy.detector === "local_model" &&
                               !selectedModelReady
                             ? "safety.needReadyModelHint"
-                            : "safety.testEmptyHint",
+                            : policy.detector === "local_model" &&
+                                !policy.enabled
+                              ? "safety.dryRunNeedsProtection"
+                              : "safety.testEmptyHint",
                       )}
                     />
                   )}

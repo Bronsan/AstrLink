@@ -1365,7 +1365,13 @@
     "confidenceRange": "The model minimum confidence must be a number between 0 and 1.",
     "sampleTooLongKib": "The sample is too long (limit {{kib}} KiB). Shorten it and try again.",
     "dryRunModelNotReady": "The local model is not ready, so this policy cannot be dry-run.",
+    "dryRunNeedsProtection": "Privacy protection is off, so the local model isn't running. Turn on Enable privacy protection at the top right, then run the test.",
     "dryRunFailed": "Unable to finish the safety-policy dry run.",
+    "dryRunErrors": {
+      "engine": "The local model didn't finish this check. It may have failed to start or timed out. Try again, and if it keeps failing, check the model status on the Models tab.",
+      "policy": "Couldn't read the current privacy settings. Click Refresh at the top right and try again.",
+      "sample": "This text can't be checked in the selected request format. Edit the text or choose another format, then try again."
+    },
     "importStarted": "Local model import started. Watch progress under Installed.",
     "installStarted": "Model install started. Watch progress under Installed.",
     "updateStarted": "The new version is downloading. When it is ready, switch to it under Installed.",
@@ -1573,7 +1579,7 @@
     "restoreScope": "Restore scope",
     "restoreToolsDetail": "Tools run on this machine. If this is off, the agent will use stand-ins for requests or file writes",
     "injectNoticeHint": "Injected only when this request actually emits a {{style}}; the notice contains no mappings",
-    "dryRunHint": "Test with your current privacy settings on this machine, even when privacy protection is off. Live forwarding settings stay unchanged and nothing is sent upstream.",
+    "dryRunHint": "Test with your current privacy settings on this machine. Live forwarding settings stay unchanged and nothing is sent upstream. The local model runs only while privacy protection is on.",
     "backToPolicy": "Back to detection",
     "protocol": "Simulated request format",
     "protocolHint": "Choose the interface your client uses. The request structure determines which fields are inspected.",

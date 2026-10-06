@@ -2093,99 +2093,161 @@ describe("SafetyPolicy", () => {
     expect(container.textContent).toContain("Regex 不受此门槛影响");
   });
 
-  it.each([false, true])(
-    "runs a ready local-model dry-run with live protection enabled=%s",
-    async (enabled) => {
-      const ready = readyInstallation();
-      bridgeMocks.getPrivacyPolicy.mockResolvedValueOnce(
-        policyRecord({
-          enabled,
-          detector: "local_model",
-          local_model_id: ready.id,
+  it("runs a ready local-model dry-run with live protection on", async () => {
+    const ready = readyInstallation();
+    bridgeMocks.getPrivacyPolicy.mockResolvedValueOnce(
+      policyRecord({
+        enabled: true,
+        detector: "local_model",
+        local_model_id: ready.id,
+      }),
+    );
+    bridgeMocks.listPrivacyModelInstallations.mockResolvedValueOnce({
+      items: [ready],
+    });
+    bridgeMocks.dryRunPrivacyPolicy.mockResolvedValueOnce({
+      decision: "redact",
+      findings_summary: "email=1",
+      findings: [
+        {
+          kind: "email",
+          path: "/messages/0/content",
+          start: 6,
+          end: 23,
+          confidence: 0.91,
+        },
+      ],
+      suppressed_findings: [
+        {
+          kind: "private_person",
+          path: "/messages/0/content",
+          start: 0,
+          end: 6,
+          confidence: 0.42,
+        },
+      ],
+      redactions: [
+        {
+          placeholder: "<PRIVATE_EMAIL_7f3a91c04d28be56>",
+          kind: "email",
+          value: "alice@example.com",
+        },
+      ],
+      redacted_body:
+        '{"messages":[{"content":"email <PRIVATE_EMAIL_7f3a91c04d28be56>","role":"user"}]}',
+      inspected_body:
+        '{"messages":[{"content":"email alice@example.com","role":"user"}]}',
+    });
+    await renderPolicy();
+    await openDryRun();
+
+    await act(async () => {
+      actionButton("开始检测").click();
+      await Promise.resolve();
+    });
+    await flush();
+
+    expect(bridgeMocks.dryRunPrivacyPolicy).toHaveBeenCalledWith({
+      protocol: "openai.chat",
+      sample_text: expect.stringContaining("chen.yu@example.com"),
+      policy: {
+        enabled: true,
+        detector: "local_model",
+        local_model_id: ready.id,
+        min_confidence: 0.6,
+        request_action: "redact",
+      },
+    });
+    expect(container.textContent).toContain("脱敏后继续");
+    expect(container.textContent).toContain("邮箱 × 1");
+    expect(container.textContent).toContain("置信度 91%，达到 60% 门槛");
+    expect(container.textContent).toContain("已忽略 1 处");
+    expect(container.textContent).toContain("置信度 42%，低于 60% 门槛");
+    expect(container.textContent).toContain("替换为");
+    expect(container.textContent).toContain("<PRIVATE_EMAIL_7f3a91c04d28be56>");
+    expect(container.textContent).toContain("alice@example.com");
+    expect(container.textContent).toContain("脱敏后的请求");
+    expect(bridgeMocks.updatePrivacyPolicy).not.toHaveBeenCalled();
+    expect(
+      container
+        .querySelector('[aria-label="启用隐私保护"]')
+        ?.getAttribute("aria-checked"),
+    ).toBe("true");
+    expect(
+      document
+        .querySelector('[role="tab"][aria-label="试运行"]')
+        ?.getAttribute("data-state"),
+    ).toBe("active");
+    await openPolicySection("检测与还原");
+    expect(button("检测与还原").getAttribute("data-state")).toBe("active");
+  });
+
+  it("explains that local-model dry-runs need privacy protection on", async () => {
+    const ready = readyInstallation();
+    bridgeMocks.getPrivacyPolicy.mockResolvedValueOnce(
+      policyRecord({
+        enabled: false,
+        detector: "local_model",
+        local_model_id: ready.id,
+      }),
+    );
+    bridgeMocks.listPrivacyModelInstallations.mockResolvedValueOnce({
+      items: [ready],
+    });
+    await renderPolicy();
+    await openDryRun();
+
+    const reason =
+      "隐私保护已关闭，本地模型没有运行。打开右上角的「启用隐私保护」后再检测。";
+    expect(actionButton("开始检测").disabled).toBe(true);
+    expect(container.textContent).toContain(reason);
+    await act(async () => {
+      container.querySelector("#privacy-dry-run-sample")!.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "Enter",
+          ctrlKey: true,
+          bubbles: true,
         }),
       );
-      bridgeMocks.listPrivacyModelInstallations.mockResolvedValueOnce({
-        items: [ready],
-      });
-      bridgeMocks.dryRunPrivacyPolicy.mockResolvedValueOnce({
-        decision: "redact",
-        findings_summary: "email=1",
-        findings: [
-          {
-            kind: "email",
-            path: "/messages/0/content",
-            start: 6,
-            end: 23,
-            confidence: 0.91,
-          },
-        ],
-        suppressed_findings: [
-          {
-            kind: "private_person",
-            path: "/messages/0/content",
-            start: 0,
-            end: 6,
-            confidence: 0.42,
-          },
-        ],
-        redactions: [
-          {
-            placeholder: "<PRIVATE_EMAIL_7f3a91c04d28be56>",
-            kind: "email",
-            value: "alice@example.com",
-          },
-        ],
-        redacted_body:
-          '{"messages":[{"content":"email <PRIVATE_EMAIL_7f3a91c04d28be56>","role":"user"}]}',
-        inspected_body:
-          '{"messages":[{"content":"email alice@example.com","role":"user"}]}',
-      });
-      await renderPolicy();
-      await openDryRun();
+    });
+    await flush();
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain(
+      reason,
+    );
+    expect(bridgeMocks.dryRunPrivacyPolicy).not.toHaveBeenCalled();
+    expect(bridgeMocks.updatePrivacyPolicy).not.toHaveBeenCalled();
+  });
 
-      await act(async () => {
-        actionButton("开始检测").click();
-        await Promise.resolve();
-      });
-      await flush();
+  it("explains a failed local-model dry-run instead of showing the raw error", async () => {
+    const ready = readyInstallation();
+    bridgeMocks.getPrivacyPolicy.mockResolvedValueOnce(
+      policyRecord({
+        enabled: true,
+        detector: "local_model",
+        local_model_id: ready.id,
+      }),
+    );
+    bridgeMocks.listPrivacyModelInstallations.mockResolvedValueOnce({
+      items: [ready],
+    });
+    const raw =
+      'POST /control/v1/policies/policy_privacy_default/dry-run returned 503 Service Unavailable: {"error":{"code":"safety_engine_unavailable","message":"local safety engine is unavailable","retryable":false,"details":[]}}';
+    bridgeMocks.dryRunPrivacyPolicy.mockRejectedValueOnce(new Error(raw));
+    await renderPolicy();
+    await openDryRun();
 
-      expect(bridgeMocks.dryRunPrivacyPolicy).toHaveBeenCalledWith({
-        protocol: "openai.chat",
-        sample_text: expect.stringContaining("chen.yu@example.com"),
-        policy: {
-          enabled: true,
-          detector: "local_model",
-          local_model_id: ready.id,
-          min_confidence: 0.6,
-          request_action: "redact",
-        },
-      });
-      expect(container.textContent).toContain("脱敏后继续");
-      expect(container.textContent).toContain("邮箱 × 1");
-      expect(container.textContent).toContain("置信度 91%，达到 60% 门槛");
-      expect(container.textContent).toContain("已忽略 1 处");
-      expect(container.textContent).toContain("置信度 42%，低于 60% 门槛");
-      expect(container.textContent).toContain("替换为");
-      expect(container.textContent).toContain(
-        "<PRIVATE_EMAIL_7f3a91c04d28be56>",
-      );
-      expect(container.textContent).toContain("alice@example.com");
-      expect(container.textContent).toContain("脱敏后的请求");
-      expect(bridgeMocks.updatePrivacyPolicy).not.toHaveBeenCalled();
-      expect(
-        container
-          .querySelector('[aria-label="启用隐私保护"]')
-          ?.getAttribute("aria-checked"),
-      ).toBe(String(enabled));
-      expect(
-        document
-          .querySelector('[role="tab"][aria-label="试运行"]')
-          ?.getAttribute("data-state"),
-      ).toBe("active");
-      await openPolicySection("检测与还原");
-      expect(button("检测与还原").getAttribute("data-state")).toBe("active");
-    },
-  );
+    await act(async () => {
+      actionButton("开始检测").click();
+      await Promise.resolve();
+    });
+    await flush();
+
+    const alert = container.querySelector('[role="alert"]');
+    expect(alert?.textContent).toContain("本地模型没有完成这次检测。");
+    expect(container.textContent).not.toContain("returned 503");
+    expect(container.textContent).not.toContain("等待检测");
+    expect(alert?.querySelector('[aria-label="查看技术详情"]')).not.toBeNull();
+  });
 
   it("locates UTF-8 matches in the exact input and supports repeated keyboard tests", async () => {
     bridgeMocks.getPrivacyPolicy.mockResolvedValueOnce(
