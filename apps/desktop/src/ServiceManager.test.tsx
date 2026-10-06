@@ -328,7 +328,12 @@ describe("ServiceManager", () => {
     expect(meters()[0].textContent).toContain("26.0%");
     expect(meters()[0].textContent).toContain("49.0 tok/s");
     expect(meters()[1].textContent).toContain("—");
-    expect(meters()[1].textContent).not.toContain("tok/s");
+    // Missing values keep their units only as invisible spacers.
+    expect(
+      [...meters()[1].querySelectorAll('[aria-hidden="true"]')].map(
+        (unit) => unit.textContent,
+      ),
+    ).toEqual(["%", "tok/s"]);
     expect(meters()[1].textContent).not.toContain("0.0%");
     expect(bridgeMocks.getUsageSummary).toHaveBeenCalledTimes(1);
     expect(bridgeMocks.getUsageSummary).toHaveBeenLastCalledWith(

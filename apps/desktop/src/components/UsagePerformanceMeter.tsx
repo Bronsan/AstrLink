@@ -3,6 +3,9 @@ import { useT } from "../i18n";
 import type { ServicePerformance, UsageStatus } from "../usage-range";
 import type { PerformanceTarget } from "../use-performance-details";
 import {
+  CacheRate,
+  formatCacheRate,
+  PerformanceUnit,
   TokensPerSecond,
   UsagePerformanceDetails,
 } from "./UsagePerformanceDetails";
@@ -71,21 +74,21 @@ export function UsagePerformanceMeter({
           label={t("services.cacheUtilization")}
           value={
             <span className="font-semibold">
-              {cache == null ? placeholder : `${(cache * 100).toFixed(1)}%`}
+              <CacheRate value={cache} placeholder={placeholder} />
             </span>
           }
         />
+        {/* The details button sits beside the label so the value keeps the
+            whole column; the negative margin keeps the label row height. */}
         <DataField
           className="row-span-2 grid grid-rows-subgrid"
-          label="TPS"
-          value={
-            <span className="inline-flex items-center gap-1 font-semibold">
-              <span>
-                <TokensPerSecond value={speed} placeholder={placeholder} />
-              </span>
+          label={
+            <span className="inline-flex items-center gap-1">
+              TPS
               {details(
                 <Button
                   aria-label={detailsLabel}
+                  className="-my-0.75"
                   disabled={!ready}
                   size="icon-xs"
                   variant="ghost"
@@ -99,6 +102,11 @@ export function UsagePerformanceMeter({
               )}
             </span>
           }
+          value={
+            <span className="font-semibold">
+              <TokensPerSecond value={speed} placeholder={placeholder} />
+            </span>
+          }
         />
         {status === "error" ? (
           <p className="col-span-2 text-micro text-muted-foreground">
@@ -108,6 +116,37 @@ export function UsagePerformanceMeter({
       </div>
     );
   }
+  // Units share the last column, so "%" and "tok/s" start at the same edge and
+  // the numbers end at the same edge. Each label stays with its own number,
+  // so a long TPS can use the space under the longer cache label. A missing
+  // value keeps its unit invisible, so every provider reserves the same width.
+  const metricRow = (
+    label: string,
+    amount: string | null,
+    unit: string,
+    spaced = false,
+  ) => (
+    <span
+      className={cn(
+        "col-span-full grid grid-cols-subgrid items-baseline gap-x-0.5",
+        layout === "service" && "flex @[640px]/service-list:grid",
+      )}
+    >
+      <span className="flex items-baseline justify-between gap-1.5">
+        <span className="text-muted-foreground">{label}</span>
+        <span>{amount ?? placeholder}</span>
+      </span>
+      {/* Grid and flex drop this space from layout; it only keeps the unit a
+          separate word in the text alternative. */}
+      {spaced && amount != null ? " " : null}
+      <PerformanceUnit
+        aria-hidden={amount == null || undefined}
+        className={cn(amount == null && "invisible")}
+      >
+        {unit}
+      </PerformanceUnit>
+    </span>
+  );
   // The two values open the details themselves, like the billing amount next
   // to them; the range selector above the list already names the period.
   return details(
@@ -126,33 +165,30 @@ export function UsagePerformanceMeter({
     >
       <span
         className={cn(
-          "grid w-full gap-1",
+          "grid w-full grid-cols-[1fr_auto] gap-x-0.5 gap-y-1",
           layout === "service" &&
-            "flex flex-wrap items-center gap-x-3 @[640px]/service-list:grid @[640px]/service-list:gap-x-1",
+            "flex flex-wrap items-center gap-x-3 @[640px]/service-list:grid @[640px]/service-list:gap-x-0.5",
         )}
         id={valuesId}
       >
         <span className="sr-only">{periodLabel}</span>
         {status === "error" ? (
-          <span className="text-muted-foreground">
+          <span className="col-span-full text-muted-foreground">
             {t("services.performanceError")}
           </span>
         ) : (
           <>
-            <span className="flex items-center justify-between gap-2">
-              <span className="text-muted-foreground">
-                {t("services.cacheUtilization")}
-              </span>
-              <span>
-                {cache == null ? placeholder : `${(cache * 100).toFixed(1)}%`}
-              </span>
-            </span>
-            <span className="flex items-center justify-between gap-2">
-              <span className="text-muted-foreground">TPS</span>
-              <span>
-                <TokensPerSecond value={speed} placeholder={placeholder} />
-              </span>
-            </span>
+            {metricRow(
+              t("services.cacheUtilization"),
+              cache == null ? null : formatCacheRate(cache),
+              "%",
+            )}
+            {metricRow(
+              "TPS",
+              speed == null ? null : speed.toFixed(1),
+              "tok/s",
+              true,
+            )}
           </>
         )}
       </span>

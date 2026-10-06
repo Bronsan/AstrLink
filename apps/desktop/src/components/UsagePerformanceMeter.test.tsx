@@ -159,6 +159,24 @@ describe("performance detail popover", () => {
     ).not.toContain("99.0%");
   });
 
+  it("shows a full cache rate without a trailing decimal", async () => {
+    await act(async () =>
+      root.render(
+        <UsagePerformanceMeter
+          performance={{ ...performance, cache_hit_rate: 1 }}
+          status="ready"
+          periodLabel="近 7 天"
+          scopeDescription="所选对象的统计"
+          ready
+          target={{ kind: "service", id: "target_one", name: "Test target" }}
+        />,
+      ),
+    );
+    const text = host.querySelector("button")!.textContent;
+    expect(text).toContain("100%");
+    expect(text).not.toContain("100.0");
+  });
+
   it("uses local calendar days instead of relabeling a rolling 24-hour window", () => {
     const now = new Date(2026, 8, 25, 17, 38);
     const windows = performanceDetailWindows(now);
