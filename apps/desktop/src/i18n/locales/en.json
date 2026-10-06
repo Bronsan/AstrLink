@@ -1381,6 +1381,7 @@
     "personLock": "Person names have no RFC reserved space. Any natural fake name can collide with a real person.",
     "addressLock": "Addresses have no RFC reserved space. Any natural fake address can point at a real home.",
     "dateLock": "A fake date can be treated as real during reasoning, so only the token form is allowed.",
+    "numberLock": "Models rewrite a fake number the way they write numbers: regrouped, cut to its last digits, or called out as fictional. A rewritten number cannot be swapped back, so only the token form is allowed.",
     "labelMapping": "{{label}} label mapping",
     "confirmUse": "Confirm this local model",
     "cancelImport": "Cancel model import",

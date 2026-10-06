@@ -797,5 +797,34 @@ CHECK(sealed IN (0, 1) AND (sealed = 0 OR length(credential_value) >= 30))`,
 		{Version: 48, Name: "request_first_answer_timing", Statements: []string{
 			`ALTER TABLE request_records ADD COLUMN first_answer_ms INTEGER CHECK(first_answer_ms IS NULL OR first_answer_ms >= 0)`,
 		}},
+		// phone, payment_card, and account now only accept token placeholders.
+		// Any save wrote the full kind list, so a stored natural style for them
+		// would otherwise fail validation and take privacy protection down.
+		{Version: 49, Name: "privacy_token_kinds", Statements: []string{
+			`UPDATE policies
+SET document_json = json_set(
+    document_json,
+    '$.kind_rules',
+    json((
+        SELECT json_group_array(
+            json(
+                CASE
+                    WHEN json_extract(value, '$.kind') IN ('phone', 'payment_card', 'account')
+                        THEN json_set(value, '$.style', 'token')
+                    ELSE value
+                END
+            )
+        )
+        FROM json_each(policies.document_json, '$.kind_rules')
+    ))
+)
+WHERE id = 'policy_privacy_default'
+  AND json_type(document_json, '$.kind_rules') = 'array'
+  AND EXISTS (
+      SELECT 1 FROM json_each(policies.document_json, '$.kind_rules')
+      WHERE json_extract(value, '$.kind') IN ('phone', 'payment_card', 'account')
+        AND json_extract(value, '$.style') IS NOT 'token'
+  )`,
+		}},
 	}
 }

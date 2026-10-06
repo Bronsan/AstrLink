@@ -400,9 +400,29 @@ function placeholderStyleLockReason(
       return i18n.t("safety.addressLock");
     case "private_date":
       return i18n.t("safety.dateLock");
+    case "payment_card":
+    case "account":
+    case "phone":
+      return i18n.t("safety.numberLock");
     default:
       return undefined;
   }
+}
+
+/** Locked kinds in canonical order, merged where they share a reason. */
+function lockedKindGroups(): {
+  kinds: CanonicalPrivacyKind[];
+  reason: string;
+}[] {
+  const groups: { kinds: CanonicalPrivacyKind[]; reason: string }[] = [];
+  for (const kind of PRIVACY_KINDS) {
+    const reason = placeholderStyleLockReason(kind);
+    if (!reason) continue;
+    const group = groups.find((item) => item.reason === reason);
+    if (group) group.kinds.push(kind);
+    else groups.push({ kinds: [kind], reason });
+  }
+  return groups;
 }
 
 const ALLOWLIST_TYPES: readonly PrivacyAllowlistType[] = [
@@ -3120,14 +3140,15 @@ export function SafetyPolicy({
                             {t("safety.styleHintTail")}
                           </p>
                           <ul className="grid gap-2">
-                            {PRIVACY_KINDS.filter((kind) =>
-                              PLACEHOLDER_STYLE_LOCKED_KINDS.has(kind),
-                            ).map((kind) => (
-                              <li key={kind}>
+                            {lockedKindGroups().map(({ kinds, reason }) => (
+                              <li key={kinds.join()}>
                                 <strong className="font-medium text-foreground">
-                                  {canonicalKindLabel(kind)}：
+                                  {kinds
+                                    .map(canonicalKindLabel)
+                                    .join(t("safety.listJoin"))}
+                                  ：
                                 </strong>
-                                {placeholderStyleLockReason(kind)}
+                                {reason}
                               </li>
                             ))}
                           </ul>
