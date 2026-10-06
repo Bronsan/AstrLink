@@ -170,6 +170,16 @@ func (prober *Prober) probeSubscription(
 		accountauth.ApplyGrokAPIHeaders(headers, tokens, prober.subscriptions.GrokClientVersion(probeContext))
 		return prober.probeHTTPPages(probeContext, prober.subscriptions.APIBaseURLFor(account.Provider), headers, protocol, false, "")
 	}
+	if account.Provider == contract.SubscriptionProviderGitHubCopilot {
+		ids, err := prober.subscriptions.CopilotModels(probeContext, tokens)
+		if err != nil {
+			if errors.Is(probeContext.Err(), context.DeadlineExceeded) {
+				return nil, context.DeadlineExceeded
+			}
+			return nil, fmt.Errorf("%w: %v", ErrUpstream, err)
+		}
+		return normalizeProbeIDs(ids)
+	}
 	models, err := prober.subscriptions.Provider().ListModels(probeContext, tokens)
 	if err != nil {
 		if errors.Is(probeContext.Err(), context.DeadlineExceeded) {

@@ -33,6 +33,7 @@ type ServiceModelProber interface {
 type serviceCreateRequest struct {
 	Proxy                     json.RawMessage         `json:"proxy,omitempty"`
 	ResponsesWebSocketEnabled json.RawMessage         `json:"responses_websocket_enabled,omitempty"`
+	ModelRedirects            json.RawMessage         `json:"model_redirects,omitempty"`
 	FailurePolicy             *contract.FailurePolicy `json:"failure_policy,omitempty"`
 	Name                      string                  `json:"name"`
 	Kind                      *contract.ServiceKind   `json:"kind"`
@@ -307,6 +308,14 @@ func (handler *Handler) createService(writer http.ResponseWriter, request *http.
 			return
 		}
 		service.ResponsesWebSocketEnabled = &enabled
+	}
+	if input.ModelRedirects != nil {
+		redirects, err := decodeServiceModelRedirects(input.ModelRedirects)
+		if err != nil {
+			writeError(writer, http.StatusUnprocessableEntity, "invalid_service", err.Error())
+			return
+		}
+		service.ModelRedirects = redirects
 	}
 	models, err := decodeServiceModels(input.Models)
 	if err != nil {
@@ -1105,7 +1114,11 @@ func applyServicePatch(
 	if len(patch) == 0 {
 		return service, credential, fmt.Errorf("patch is empty")
 	}
-	allowed := map[string]bool{"proxy": true, "name": true, "enabled": true, "models": true, "failure_policy": true, "responses_websocket_enabled": true, "capabilities": true}
+	allowed := map[string]bool{
+		"proxy": true, "name": true, "enabled": true, "models": true, "failure_policy": true,
+		"responses_websocket_enabled": true, "capabilities": true,
+		"model_redirects": true,
+	}
 	if service.Kind.IsHTTP() {
 		allowed["http"] = true
 	}
@@ -1148,6 +1161,13 @@ func applyServicePatch(
 			return service, credential, err
 		}
 		service.Models = models
+	}
+	if raw, ok := patch["model_redirects"]; ok {
+		redirects, err := decodeServiceModelRedirects(raw)
+		if err != nil {
+			return service, credential, err
+		}
+		service.ModelRedirects = redirects
 	}
 	if raw, ok := patch["capabilities"]; ok {
 		capabilities, err := decodeServiceCapabilities(raw)

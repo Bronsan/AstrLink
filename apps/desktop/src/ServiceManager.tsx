@@ -22,9 +22,16 @@ import { OrderedList } from "./components/OrderedList";
 import { ClientTypeIcons } from "./components/ClientTypeIcon";
 import { useRoutingDefaults } from "./use-routing-defaults";
 import { FailurePolicyEditor } from "./components/FailurePolicyEditor";
-import { parseFailurePolicy, type FailurePolicy } from "./failure-policy-model";
+import {
+  modelRedirectIssues,
+  parseFailurePolicy,
+  type FailurePolicy,
+  type ModelRedirect,
+} from "./failure-policy-model";
+import { ModelRedirectEditor } from "./components/ModelRedirectEditor";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
+  BadgeAlert,
   Boxes,
   ChevronRight,
   Flask,
@@ -34,6 +41,7 @@ import {
   SquarePen as Pencil,
   Plus,
   RefreshCw,
+  Route,
   SlidersHorizontal,
 } from "@/components/icons";
 
@@ -159,6 +167,8 @@ import {
 import {
   activeServiceRisk,
   responsesWebSocketEnabled,
+  serviceBuiltinRedirects,
+  withClaudeCodeRedirects,
   supportsResponsesWebSocket,
   serviceKindLabel,
   hasPlanUsage,
@@ -202,6 +212,7 @@ import {
 export type ServiceEditorTab =
   | "connection"
   | "models"
+  | "redirects"
   | "protocols"
   | "failure";
 
@@ -246,6 +257,8 @@ type Draft = {
   secret: string;
   removeCredential: boolean;
   models: string[];
+  /** This provider's own redirect rules. */
+  modelRedirects: ModelRedirect[];
   capabilities: ServiceCapability[];
   authorizationFlow: AuthorizationFlow | null;
   modelListPath: string;
@@ -369,6 +382,7 @@ function subscriptionDefaultName(kind: SubscriptionServiceKind): string {
   if (kind === "antigravity_subscription") return "Antigravity";
   if (kind === "claude_subscription") return "Claude Code";
   if (kind === "grok_subscription") return i18n.t("services.grokName");
+  if (kind === "copilot_subscription") return i18n.t("services.copilotName");
   return i18n.t("services.codexName");
 }
 
@@ -377,6 +391,7 @@ function subscriptionKindHint(kind: SubscriptionServiceKind): string {
     return i18n.t("services.antigravityHint");
   if (kind === "claude_subscription") return i18n.t("services.claudeOauthHint");
   if (kind === "grok_subscription") return i18n.t("services.grokHint");
+  if (kind === "copilot_subscription") return i18n.t("services.copilotHint");
   return i18n.t("services.codexHint");
 }
 
@@ -384,6 +399,7 @@ function subscriptionOauthLabel(kind: ServiceKind): string {
   if (kind === "antigravity_subscription") return "Antigravity OAuth";
   if (kind === "claude_subscription") return "Claude Code OAuth";
   if (kind === "grok_subscription") return i18n.t("services.xaiGrokOauth");
+  if (kind === "copilot_subscription") return i18n.t("services.copilotOauth");
   return i18n.t("services.openaiCodexOauth");
 }
 
@@ -394,16 +410,26 @@ function subscriptionAccountLabel(kind: ServiceKind, hint: string): string {
     return i18n.t("services.claudeAccount", { hint });
   if (kind === "grok_subscription")
     return i18n.t("services.xaiAccount", { hint });
+  if (kind === "copilot_subscription")
+    return i18n.t("services.githubAccount", { hint });
   return i18n.t("services.openaiAccount", { hint });
 }
 
 function deviceCodeDescription(
   provider: SubscriptionProvider | undefined,
 ): string {
+  if (provider === "github_copilot")
+    return i18n.t("services.copilotDeviceCodeDescription");
   return provider === "xai_grok"
     ? i18n.t("services.grokDeviceCodeDescription")
     : i18n.t("services.deviceCodeDescription");
 }
+
+/** Copilot sign-ins wait for the risk confirmation; null when none is pending. */
+type CopilotRiskStart =
+  | { kind: "create" }
+  | { kind: "login"; service: Service; flow: AuthorizationFlow }
+  | null;
 
 function mergeDiscoveredServiceModels(
   current: { models: readonly string[] },
@@ -469,6 +495,7 @@ function draftForKind(
       removeCredential: false,
       proxy: proxyDraft(),
       models: [],
+      modelRedirects: [],
       capabilities: subscriptionNativeCapabilities[kind].map((capability) => ({
         ...capability,
       })),
@@ -493,6 +520,7 @@ function draftForKind(
     removeCredential: false,
     proxy: proxyDraft(),
     models: [...(preset.models ?? [])],
+    modelRedirects: [],
     capabilities: preset.capabilities.map((capability) => ({ ...capability })),
     authorizationFlow: null,
     modelListPath: "",
@@ -510,6 +538,9 @@ function draftFromRecord(record: ServiceRecord): Draft {
       enabled: service.enabled,
       responsesWebSocket: responsesWebSocketEnabled(service),
       models: [...service.models],
+      modelRedirects: (service.model_redirects ?? []).map((redirect) => ({
+        ...redirect,
+      })),
       capabilities: service.capabilities.map((capability) => ({
         ...capability,
       })),
@@ -529,6 +560,9 @@ function draftFromRecord(record: ServiceRecord): Draft {
     secret: "",
     removeCredential: false,
     models: [...service.models],
+    modelRedirects: (service.model_redirects ?? []).map((redirect) => ({
+      ...redirect,
+    })),
     authorizationFlow: null,
     capabilities: service.capabilities.map((capability) =>
       wireCapability(capability),
@@ -544,6 +578,26 @@ function wireCapability(capability: ServiceCapability): ServiceCapability {
     streaming: capability.streaming,
     ...(capability.convert_to ? { convert_to: capability.convert_to } : {}),
   };
+}
+
+/** An edit sends the redirect rules only when they changed. */
+function redirectPatchFields(
+  draft: Draft,
+  saved: Service,
+): Pick<ServicePatchInput, "model_redirects"> {
+  return JSON.stringify(draft.modelRedirects) !==
+    JSON.stringify(saved.model_redirects ?? [])
+    ? { model_redirects: draft.modelRedirects }
+    : {};
+}
+
+/** A new service sends its redirect rules only when it has some. */
+function redirectCreateFields(
+  draft: Draft,
+): Pick<ServiceCreateInput, "model_redirects"> {
+  return draft.modelRedirects.length > 0
+    ? { model_redirects: draft.modelRedirects }
+    : {};
 }
 
 function draftSignature(draft: Draft): string {
@@ -578,6 +632,9 @@ function validateDraft(
     new Set(draft.models).size !== draft.models.length
   ) {
     return i18n.t("services.modelIdsInvalid");
+  }
+  if (modelRedirectIssues(draft.modelRedirects).some(Boolean)) {
+    return i18n.t("services.redirectsInvalid");
   }
   if (isSubscriptionKind(draft.kind)) {
     if (!editing && draft.authorizationFlow === null) {
@@ -893,6 +950,8 @@ export function ServiceManager({
   const [error, setError] = useState<string | null>(null);
   const [confirmAction, setConfirmAction] = useState<ConfirmAction>(null);
   const [loginChoice, setLoginChoice] = useState<Service | null>(null);
+  const [copilotRiskStart, setCopilotRiskStart] =
+    useState<CopilotRiskStart>(null);
   const [loginChoiceFlow, setLoginChoiceFlow] =
     useState<AuthorizationFlow | null>(null);
   // Closing clears the choice; keep the exit animation on the last one.
@@ -1122,8 +1181,18 @@ export function ServiceManager({
         const unchanged =
           merged.join("\0") === record.service.models.join("\0");
         if (!unchanged) {
+          const redirects = record.service.model_redirects ?? [];
+          const withRules = withClaudeCodeRedirects(
+            record.service.kind,
+            redirects,
+            record.service.models,
+            merged,
+          );
           await updateService(service.id, record.etag, {
             models: merged,
+            ...(withRules.length !== redirects.length
+              ? { model_redirects: withRules }
+              : {}),
           });
         }
         notify.success(
@@ -1372,6 +1441,12 @@ export function ServiceManager({
     setDraft((current) => ({
       ...current,
       models,
+      modelRedirects: withClaudeCodeRedirects(
+        current.kind,
+        current.modelRedirects,
+        current.models,
+        models,
+      ),
     }));
     setModelEditor("");
     setError(null);
@@ -1529,8 +1604,12 @@ export function ServiceManager({
     notify.success(t("services.browserOpened", { name: service.name }));
   };
 
-  const submit = async (event: React.FormEvent<HTMLFormElement>) => {
+  const submit = (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
+    void save(false);
+  };
+
+  const save = async (copilotRiskAccepted: boolean) => {
     try {
       if (draft.failurePolicy) parseFailurePolicy(draft.failurePolicy);
     } catch {
@@ -1540,6 +1619,16 @@ export function ServiceManager({
     const issue = validateDraft(draft, editing);
     if (issue) {
       setError(issue);
+      return;
+    }
+    // A new Copilot service signs in right after it is created, so the risk
+    // is confirmed before anything is saved.
+    if (
+      !editing &&
+      draft.kind === "copilot_subscription" &&
+      !copilotRiskAccepted
+    ) {
+      setCopilotRiskStart({ kind: "create" });
       return;
     }
     setSaving(true);
@@ -1555,6 +1644,7 @@ export function ServiceManager({
           enabled: draft.enabled,
           responses_websocket_enabled: draft.responsesWebSocket,
           models: draft.models,
+          ...redirectPatchFields(draft, editing.service),
           failure_policy: draft.failurePolicy ?? null,
         };
         if (!isSubscriptionKind(draft.kind)) {
@@ -1588,6 +1678,7 @@ export function ServiceManager({
             enabled: draft.enabled,
             responses_websocket_enabled: draft.responsesWebSocket,
             models: draft.models,
+            ...redirectCreateFields(draft),
             ...(draft.failurePolicy
               ? { failure_policy: draft.failurePolicy }
               : {}),
@@ -1610,6 +1701,7 @@ export function ServiceManager({
             enabled: draft.enabled,
             responses_websocket_enabled: draft.responsesWebSocket,
             models: draft.models,
+            ...redirectCreateFields(draft),
             ...(draft.failurePolicy
               ? { failure_policy: draft.failurePolicy }
               : {}),
@@ -1661,9 +1753,17 @@ export function ServiceManager({
     }
   };
 
-  const authorize = async (service: Service, flow: AuthorizationFlow) => {
+  const authorize = async (
+    service: Service,
+    flow: AuthorizationFlow,
+    copilotRiskAccepted = false,
+  ) => {
     setLoginChoice(null);
     setLoginChoiceFlow(null);
+    if (service.kind === "copilot_subscription" && !copilotRiskAccepted) {
+      setCopilotRiskStart({ kind: "login", service, flow });
+      return;
+    }
     setActionID(service.id);
     setError(null);
     try {
@@ -1806,6 +1906,31 @@ export function ServiceManager({
       setActionID(null);
     }
   };
+
+  // Both the editor ("Add and sign in") and the list ("Sign in") start a
+  // Copilot sign-in, so either view can show the risk confirmation.
+  const copilotRiskConfirm = (
+    <ConfirmDialog
+      confirmLabel={t("services.copilotRiskConfirm")}
+      description={
+        <ul className="list-disc space-y-2 pl-5">
+          <li>{t("services.copilotRiskUnofficial")}</li>
+          <li>{t("services.copilotRiskOwnAccount")}</li>
+          <li>{t("services.copilotRiskBilling")}</li>
+        </ul>
+      }
+      onCancel={() => setCopilotRiskStart(null)}
+      onConfirm={() => {
+        const start = copilotRiskStart;
+        setCopilotRiskStart(null);
+        if (start?.kind === "create") void save(true);
+        else if (start?.kind === "login")
+          void authorize(start.service, start.flow, true);
+      }}
+      open={copilotRiskStart !== null}
+      title={t("services.copilotRiskTitle")}
+    />
+  );
 
   if (view.kind === "list") {
     const search = query.trim().toLocaleLowerCase();
@@ -2502,6 +2627,7 @@ export function ServiceManager({
                 : t("services.confirmLogout")
           }
         />
+        {copilotRiskConfirm}
         <Dialog
           open={loginChoice !== null}
           onOpenChange={(open) => {
@@ -2521,11 +2647,13 @@ export function ServiceManager({
               <DialogDescription>
                 {shownLoginChoice?.kind === "grok_subscription"
                   ? t("services.grokDeviceCodeHint")
-                  : shownLoginChoice?.kind === "claude_subscription"
-                    ? t("services.claudeOauthHint")
-                    : shownLoginChoice?.kind === "antigravity_subscription"
-                      ? t("services.antigravityHint")
-                      : t("services.chooseOauthHint")}
+                  : shownLoginChoice?.kind === "copilot_subscription"
+                    ? t("services.copilotDeviceCodeHint")
+                    : shownLoginChoice?.kind === "claude_subscription"
+                      ? t("services.claudeOauthHint")
+                      : shownLoginChoice?.kind === "antigravity_subscription"
+                        ? t("services.antigravityHint")
+                        : t("services.chooseOauthHint")}
               </DialogDescription>
             </DialogHeader>
             <RadioGroup
@@ -2543,10 +2671,15 @@ export function ServiceManager({
                   selected={shownLoginChoiceFlow === "authorization_code"}
                   value="authorization_code"
                 />
-              ) : shownLoginChoice?.kind === "grok_subscription" ? (
+              ) : shownLoginChoice?.kind === "grok_subscription" ||
+                shownLoginChoice?.kind === "copilot_subscription" ? (
                 <ChoiceCard
                   label="Device Code"
-                  description={t("services.grokDeviceCodeHint")}
+                  description={
+                    shownLoginChoice.kind === "copilot_subscription"
+                      ? t("services.copilotDeviceCodeHint")
+                      : t("services.grokDeviceCodeHint")
+                  }
                   selected={shownLoginChoiceFlow === "device_code"}
                   value="device_code"
                 />
@@ -2712,7 +2845,10 @@ export function ServiceManager({
                   <p className="text-sm leading-6 text-muted-foreground">
                     {authorizationDialog.session.provider === "xai_grok"
                       ? t("services.grokEnterDeviceCode")
-                      : t("services.enterDeviceCode")}
+                      : authorizationDialog.session.provider ===
+                          "github_copilot"
+                        ? t("services.copilotEnterDeviceCode")
+                        : t("services.enterDeviceCode")}
                   </p>
                   <div className="flex items-center justify-between gap-3 rounded-md border border-primary/20 bg-accent p-3">
                     <code className="font-mono text-xl font-semibold tracking-[0.08em] text-accent-foreground select-all">
@@ -2739,7 +2875,10 @@ export function ServiceManager({
                   <small className="mt-2 block text-xs text-muted-foreground">
                     {authorizationDialog.session.provider === "xai_grok"
                       ? t("services.grokDeviceHint")
-                      : t("services.deviceDisabledHint")}
+                      : authorizationDialog.session.provider ===
+                          "github_copilot"
+                        ? t("services.copilotDeviceHint")
+                        : t("services.deviceDisabledHint")}
                   </small>
                   <DialogFooter>
                     <Button
@@ -2764,8 +2903,11 @@ export function ServiceManager({
                 <>
                   <p className="text-sm text-muted-foreground" role="status">
                     {authorizationDialog.session.status === "failed"
-                      ? (authorizationDialog.session.error?.message ??
-                        t("services.deviceFailed"))
+                      ? authorizationDialog.session.error?.code ===
+                        "copilot_not_entitled"
+                        ? t("services.copilotNotEntitled")
+                        : (authorizationDialog.session.error?.message ??
+                          t("services.deviceFailed"))
                       : authorizationDialog.session.status === "expired"
                         ? t("services.deviceExpired")
                         : authorizationDialog.session.status === "cancelled"
@@ -3038,6 +3180,13 @@ export function ServiceManager({
       </section>
     </Panel>
   );
+  const redirectBuiltins = serviceBuiltinRedirects(draft.kind);
+  const redirectRowCount =
+    redirectBuiltins.length +
+    draft.modelRedirects.filter(
+      (redirect) =>
+        !redirectBuiltins.some((builtin) => builtin.from === redirect.from),
+    ).length;
   const proxyTestTarget =
     draft.kind === "codex_subscription"
       ? "https://chatgpt.com"
@@ -3047,7 +3196,9 @@ export function ServiceManager({
           ? "https://api.x.ai"
           : draft.kind === "antigravity_subscription"
             ? "https://daily-cloudcode-pa.googleapis.com"
-            : draft.baseURL.trim();
+            : draft.kind === "copilot_subscription"
+              ? "https://api.githubcopilot.com"
+              : draft.baseURL.trim();
   const connectionFields = (
     <div className="grid min-w-0 gap-4 pb-2 @[760px]:grid-cols-2">
       <Panel>
@@ -3094,11 +3245,13 @@ export function ServiceManager({
               placeholder={
                 draft.kind === "grok_subscription"
                   ? t("services.namePlaceholderGrok")
-                  : draft.kind === "antigravity_subscription"
-                    ? "Antigravity"
-                    : isSubscriptionKind(draft.kind)
-                      ? t("services.namePlaceholderCodex")
-                      : t("services.namePlaceholderHttp")
+                  : draft.kind === "copilot_subscription"
+                    ? t("services.namePlaceholderCopilot")
+                    : draft.kind === "antigravity_subscription"
+                      ? "Antigravity"
+                      : isSubscriptionKind(draft.kind)
+                        ? t("services.namePlaceholderCodex")
+                        : t("services.namePlaceholderHttp")
               }
               required
               value={draft.name}
@@ -3179,10 +3332,15 @@ export function ServiceManager({
                         selected
                         value="authorization_code"
                       />
-                    ) : draft.kind === "grok_subscription" ? (
+                    ) : draft.kind === "grok_subscription" ||
+                      draft.kind === "copilot_subscription" ? (
                       <ChoiceCard
                         label="Device Code"
-                        description={t("services.grokDeviceCodeHint")}
+                        description={
+                          draft.kind === "copilot_subscription"
+                            ? t("services.copilotDeviceCodeHint")
+                            : t("services.grokDeviceCodeHint")
+                        }
                         selected
                         value="device_code"
                       />
@@ -3440,6 +3598,7 @@ export function ServiceManager({
         titleId="service-editor-heading"
         variant="compact"
       />
+      {copilotRiskConfirm}
       {!isReady ? (
         <FormMessage className="mb-3 shrink-0" tone="notice">
           {t("services.gatewayNotReady")}
@@ -3464,7 +3623,7 @@ export function ServiceManager({
           className="flex min-h-0 w-full min-w-0 flex-1 flex-col overflow-y-clip"
           data-testid="service-form"
           noValidate
-          onSubmit={(event) => void submit(event)}
+          onSubmit={submit}
         >
           <fieldset
             className="flex min-h-0 min-w-0 flex-1 flex-col overflow-y-clip border-0 p-0 disabled:pointer-events-none disabled:opacity-70"
@@ -3475,12 +3634,13 @@ export function ServiceManager({
               onValueChange={(value) => setEditorTab(value as EditorTab)}
               value={editorTab}
             >
-              <div className="flex min-w-0 shrink-0 items-center gap-1">
+              <div className="flex min-w-0 shrink-0 items-center gap-1 border-b">
                 <TabsList
                   ref={editorTabs}
                   aria-label={t("services.tabsAria")}
                   scrollable
-                  className="h-9 min-w-0 max-w-full"
+                  className="min-w-0 max-w-full justify-start"
+                  variant="line"
                 >
                   <TabsTrigger
                     data-testid="service-editor-tab-connection"
@@ -3503,12 +3663,30 @@ export function ServiceManager({
                     {t("services.tabModels")}
                     <Badge
                       className="px-1.5 py-0 text-micro tabular-nums"
-                      variant="secondary"
-                    >
-                      {t("services.modelCount", {
+                      title={t("services.modelCount", {
                         count: draft.models.length,
                       })}
+                      variant="secondary"
+                    >
+                      {draft.models.length}
                     </Badge>
+                  </TabsTrigger>
+                  <TabsTrigger
+                    data-testid="service-editor-tab-redirects"
+                    onClick={() => setEditorTab("redirects")}
+                    type="button"
+                    value="redirects"
+                  >
+                    <Route aria-hidden="true" />
+                    {t("services.tabRedirects")}
+                    {redirectRowCount > 0 ? (
+                      <Badge
+                        className="px-1.5 py-0 text-micro tabular-nums"
+                        variant="secondary"
+                      >
+                        {redirectRowCount}
+                      </Badge>
+                    ) : null}
                   </TabsTrigger>
                   <TabsTrigger
                     data-testid="service-editor-tab-protocols"
@@ -3521,11 +3699,12 @@ export function ServiceManager({
                     {t("services.tabProtocols")}
                     <Badge
                       className="px-1.5 py-0 text-micro tabular-nums"
-                      variant="secondary"
-                    >
-                      {t("services.enabledItems", {
+                      title={t("services.enabledItems", {
                         count: draft.capabilities.length,
                       })}
+                      variant="secondary"
+                    >
+                      {draft.capabilities.length}
                     </Badge>
                   </TabsTrigger>
                   <TabsTrigger
@@ -3535,6 +3714,7 @@ export function ServiceManager({
                     type="button"
                     value="failure"
                   >
+                    <BadgeAlert aria-hidden="true" />
                     {t("failure.title")}
                   </TabsTrigger>
                 </TabsList>
@@ -3561,6 +3741,29 @@ export function ServiceManager({
                 value="models"
               >
                 {modelsEditor}
+              </TabsContent>
+              <TabsContent
+                className="gutter-scroller flex min-h-0 min-w-0 flex-1 flex-col gap-3 overflow-y-auto pr-4 pb-1"
+                data-tab-scroller=""
+                data-testid="service-editor-tab-panel"
+                value="redirects"
+              >
+                <p className="shrink-0 text-sm text-text-secondary">
+                  {draft.kind === "copilot_subscription"
+                    ? t("services.redirectsCopilotHint")
+                    : t("services.redirectsScopeHint")}
+                </p>
+                <ModelRedirectEditor
+                  scope="service"
+                  builtins={redirectBuiltins}
+                  value={draft.modelRedirects}
+                  modelOptions={draft.models}
+                  emptyMessage={t("services.redirectsEmpty")}
+                  disabled={!isReady || saving}
+                  onChange={(modelRedirects) =>
+                    setDraft((current) => ({ ...current, modelRedirects }))
+                  }
+                />
               </TabsContent>
               <TabsContent
                 className="gutter-scroller min-h-0 min-w-0 flex-1 overflow-y-auto pr-4 pb-1"
@@ -3671,10 +3874,16 @@ export function ServiceManager({
             )
           }
           onApply={() => {
-            const selected = new Set(modelPreview.selected);
+            const models = [...new Set(modelPreview.selected)].sort();
             setDraft((current) => ({
               ...current,
-              models: [...selected].sort(),
+              models,
+              modelRedirects: withClaudeCodeRedirects(
+                current.kind,
+                current.modelRedirects,
+                current.models,
+                models,
+              ),
             }));
             setModelPreview(null);
             setModelPreviewQuery("");

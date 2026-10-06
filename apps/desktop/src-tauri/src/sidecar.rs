@@ -4506,7 +4506,13 @@ fn validate_resource_id(value: &str) -> Result<(), String> {
     Ok(())
 }
 
-const SUBSCRIPTION_PROVIDERS: &[&str] = &["openai_codex", "claude_code", "xai_grok", "antigravity"];
+const SUBSCRIPTION_PROVIDERS: &[&str] = &[
+    "openai_codex",
+    "claude_code",
+    "xai_grok",
+    "antigravity",
+    "github_copilot",
+];
 const AUTHORIZATION_SESSION_STATUSES: &[&str] =
     &["pending", "completed", "cancelled", "expired", "failed"];
 const AUTHORIZATION_FLOWS: &[&str] = &["browser", "device_code", "authorization_code"];
@@ -4703,7 +4709,7 @@ fn parse_authorization_session_value(
     if provider == "antigravity" && flow != "browser" {
         return Err("authorization flow is unsupported by provider".to_string());
     }
-    if provider == "xai_grok" && flow != "device_code" {
+    if (provider == "xai_grok" || provider == "github_copilot") && flow != "device_code" {
         return Err("authorization flow is unsupported by provider".to_string());
     }
     let service_id = object
@@ -5694,6 +5700,15 @@ mod tests {
         let mut grok_browser = browser.clone();
         grok_browser["provider"] = serde_json::json!("xai_grok");
         assert!(parse_authorization_session_value(&grok_browser).is_err());
+
+        let mut copilot = device.clone();
+        copilot["provider"] = serde_json::json!("github_copilot");
+        copilot["device_code"]["verification_url"] =
+            serde_json::json!("https://github.com/login/device");
+        assert!(parse_authorization_session_value(&copilot).is_ok());
+        let mut copilot_browser = browser.clone();
+        copilot_browser["provider"] = serde_json::json!("github_copilot");
+        assert!(parse_authorization_session_value(&copilot_browser).is_err());
 
         device["authorization_url"] = serde_json::json!("https://auth.openai.com/oauth/authorize");
         assert!(parse_authorization_session_value(&device).is_err());

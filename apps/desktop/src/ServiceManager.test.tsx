@@ -1251,6 +1251,241 @@ describe("ServiceManager", () => {
     expect(dialog?.textContent).not.toContain("OpenAI");
   });
 
+  const copilotService: Service = {
+    ...codexService,
+    id: "service_copilot",
+    name: "GitHub Copilot",
+    kind: "copilot_subscription",
+    capabilities: [
+      { protocol: "anthropic.messages", mode: "native", streaming: true },
+      { protocol: "openai.responses", mode: "native", streaming: true },
+      { protocol: "openai.chat", mode: "native", streaming: true },
+      { protocol: "openai.models", mode: "native", streaming: false },
+    ],
+    subscription: { provider: "github_copilot", status: "disconnected" },
+  };
+  const copilotSession = {
+    id: "authorization_copilot",
+    provider: "github_copilot",
+    status: "pending",
+    flow: "device_code",
+    device_code: {
+      verification_url: "https://github.com/login/device",
+      user_code: "COPI-LOT1",
+    },
+    service_id: "service_copilot",
+    created_at: timestamp,
+    updated_at: timestamp,
+    expires_at: "2099-09-18T00:00:00Z",
+  };
+
+  function copilotRiskDialog(): Element | null {
+    return (
+      [...document.querySelectorAll('[role="alertdialog"]')].find((dialog) =>
+        dialog.textContent?.includes("连接 GitHub Copilot 前先了解风险"),
+      ) ?? null
+    );
+  }
+
+  async function answerCopilotRisk(label: string): Promise<void> {
+    const button = [
+      ...(copilotRiskDialog()?.querySelectorAll("button") ?? []),
+    ].find((candidate) => candidate.textContent === label);
+    if (!button) throw new Error(`Missing Copilot risk button: ${label}`);
+    await act(async () => button.click());
+  }
+
+  it("confirms the Copilot account risk before creating and signing in", async () => {
+    bridgeMocks.createService.mockResolvedValue({
+      service: copilotService,
+      etag,
+    });
+    bridgeMocks.beginServiceAuthorization.mockResolvedValue({
+      kind: "session",
+      session: copilotSession,
+    });
+    bridgeMocks.getServiceAuthorization.mockResolvedValue(copilotSession);
+    await act(async () =>
+      root.render(
+        <ServiceManager
+          catalogError={null}
+          catalogStatus="ready"
+          isReady
+          onDirtyChange={() => {}}
+          onRefresh={() => {}}
+          onServiceRemoved={() => {}}
+          onServiceSaved={() => {}}
+          onViewChange={() => {}}
+          protocols={[]}
+          services={[]}
+          view={{ kind: "create", serviceKind: "codex_subscription" }}
+        />,
+      ),
+    );
+    await chooseServiceKind("GitHub Copilot 订阅");
+    expect(
+      container.querySelector<HTMLInputElement>("#service-name")?.value,
+    ).toBe("GitHub Copilot");
+    expect(
+      container.querySelector('[role="radio"][aria-label="Device Code"]'),
+    ).not.toBeNull();
+    expect(
+      container.querySelector('[role="radio"][aria-label="浏览器 OAuth"]'),
+    ).toBeNull();
+    const submit = () =>
+      act(async () =>
+        container
+          .querySelector("form")!
+          .dispatchEvent(
+            new Event("submit", { bubbles: true, cancelable: true }),
+          ),
+      );
+    await act(async () =>
+      container
+        .querySelector<HTMLButtonElement>(
+          '[data-testid="service-editor-tab-redirects"]',
+        )!
+        .click(),
+    );
+    // Built-in rows show before the account lists any model.
+    expect(container.querySelectorAll("[data-redirect-row]")).toHaveLength(9);
+    expect(container.textContent).toContain("claude-sonnet-4-6");
+    await submit();
+    expect(copilotRiskDialog()?.textContent).toContain("封禁 GitHub 账号");
+    expect(bridgeMocks.createService).not.toHaveBeenCalled();
+    await answerCopilotRisk("取消");
+    expect(bridgeMocks.createService).not.toHaveBeenCalled();
+    expect(bridgeMocks.beginServiceAuthorization).not.toHaveBeenCalled();
+
+    await submit();
+    await answerCopilotRisk("我已了解风险，继续");
+    expect(bridgeMocks.createService).toHaveBeenCalledWith({
+      name: "GitHub Copilot",
+      kind: "copilot_subscription",
+      enabled: true,
+      responses_websocket_enabled: false,
+      models: [],
+    });
+    expect(bridgeMocks.beginServiceAuthorization).toHaveBeenCalledWith(
+      "service_copilot",
+      "device_code",
+    );
+  });
+
+  it("signs a Copilot subscription in only after the risk confirmation", async () => {
+    bridgeMocks.beginServiceAuthorization.mockResolvedValue({
+      kind: "session",
+      session: copilotSession,
+    });
+    bridgeMocks.getServiceAuthorization.mockResolvedValue(copilotSession);
+    await act(async () =>
+      root.render(
+        <ServiceManager
+          catalogError={null}
+          catalogStatus="ready"
+          isReady
+          onDirtyChange={() => {}}
+          onRefresh={() => {}}
+          onServiceRemoved={() => {}}
+          onServiceSaved={() => {}}
+          onViewChange={() => {}}
+          protocols={[]}
+          services={[copilotService]}
+          view={{ kind: "list" }}
+        />,
+      ),
+    );
+    expect(container.textContent).toContain("GitHub Copilot OAuth");
+    await openServiceOverflow("GitHub Copilot");
+    await chooseMenuItem("登录");
+    const choice = document.querySelector('[role="dialog"]');
+    expect(
+      choice?.querySelector('[role="radio"][aria-label="浏览器 OAuth"]'),
+    ).toBeNull();
+    expect(choice?.textContent).not.toContain("OpenAI");
+    const start = [...document.querySelectorAll("button")].find(
+      (button) => button.textContent === "开始登录",
+    );
+    await act(async () => start!.click());
+    expect(copilotRiskDialog()).not.toBeNull();
+    expect(bridgeMocks.beginServiceAuthorization).not.toHaveBeenCalled();
+    await answerCopilotRisk("我已了解风险，继续");
+    expect(bridgeMocks.beginServiceAuthorization).toHaveBeenCalledWith(
+      "service_copilot",
+      "device_code",
+    );
+    const dialog = [...document.querySelectorAll('[role="dialog"]')].find(
+      (candidate) => candidate.textContent?.includes("COPI-LOT1"),
+    );
+    expect(dialog?.textContent).toContain("GitHub 设备授权页");
+    expect(dialog?.textContent).toContain("OpenCode");
+    expect(dialog?.textContent).not.toContain("OpenAI");
+  });
+
+  it("lists Copilot's built-in redirects with its own rules and saves a turned-off row", async () => {
+    const copilot: Service = {
+      ...copilotService,
+      models: ["claude-fable-6.0", "claude-sonnet-4.6"],
+      model_redirects: [
+        { from: "claude-fable-6-0", to: "claude-fable-6.0", enabled: true },
+      ],
+      subscription: { provider: "github_copilot", status: "connected" },
+    };
+    bridgeMocks.getService.mockResolvedValue({ service: copilot, etag });
+    bridgeMocks.updateService.mockResolvedValue({ service: copilot, etag });
+    await act(async () =>
+      root.render(
+        <ServiceManager
+          catalogError={null}
+          catalogStatus="ready"
+          isReady
+          onDirtyChange={() => {}}
+          onRefresh={() => {}}
+          onServiceRemoved={() => {}}
+          onServiceSaved={() => {}}
+          onViewChange={() => {}}
+          protocols={[]}
+          services={[copilot]}
+          view={{ kind: "edit", serviceId: copilot.id }}
+        />,
+      ),
+    );
+    await act(async () =>
+      container
+        .querySelector<HTMLButtonElement>(
+          '[data-testid="service-editor-tab-redirects"]',
+        )!
+        .click(),
+    );
+    expect(container.querySelectorAll("[data-redirect-row]")).toHaveLength(10);
+    const sonnet = container.querySelector<HTMLButtonElement>(
+      '[role="switch"][aria-label="启用 claude-sonnet-4-6 的重定向"]',
+    );
+    expect(sonnet?.getAttribute("aria-checked")).toBe("true");
+    await act(async () => sonnet!.click());
+    await act(async () =>
+      container
+        .querySelector("form")!
+        .dispatchEvent(
+          new Event("submit", { bubbles: true, cancelable: true }),
+        ),
+    );
+    expect(bridgeMocks.updateService).toHaveBeenCalledWith(
+      copilot.id,
+      etag,
+      expect.objectContaining({
+        model_redirects: [
+          { from: "claude-fable-6-0", to: "claude-fable-6.0", enabled: true },
+          {
+            from: "claude-sonnet-4-6",
+            to: "claude-sonnet-4.6",
+            enabled: false,
+          },
+        ],
+      }),
+    );
+  });
+
   it("submits a Claude code only to its active service and clears the input", async () => {
     const claude: Service = {
       ...codexService,
