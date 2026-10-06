@@ -1362,6 +1362,11 @@ func (session *recordSession) finish(
 		session.noteStoredExposure(blob)
 	}
 	session.settleRequestExposure(ctx, blobs, logf)
+	// Every body is stored and settled; the store may now share them with
+	// the rest of the session.
+	if chunker, ok := blobs.(storage.AuditChunker); ok {
+		chunker.ChunkRequestAudit(record.ID)
+	}
 }
 
 func (session *recordSession) prepareAuditKey(

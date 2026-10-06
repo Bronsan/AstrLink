@@ -5050,9 +5050,9 @@ fn validate_audit_settings_patch(patch: &serde_json::Value) -> Result<(), String
                 let parsed = value.as_u64().ok_or_else(|| {
                     "audit settings patch request_body_max_bytes must be an integer".to_string()
                 })?;
-                if !(1024..=16_777_216).contains(&parsed) {
+                if !(1024..=67_108_864).contains(&parsed) {
                     return Err(
-                        "audit settings patch request_body_max_bytes must be between 1024 and 16777216"
+                        "audit settings patch request_body_max_bytes must be between 1024 and 67108864"
                             .to_string(),
                     );
                 }

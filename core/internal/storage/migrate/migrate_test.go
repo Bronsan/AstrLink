@@ -950,12 +950,12 @@ func TestPrivacyNumberKindsMigrateToTokenStyle(t *testing.T) {
 	migrations := DefaultMigrations()
 	target := -1
 	for position, migration := range migrations {
-		if migration.Name == "privacy_token_kinds" {
+		if migration.Name == "privacy_token_kinds_audit_chunks" {
 			target = position
 		}
 	}
 	if target < 0 {
-		t.Fatal("privacy_token_kinds migration is missing")
+		t.Fatal("privacy_token_kinds_audit_chunks migration is missing")
 	}
 	before, err := New(SQLDatabase{DB: database}, migrations[:target])
 	if err != nil {

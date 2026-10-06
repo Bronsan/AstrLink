@@ -7298,7 +7298,7 @@ components:
     AuthorizationFlow:
       type: string
       enum: [browser, device_code, authorization_code]
-      description: Codex supports browser and device_code. Claude Code supports authorization_code with PKCE and a manual code#state callback. Grok (xai_grok) supports device_code only (RFC 8628 against auth.x.ai). Antigravity supports browser authorization with Google OAuth and a loopback callback.
+      description: Codex supports browser and device_code. Claude Code supports authorization_code with PKCE and a manual code#state callback. Grok (xai_grok) supports device_code only (RFC 8628 against auth.x.ai). Antigravity supports browser authorization with Google OAuth and a loopback callback. GitHub Copilot (github_copilot) supports device_code only (RFC 8628 against github.com with the OpenCode OAuth app).
     AuthorizationStartRequest:
       type: object
       required: [flow]
