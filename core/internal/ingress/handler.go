@@ -505,6 +505,7 @@ func (handler *Handler) applyPrivacy(
 	case privacy.DecisionBlock:
 		session.notePrivacyDecision("block", contract.RequestStatusBlocked)
 		session.notePrivacyOutcome(contract.PrivacyDecisionBlock, result.Findings)
+		session.noteProtectedValues(result.Protected)
 		return finish, privacyOutcome{}, errPrivacyBlocked
 	case privacy.DecisionRedact:
 		if buffered == nil {
@@ -515,6 +516,7 @@ func (handler *Handler) applyPrivacy(
 		}
 		buffered.Replace(result.Body)
 		session.notePrivacyOutcome(contract.PrivacyDecisionRedact, result.Findings)
+		session.noteProtectedValues(result.Protected)
 		mappingCount := uniqueRedactionMappingCount(result.Redactions)
 		session.notePrivacyMapping(
 			policy.ResponseRestore,
