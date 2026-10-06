@@ -161,12 +161,31 @@ jobs:
         run: bun ../../scripts/check-no-production-models.mjs
       - name: Stage Core and worker sidecars
         run: bun run sidecar:build
-      - name: Build Developer ID signed app and DMG
+      - name: Build release app
+        run: bun run tauri build --ci --no-bundle
+      - name: Bundle Developer ID signed app and DMG
         env:
           # With CI=true Tauri skips the Finder script that applies the DMG
           # background and icon positions.
           TAURI_BUNDLER_DMG_IGNORE_CI: "true"
-        run: bun run tauri build --ci --bundles app,dmg
+        run: |
+          # hdiutil and Finder sometimes fail on hosted runners and leave the
+          # writable image attached. Retry only the bundle phase; --verbose
+          # prints the bundle_dmg.sh output that Tauri otherwise hides.
+          bundle_dir="$PWD/src-tauri/target/release/bundle"
+          for attempt in 1 2 3; do
+            if bun run tauri bundle --ci --verbose --bundles app,dmg; then
+              exit 0
+            fi
+            echo "::warning::macOS bundling failed on attempt $attempt"
+            hdiutil info | awk -v dir="$bundle_dir/" '
+              /^image-path/ { keep = index($0, dir) > 0 }
+              keep && /^\/dev\/disk[0-9]+[[:space:]]/ { print $1; keep = 0 }
+            ' | xargs -n 1 hdiutil detach -force || true
+            rm -f "$bundle_dir"/macos/rw.*.dmg
+            sleep 10
+          done
+          exit 1
       - name: Notarize, staple and verify app and DMG
         run: bun run macos:notarize
       - name: Mount DMG and verify packaged application
