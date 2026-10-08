@@ -94,6 +94,17 @@ func AntigravityRequest(req *http.Request, project string) (string, error) {
 		if err != nil {
 			return "", err
 		}
+		// A tool result carrying screenshots as base64 text (Codex
+		// view_image replays input_image data URLs inside
+		// function_call_output) would otherwise travel to Claude as plain
+		// text: ~1.9MB of base64 counts ~1.6M tokens and the request dies
+		// with "prompt is too long". Hoist image payloads into sibling
+		// inlineData parts, mirroring how the Chat conversion hoists media
+		// out of tool outputs.
+		body, err = hoistGeminiImageResults(body)
+		if err != nil {
+			return "", err
+		}
 		// The endpoint's model is authoritative. Keep prompts, schemas and media
 		// byte-preserving; remove only fields rejected by this upstream.
 		body, err = sjson.DeleteBytes(body, "model")
@@ -258,6 +269,129 @@ func reorderGeminiMixedModelParts(body []byte) ([]byte, error) {
 		return err == nil
 	})
 	return body, err
+}
+
+func hoistGeminiImageResults(body []byte) ([]byte, error) {
+	contents := gjson.GetBytes(body, "contents")
+	if !contents.IsArray() {
+		return body, nil
+	}
+	var err error
+	contents.ForEach(func(index, content gjson.Result) bool {
+		if err != nil {
+			return false
+		}
+		parts := content.Get("parts")
+		if !parts.IsArray() {
+			return true
+		}
+		contentPath := "contents." + strconv.Itoa(int(index.Int()))
+		var images [][]byte
+		parts.ForEach(func(partIndex, part gjson.Result) bool {
+			if err != nil {
+				return false
+			}
+			response := part.Get("functionResponse.response")
+			if !response.Exists() {
+				return true
+			}
+			partPath := contentPath + ".parts." + strconv.Itoa(int(partIndex.Int())) + ".functionResponse.response"
+			collectGeminiImageURLs(response, partPath, &images, &body, &err)
+			return err == nil
+		})
+		if err != nil || len(images) == 0 {
+			return err == nil
+		}
+		// Re-read: blanking above already rewrote this content in body.
+		raw := bytes.TrimSpace([]byte(gjson.GetBytes(body, contentPath+".parts").Raw))
+		if len(raw) < 2 || raw[len(raw)-1] != ']' {
+			return true
+		}
+		var extended bytes.Buffer
+		extended.Write(raw[:len(raw)-1])
+		extended.WriteByte(',')
+		extended.Write(bytes.Join(images, []byte{','}))
+		extended.WriteByte(']')
+		body, err = sjson.SetRawBytes(body, contentPath+".parts", extended.Bytes())
+		return err == nil
+	})
+	return body, err
+}
+
+// collectGeminiImageURLs blanks base64 image data URLs under a
+// functionResponse and records equivalent inlineData parts. Only plain
+// object keys are descended into so the sjson paths stay exact; anything
+// else is left untouched.
+func collectGeminiImageURLs(value gjson.Result, path string, images *[][]byte, body *[]byte, err *error) {
+	if *err != nil {
+		return
+	}
+	if value.IsObject() {
+		value.ForEach(func(key, item gjson.Result) bool {
+			name := key.String()
+			if !isPlainJSONKey(name) {
+				return true
+			}
+			if name == "image_url" && item.Type == gjson.String {
+				if mime, data, ok := splitImageDataURL(item.String()); ok {
+					encoded, marshalErr := json.Marshal(map[string]any{
+						"inlineData": map[string]any{"mimeType": mime, "data": data},
+					})
+					if marshalErr != nil {
+						*err = marshalErr
+						return false
+					}
+					*images = append(*images, encoded)
+					*body, *err = sjson.SetBytes(*body, path+"."+name, "")
+					return *err == nil
+				}
+				return true
+			}
+			collectGeminiImageURLs(item, path+"."+name, images, body, err)
+			return *err == nil
+		})
+		return
+	}
+	if value.IsArray() {
+		value.ForEach(func(key, item gjson.Result) bool {
+			collectGeminiImageURLs(item, path+"."+strconv.Itoa(int(key.Int())), images, body, err)
+			return *err == nil
+		})
+	}
+}
+
+func isPlainJSONKey(name string) bool {
+	if name == "" {
+		return false
+	}
+	for _, r := range name {
+		if r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '_' || r == '-' {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+// splitImageDataURL accepts data URLs carrying images (or PDFs) as base64.
+// Anything else (remote URLs, other media, inline text) is left alone.
+func splitImageDataURL(raw string) (mime, data string, ok bool) {
+	if !strings.HasPrefix(raw, "data:") {
+		return "", "", false
+	}
+	header, payload, found := strings.Cut(raw[len("data:"):], ",")
+	if !found || payload == "" {
+		return "", "", false
+	}
+	mime, _, _ = strings.Cut(header, ";")
+	if !strings.Contains(header, ";base64") {
+		return "", "", false
+	}
+	mime = strings.ToLower(strings.TrimSpace(mime))
+	if !strings.HasPrefix(mime, "image/") && mime != "application/pdf" {
+		return "", "", false
+	}
+	return mime, payload, true
 }
 
 func unwrapAntigravity(raw []byte) ([]byte, error) {

@@ -113,3 +113,46 @@ func TestAntigravityLeavesPureCallModelUntouched(t *testing.T) {
 		t.Fatalf("functionCall rewritten to %v", call)
 	}
 }
+
+func TestAntigravityHoistsImageResultsToInlineData(t *testing.T) {
+	payload := `{"contents":[
+		{"role":"user","parts":[{"text":"hi"}]},
+		{"role":"model","parts":[
+			{"functionCall":{"id":"call_img","name":"view_image","args":{}}}]},
+		{"role":"user","parts":[
+			{"functionResponse":{"id":"call_img","name":"view_image","response":{"result":[
+				{"type":"input_image","detail":"high","image_url":"data:image/png;base64,iVBORw0KGgo="}]}}},
+			{"functionResponse":{"id":"call_txt","name":"exec_command","response":{"content":"done"}}}]}
+	]}`
+	contents := antigravityRequestContents(t, payload)
+	last := contents[2]["parts"].([]any)
+	if len(last) != 3 {
+		t.Fatalf("trailing user parts = %d, want 3 (resp, resp, inlineData)", len(last))
+	}
+	image := last[0].(map[string]any)["functionResponse"].(map[string]any)["response"].(map[string]any)
+	result := image["result"].([]any)[0].(map[string]any)
+	if result["image_url"] != "" || result["detail"] != "high" {
+		t.Fatalf("image_url not blanked, got %v", result)
+	}
+	inline, ok := last[2].(map[string]any)["inlineData"].(map[string]any)
+	if !ok || inline["mimeType"] != "image/png" || inline["data"] != "iVBORw0KGgo=" {
+		t.Fatalf("inlineData = %v, want png payload", last[2])
+	}
+	text := last[1].(map[string]any)["functionResponse"].(map[string]any)["response"].(map[string]any)
+	if text["content"] != "done" {
+		t.Fatalf("text result rewritten to %v", text)
+	}
+}
+
+func TestAntigravityLeavesRemoteImageURLsAlone(t *testing.T) {
+	contents := antigravityRequestContents(t, `{"contents":[
+		{"role":"user","parts":[{"text":"hi"}]},
+		{"role":"user","parts":[
+			{"functionResponse":{"id":"call_img","name":"view_image","response":{"result":[
+				{"type":"input_image","image_url":"https://example.com/a.png"}]}}}]}
+	]}`)
+	last := contents[1]["parts"].([]any)
+	if len(last) != 1 {
+		t.Fatalf("remote URL hoisted unexpectedly: %v", last)
+	}
+}
