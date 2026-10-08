@@ -82,6 +82,18 @@ func AntigravityRequest(req *http.Request, project string) (string, error) {
 		if !gjson.ValidBytes(body) || !gjson.ParseBytes(body).IsObject() || !gjson.GetBytes(body, "contents").IsArray() {
 			return "", fmt.Errorf("invalid Gemini request body")
 		}
+		// A replayed assistant message merged into a functionCall content as
+		// [functionCall, text] trips Antigravity's Gemini-to-Claude bridge on
+		// a trailing turn: the text is split off after the following
+		// functionResponse and the request is rejected as an assistant
+		// prefill ("The conversation must end with a user message").
+		// Restore canonical [text, functionCall] order, matching the
+		// Chat/Claude shape (text + tool_use) and keeping each tool_use
+		// adjacent to its functionResponse.
+		body, err = reorderGeminiMixedModelParts(body)
+		if err != nil {
+			return "", err
+		}
 		// The endpoint's model is authoritative. Keep prompts, schemas and media
 		// byte-preserving; remove only fields rejected by this upstream.
 		body, err = sjson.DeleteBytes(body, "model")
@@ -201,6 +213,51 @@ func AntigravityResponse(res *http.Response, mode string) error {
 	res.Header.Set("Content-Type", "application/json")
 	res.Body = io.NopCloser(bytes.NewReader(raw))
 	return nil
+}
+
+func reorderGeminiMixedModelParts(body []byte) ([]byte, error) {
+	contents := gjson.GetBytes(body, "contents")
+	if !contents.IsArray() {
+		return body, nil
+	}
+	var err error
+	contents.ForEach(func(index, content gjson.Result) bool {
+		if err != nil {
+			return false
+		}
+		if content.Get("role").String() != "model" {
+			return true
+		}
+		parts := content.Get("parts")
+		if !parts.IsArray() {
+			return true
+		}
+		var lead, calls [][]byte
+		parts.ForEach(func(_, part gjson.Result) bool {
+			if part.Get("functionCall").Exists() {
+				calls = append(calls, []byte(part.Raw))
+			} else {
+				lead = append(lead, []byte(part.Raw))
+			}
+			return true
+		})
+		if len(lead) == 0 || len(calls) == 0 {
+			return true
+		}
+		var ordered bytes.Buffer
+		ordered.WriteByte('[')
+		for i, raw := range append(append([][]byte(nil), lead...), calls...) {
+			if i > 0 {
+				ordered.WriteByte(',')
+			}
+			ordered.Write(raw)
+		}
+		ordered.WriteByte(']')
+		path := "contents." + strconv.Itoa(int(index.Int())) + ".parts"
+		body, err = sjson.SetRawBytes(body, path, ordered.Bytes())
+		return err == nil
+	})
+	return body, err
 }
 
 func unwrapAntigravity(raw []byte) ([]byte, error) {
